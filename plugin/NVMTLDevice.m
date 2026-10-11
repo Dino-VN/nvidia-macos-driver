@@ -656,6 +656,7 @@ static BOOL nvmtl_desc_fbo(MTLTextureDescriptor *d) {
     t->_usage = d.usage;
     if (wantStex && !t->_stex) { static unsigned long lost; lost++;
         if (!(lost & (lost - 1))) nvlog("newTextureWithDescriptor: pixel format %lu asked for ShaderWrite and NVK cannot make it a storage image — shader writes to it will be LOST (%lu texture(s) so far in this process)", (unsigned long)d.pixelFormat, lost); }
+    nvmtl_texture_desc_swizzle(t, d);
     nvlog("newTextureWithDescriptor: %lux%lu%s -> %p", (unsigned long)d.width, (unsigned long)d.height, t->_stex ? " +storage" : "", (__bridge void *)t); return t; }
 
 typedef struct { uint32_t magic, seed, gen; } nvmtl_vram_tag;
@@ -741,6 +742,7 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
     t->_fmt = d.pixelFormat;
     t->_stex = t->_i.storage != 0;
     t->_usage = d.usage;
+    nvmtl_texture_desc_swizzle(t, d);
     nvlog("newTextureWithDescriptor:iosurface:%p plane:%lu -> %p (%zux%zu fmt %lu)",
           (void *)surf, (unsigned long)plane, (__bridge void *)t, w, h, (unsigned long)d.pixelFormat);
     return t; }
@@ -1257,6 +1259,9 @@ void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
             (unsigned long)ad.offset, (unsigned long)ld.stride, (unsigned long)ld.stepFunction, (unsigned long)ld.stepRate];
     }
     ps->_vdesc = vdesc; ps->_descriptor = [d copy];
+    /* _descriptor keeps the caller's (unlinked) functions; a pixel-sampler variant re-translates from these, the
+     * stages the pipeline was actually built from (RenderBox's custom_fn fragments only translate once linked). */
+    ps->_linkedVert = vf; ps->_linkedFrag = noFrag ? nil : ff;
     if (!vf->_spirv.length || !ff->_spirv.length)
         return nvmtl_fail(err, [NSString stringWithFormat:
             @"pipeline: REFUSED — %@ is a visible function, not an entry point (vertex %lu B, fragment %lu B)",
