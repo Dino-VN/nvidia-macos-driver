@@ -1,23 +1,26 @@
 # Building the Tahoe fixes
 
-This guide builds the two components needed for the Tahoe fixes in this fork:
+This guide builds the three components needed for the Tahoe fixes in this fork:
 
 | Component | Purpose | Build output |
 |---|---|---|
 | `NVMTLDriver` | PR #79: shader linking, sampler variants, and texture channel mapping for icon layers | `out/plugin-<commit>-release/NVMTLDriver` |
+| `libnvmtl_translate.dylib` | PR #112: preserve buffer offsets in CoreImage resize helpers, restoring small System Settings icon glyphs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
 | `NVAccel.kext` | Tahoe accelerator rebuilt with the current VRAM interface, avoiding the ABI 1/2 mismatch that causes a black desktop | `out/tahoe/NVAccel.kext` |
 
 The patched sources described here are based on **1.13.0**. Use the outputs with the matching **1.13.0 driver package and user-space libraries**. Rebuild from matching sources when moving to another driver version.
 
-Run the build commands in **macOS Terminal**. The plugin can be built on a working Sequoia installation for use on Tahoe. Compilation and GPU testing have not been performed in this Windows workspace.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
+
+If the PR #79 plugin and rebuilt Tahoe accelerator already work on your machine, build and replace only the translator for PR #112. Rebuilding the plugin alone does not include this glyph fix.
 
 ## 1. Commit and transfer your changes
 
 The plugin build script requires a clean Git working tree. If the fixes and this guide are still uncommitted on Windows, run these commands from your repository in PowerShell:
 
 ```powershell
-git add -- TAHOE.MD plugin/NVMTLDevice.m plugin/NVMTLEmbedded.m plugin/NVMTLLibraryLoad.m plugin/NVMTLObjects.h plugin/NVMTLObjects.m
-git commit -m "Apply upstream PR #79 Tahoe icon fixes and document builds"
+git add -- TAHOE.MD plugin/NVMTLDevice.m plugin/NVMTLEmbedded.m plugin/NVMTLLibraryLoad.m plugin/NVMTLObjects.h plugin/NVMTLObjects.m translator/translator/src/native/emitter/mod.rs translator/translator/src/native/tests/buffers.rs
+git commit -m "Apply Tahoe icon and glyph fixes and document builds"
 git push origin main
 ```
 
@@ -38,7 +41,14 @@ If they are missing, install the Command Line Tools and wait for installation to
 xcode-select --install
 ```
 
-The PR author tested the plugin with **Command Line Tools 16.4 / macOS 15.5 SDK**. NVAccel also requires the macOS SDK's kernel headers and libraries.
+The PR #79 author tested the plugin with **Command Line Tools 16.4 / macOS 15.5 SDK**. NVAccel also requires the macOS SDK's kernel headers and libraries.
+
+The translator requires **Rust 1.87 or newer**. Install it through [rustup](https://rustup.rs/) if needed, then check:
+
+```bash
+rustc --version
+cargo --version
+```
 
 ## 3. Prepare the checkout and Vulkan headers
 
@@ -100,9 +110,38 @@ If compilation fails, inspect the full compiler output:
 cat "$plugin_out/NVMTLDriver.err"
 ```
 
-This icon patch does not require rebuilding the Rust translator or Mesa. Keep the matching 1.13.0 runtime libraries when packaging the new executable.
+PR #79 only changes the plugin. PR #112 also requires the translator build below. Neither patch requires rebuilding Mesa; keep the matching 1.13.0 NVK runtime.
 
-## 5. Build NVAccel.kext for Tahoe
+## 5. Build the System Settings glyph-fix translator
+
+PR #112 changes the Rust translator under `translator/translator/`. Build its C-compatible wrapper, which produces the dynamic library loaded by the plugin:
+
+```bash
+cd "$HOME/nvmtl-build/LIVE"
+rustup target add x86_64-apple-darwin
+
+cargo build --release \
+  --manifest-path translator/wrapper/Cargo.toml \
+  --target x86_64-apple-darwin \
+  --target-dir out/translator
+```
+
+This direct Cargo command uses the translator in this checkout. The repository's `build/build_xlate.sh` defaults to a separate `~/nvmtl-build/bindless` tree and also expects release-check files outside this public checkout, so use the command above for this guide.
+
+Set the library's install name, sign it, and verify the output:
+
+```bash
+translator_out="$HOME/nvmtl-build/LIVE/out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib"
+
+install_name_tool -id @rpath/libnvmtl_translate.dylib "$translator_out"
+codesign --force --sign - "$translator_out"
+file "$translator_out"
+codesign --verify --verbose=2 "$translator_out"
+```
+
+Expect an **x86_64 Mach-O dynamic library** and successful signature verification. The build uses the Rust sources directly; Apple's private AIR fixtures are not required to build the release library. The full translator test suite does reference unpublished `validation/fixtures`, so a missing-fixture test failure is distinct from a release-library build failure.
+
+## 6. Build NVAccel.kext for Tahoe
 
 NVAccel requires NVIDIA's **open-gpu-kernel-modules 610.57.04** source headers. The default location is `~/ogkm610`. If that checkout is not already present:
 
@@ -153,34 +192,49 @@ cat out/tahoe/accel.err
 cat out/tahoe/accelld.err
 ```
 
-## 6. Package and install the matching components
+## 7. Package and install the matching components
 
 These build commands do not install anything. In a copy of the matching extracted driver package, replace:
 
 | Built artifact | Destination relative to the package's `pkgroot` |
 |---|---|
 | `out/plugin-<commit>-release/NVMTLDriver` | `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/NVMTLDriver` |
+| `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` |
 | `out/tahoe/NVAccel.kext` | `Library/NullMoth/kexts/26/NVAccel.kext` |
 
 Preserve the plugin bundle's other resources and the matching runtime libraries. Regenerate the package's `SHA256SUMS` after replacing the artifacts, then install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation.
 
-An NVAccel rebuild addresses the VRAM interface mismatch; the plugin rebuild addresses the icon rendering problems. Both components are needed if both problems are present.
+The loader prefers a translator library beside the plugin executable if one exists: `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib`. If your package contains a separate copy there, replace it with the same rebuilt library too; a symlink to the canonical `nvmtl` library can keep pointing there. Otherwise that older copy would take precedence over the patched translator.
 
-After installing and rebooting, run this as the desktop user to back up the Dock's old icon cache and regenerate it:
+An NVAccel rebuild addresses the VRAM interface mismatch; PR #79's plugin rebuild addresses icon layers; PR #112's translator rebuild addresses the small Settings glyphs. Include the components needed by your installation. The plugin keys its shader cache by translator content, so the rebuilt library gets a new shader-cache identity after the process restarts.
+
+After installing and rebooting, quit and reopen System Settings. If old rendered icons remain, run this as the desktop user to back up the IconServices and Dock caches:
 
 ```bash
-dock_cache="$(getconf DARWIN_USER_CACHE_DIR)com.apple.dock.iconcache"
-if [ -f "$dock_cache" ]; then
-  mv "$dock_cache" "$dock_cache.bak-$(date +%Y%m%d-%H%M%S)"
+cache_stamp="$(date +%Y%m%d-%H%M%S)"
+user_cache="$(getconf DARWIN_USER_CACHE_DIR)"
+if [ -n "$user_cache" ] && [ -d "$user_cache" ]; then
+  for cache_name in com.apple.iconservices com.apple.dock.iconcache; do
+    icon_cache="$user_cache/$cache_name"
+    if [ -e "$icon_cache" ]; then
+      mv "$icon_cache" "$icon_cache.bak-$cache_stamp"
+    fi
+  done
 fi
-killall Dock
+system_icon_cache="/Library/Caches/com.apple.iconservices.store"
+if [ -e "$system_icon_cache" ]; then
+  sudo mv "$system_icon_cache" "$system_icon_cache.bak-$cache_stamp"
+fi
 ```
 
-The PR's reported remaining issues include Ghostty's incorrectly sized foreground and missing System Settings sidebar symbols. The icon fix is not a claim of complete Tahoe support.
+Reboot after moving the caches so IconServices and the desktop regenerate their images with the new translator. The first redraw can take longer. These rendered-icon caches are separate from the translator's shader cache.
+
+PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 26.6. Ghostty's incorrectly sized foreground remains outside these fixes. These patches are not a claim of complete Tahoe support.
 
 ## References
 
 - [PR #79: Tahoe icon rendering fixes](https://github.com/nullmoth/nvidia-macos-driver/pull/79) — the patch applied here is revision `74c0dc30ab8e58139707fb603948329a1cede67f`.
+- [PR #112: CoreImage resize and System Settings glyph fix](https://github.com/nullmoth/nvidia-macos-driver/pull/112) — the patch applied here is revision `a6c38cd52ee23e335e08af89824b72aca4f9fcdb`.
 - [Issue #51: Tahoe NVAccel VRAM ABI mismatch](https://github.com/nullmoth/nvidia-macos-driver/issues/51).
 - [Test build 2: matching 1.13.0 components and hardware results](https://github.com/modesttao/nvidia-macos-driver/releases/tag/icons-test2).
 - [Apple: installing command-line developer tools](https://developer.apple.com/library/archive/technotes/tn2339/_index.html).
