@@ -9,10 +9,10 @@ import WebKit
 import UniformTypeIdentifiers
 
 struct Package {
-    static let version = "1.12.0"
-    static let name = "nullmoth-nvidia-1.12.0.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.12.0/nullmoth-nvidia-1.12.0.tar.gz")!
-    static let sha256 = "40c47c41e4410a3bf3805478df1057e77412fce072d4ef34b323aeacb5da9fe0"
+    static let version = "1.13.0"
+    static let name = "nullmoth-nvidia-1.13.0.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.13.0/nullmoth-nvidia-1.13.0.tar.gz")!
+    static let sha256 = "994970b1bba53e3ae8d7f500ef27b25cae8bc6818abc112d35230a58e6882fdf"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -283,7 +283,14 @@ func failurePart(_ u: URL) -> String {
 func makeReport(_ crashes: [URL]) -> String {
     var r = ""
     for u in crashes.suffix(3) {
-        r += "\n=== \(u.lastPathComponent.replacingOccurrences(of: #"-\d{4}-\d{2}-\d{2}-\d{6}"#, with: "", options: .regularExpression)) ===\n"
+        // The date and "before this install" ride in the header: 1.12 reports carried mediaanalysisd crashes from a 1.9
+        // plugin (the return address fits only 1.3-1.9's drawPrimitives) and read as a 1.12 regression (10-11).
+        let fmc = FileManager.default
+        let when = (try? fmc.attributesOfItem(atPath: u.path))?[.modificationDate] as? Date
+        let installed = (try? fmc.attributesOfItem(atPath: "/Library/NullMoth/state"))?[.modificationDate] as? Date
+        let stamp = when.map { ISO8601DateFormatter().string(from: $0) } ?? "date unknown"
+        let old = (when != nil && installed != nil && when! < installed!) ? ", BEFORE this driver install" : ""
+        r += "\n=== \(u.lastPathComponent.replacingOccurrences(of: #"-\d{4}-\d{2}-\d{2}-\d{6}"#, with: "", options: .regularExpression)) (\(stamp)\(old)) ===\n"
         r += failurePart(u) + "\n"
     }
     return hardwareFacts() + redact(r)

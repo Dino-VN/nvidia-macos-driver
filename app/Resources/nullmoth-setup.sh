@@ -4,6 +4,22 @@ B=7C436110-AB2A-4BBB-A880-FE41995C9F82
 # ipc_control_port_options=0: with AMFI relaxed, Firefox and other hardened apps crash at launch on their task control
 # port (10-10 chat: Firefox "instant crash", fixed by this argument); OpenCore Legacy Patcher sets it for the same reason.
 WANT_ARGS="nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth amfi_get_out_of_my_way=0x1 amfi=0x80 ipc_control_port_options=0"
+# The NVIDIA display card's PCI device id (4 hex digits), read from the registry.
+nv_device_id() {
+  ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '
+    function emit() { if (v && c && d != "") { print substr(d,3,2) substr(d,1,2); found=1; exit } }
+    /\+-o / { emit(); v=0; c=0; d="" }
+    /"vendor-id" = <de100000>/ { v=1 }
+    /"class-code" = <00000300>/ { c=1 }
+    /"device-id" = </ { if (match($0, /<[0-9a-f]+>/)) d=substr($0, RSTART+1, 4) }
+    END { if (!found) emit() }'
+}
+# Turing (TU102/104/106/117 = 1E00-1FFF, TU116 = 2180-21FF) needs longer for GSP to settle before the display arms:
+# a GTX 1660 SUPER stuck at boot on the 0.5 s default and started with nvrmsettle=10000, as an RTX 2070 SUPER had
+# (Discord 10-11, after 1.12). Only added when the user has not chosen a value.
+NVDEV=$(nv_device_id)
+case "$NVDEV" in 1[eEfF]??|21[89a-fA-F]?) TURING=1;; *) TURING=0;; esac
+[ "$TURING" = 1 ] && WANT_ARGS="$WANT_ARGS nvrmsettle=10000"
 DROP_ARGS="nv_disable=1 -wegnoegpu"          # both hide the NVIDIA card from macOS
 SIP_BITS=$((0x0A43))
 TOOL_NAME="1401: Remove NVIDIA driver"; TOOL_FILE=NullMothSafe.efi
@@ -314,12 +330,24 @@ if [ $REMOVE = 1 ]; then
   elif [ "$EFI" != auto ]; then
     mount_efi "$EFI" || stop "could not mount the selected OpenCore partition - nothing changed"; MP=$MOUNT_POINT
     C="$MP/${OCREL:-EFI/OC}/config.plist"
-  elif [ -n "${EFI_UUID:-}" ]; then
-    mount_efi "$EFI_UUID" || stop "could not mount the recorded OpenCore partition; attach the original boot disk or select its replacement - nothing changed"; MP=$MOUNT_POINT
-    C="$MP/${OCREL:-EFI/OC}/config.plist"
-  elif [ -n "${CONFIG_PATH:-}" ]; then
-    C=$CONFIG_PATH; [ -f "$C" ] || stop "the recorded config is missing - nothing changed"
+  elif [ -n "${EFI_UUID:-}" ] && mount_efi "$EFI_UUID"; then
+    MP=$MOUNT_POINT; C="$MP/${OCREL:-EFI/OC}/config.plist"
+  elif [ -n "${CONFIG_PATH:-}" ] && [ -f "$CONFIG_PATH" ]; then
+    C=$CONFIG_PATH
     MP=$(cd "$(dirname "$C")/../.." && pwd) || stop "cannot resolve the recorded OpenCore partition"
+  fi
+  # The boot picker's "Remove driver" runs this at the next start, before anything has mounted the EFI partition, so a
+  # record holding only a config path (/Volumes/EFI/...) or a partition that is no longer attached stopped here and the
+  # driver stayed off but installed, start after start (1.6-1.9 recover logs: "the recorded config is missing", "could
+  # not mount the recorded OpenCore partition"; Discord 10-11). The partition OpenCore started this Mac from is the one
+  # whose picker asked for the removal, so it is used instead.
+  if [ -z "$C" ] && [ -z "$CFG" ] && [ "$EFI" = auto ] && { [ -n "${EFI_UUID:-}" ] || [ -n "${CONFIG_PATH:-}" ]; }; then
+    note "the recorded OpenCore config was not found; using the partition this Mac started from"
+    d=$(booted_part) || d=$(boot_esp)
+    [ -n "$d" ] || stop "the recorded OpenCore config is missing and the partition this Mac started from was not found; select its config.plist - nothing changed"
+    mount_efi "$d" || stop "could not mount the OpenCore partition $d - nothing changed"
+    r=$(ocrel_in "$MOUNT_POINT"); [ -n "$r" ] || stop "no OpenCore config on $d; select its config.plist - nothing changed"
+    MP=$MOUNT_POINT; C="$MP/$r/config.plist"; OCREL=$r
   fi
   [ -n "$C" ] || stop "the install record has no OpenCore partition; select the original config - nothing changed"
   if [ -n "$C" ]; then
@@ -658,7 +686,9 @@ step "Checking the OpenCore settings"
 EDITS=(); ADDED=""; REMOVED=""
 args=$(get NVRAM.Add.$B.boot-args); new=""
 for a in $args; do case " $DROP_ARGS " in *" $a "*) echo "CHANGE boot-args: remove $a (it hides the NVIDIA card)"; REMOVED="$REMOVED $a";; *) new="$new $a";; esac; done
-for a in $WANT_ARGS; do case " $new " in *" $a "*) ;; *) new="$new $a"; ADDED="$ADDED $a"; echo "CHANGE boot-args: add $a";; esac; done
+for a in $WANT_ARGS; do
+  case "$a" in nvrmsettle=*) case " $new " in *" nvrmsettle="*) continue;; esac;; esac   # the user's own value wins
+  case " $new " in *" $a "*) ;; *) new="$new $a"; ADDED="$ADDED $a"; echo "CHANGE boot-args: add $a";; esac; done
 new=${new# }
 [ "$new" != "$args" ] && EDITS+=("NVRAM.Add.$B.boot-args|-string|$new")
 cur=$(csr_of); want=$(( cur | SIP_BITS ))
@@ -755,6 +785,11 @@ if nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 &&
   DELADD+=("nullmoth-remove"); echo "CHANGE NVRAM Delete: add nullmoth-remove (a leftover remove flag this Mac cannot clear from macOS)"
 fi
 NEEDTOOL=0; [ -z "$(tool_index)" ] && { NEEDTOOL=1; echo "CHANGE boot picker: add \"$TOOL_NAME\" (the way back if the driver ever stops macOS starting)"; }
+# The tool asks for Y on screen. Run in graphics mode its text never showed, so it sat waiting for a key nobody could see
+# ("Remove driver hangs", Discord 10-11); text mode shows it. Existing entries are switched too.
+ti=$(tool_index); if [ -n "$ti" ] && [ "$(get Misc.Tools.$ti.TextMode)" != true ]; then
+  echo "CHANGE boot picker: show \"$TOOL_NAME\" in text mode, so its question is visible"; EDITS+=("Misc.Tools.$ti.TextMode|-bool|true"); fi
+REFRESHTOOL=0; [ -n "$ti" ] && [ -f "$TOOL" ] && ! cmp -s "$TOOL" "$(dirname "$C")/Tools/$TOOL_FILE" && REFRESHTOOL=1
 [ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDBLOCK = 0 ] && [ $NEEDAMFIPASS = 0 ] && ok "OpenCore already has every setting the driver needs"
 
 if [ $SIPON = 1 ]; then
@@ -796,9 +831,10 @@ if [ $DRY = 0 ]; then
   fi
   if [ $NEEDTOOL = 1 ]; then
     plutil -extract Misc.Tools xml1 -o - "$C" >/dev/null 2>&1 || plutil -insert Misc.Tools -array "$C" || fail=1
-    plutil -insert Misc.Tools -json "{\"Arguments\":\"\",\"Auxiliary\":false,\"Comment\":\"NullMoth: remove the NVIDIA driver at the next start\",\"Enabled\":true,\"Flavour\":\"Auto\",\"FullNvramAccess\":true,\"Name\":\"$TOOL_NAME\",\"Path\":\"$TOOL_FILE\",\"RealPath\":false,\"TextMode\":false}" -append "$C" || fail=1
+    plutil -insert Misc.Tools -json "{\"Arguments\":\"\",\"Auxiliary\":false,\"Comment\":\"NullMoth: remove the NVIDIA driver at the next start\",\"Enabled\":true,\"Flavour\":\"Auto\",\"FullNvramAccess\":true,\"Name\":\"$TOOL_NAME\",\"Path\":\"$TOOL_FILE\",\"RealPath\":false,\"TextMode\":true}" -append "$C" || fail=1
     mkdir -p "$MP/$OCREL/Tools" && cp "$TOOL" "$MP/$OCREL/Tools/$TOOL_FILE" || fail=1
   fi
+  [ "${REFRESHTOOL:-0}" = 1 ] && { cp "$TOOL" "$MP/$OCREL/Tools/$TOOL_FILE" || fail=1; }   # the current tool (drains stale keys)
   if [ $fail = 1 ] || ! plutil -lint "$C" >/dev/null; then cp -p "$BKC" "$C"; stop "editing the config failed - the original is restored"; fi
   ok "OpenCore config updated"
   mkdir -p "$ST"
