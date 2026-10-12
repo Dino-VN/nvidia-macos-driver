@@ -1,6 +1,6 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide builds the Tahoe components from this fork after merging upstream **1.14.1** (`de9b33a`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too. The plugin and translator are unchanged from our tested 1.14.0 merge (`d7c77cf`).
+This guide builds the Tahoe components from this fork after merging upstream **1.14.2** (`1083a98`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too. The five Objective-C files carrying PR #79 and the entire translator are unchanged from our tested 1.14.0 merge (`d7c77cf`). Version 1.14.2 adds crash guards in the plugin's Vulkan backend; those checks still use the texture view's format when present.
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -8,7 +8,9 @@ This guide builds the Tahoe components from this fork after merging upstream **1
 | `libnvmtl_translate.dylib` | PR #112: preserve buffer offsets in CoreImage resize helpers, restoring small System Settings icon glyphs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 
-Use these outputs with the matching **1.14.1 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together. Version 1.14.1 additionally makes the GPU ACPI backlight queries opt-in (`nvrmacpibl=1`) to avoid the reported 1.14.0 startup hangs; leave that argument unset unless intentionally testing laptop backlight support.
+Use these outputs with the matching **1.14.2 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together. Version 1.14.1 additionally makes the GPU ACPI backlight queries opt-in (`nvrmacpibl=1`) to avoid the reported 1.14.0 startup hangs; leave that argument unset unless intentionally testing laptop backlight support.
+
+Version 1.14.2 fixes a black login window reported on high-refresh monitors and adds Vulkan crash guards. Its published NVK patch also includes the system-memory mapping flag needed by RTX 20 / GTX 16 GPUs, bringing the source into line with the shipped runtime. Upstream still lists a dark or frozen screen during "Start once without NVIDIA driver" as unresolved; the new firmware-framebuffer fallback does not establish that this recovery path works on every PC.
 
 Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
 
@@ -25,7 +27,7 @@ git log -1 --oneline
 git status --short
 ```
 
-If transferring through GitHub, the merge must first be pushed to the fork. Pulling before that still retrieves the old 1.13-based commit. The clone and pull commands below assume the merged commit is available there.
+If transferring through GitHub, the merge must first be pushed to the fork. Pulling before that still retrieves the previous published commit. The clone and pull commands below assume the merged commit is available there.
 
 ## 2. Prepare the macOS toolchain
 
@@ -111,7 +113,7 @@ If compilation fails, inspect the full compiler output:
 cat "$plugin_out/NVMTLDriver.err"
 ```
 
-PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.1 NVK runtime** from the complete package.
+PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.2 NVK runtime** from the complete package.
 
 ## 5. Build the System Settings glyph-fix translator
 
@@ -203,7 +205,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Package and install the matching components
 
-These build commands do not install anything. In a copy of the matching extracted **1.14.1** driver package, replace:
+These build commands do not install anything. In a copy of the matching extracted **1.14.2** driver package, replace:
 
 | Built artifact | Destination relative to the package's `pkgroot` |
 |---|---|
@@ -262,6 +264,7 @@ PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 2
 
 ## References
 
+- [Upstream 1.14.2 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.2).
 - [Upstream 1.14.1 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.1).
 - [Upstream 1.14.0 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.0).
 - [Build both accelerators from the same source](https://github.com/nullmoth/nvidia-macos-driver/commit/8c9429c8984f5c8f0c18fb9ffafbf81b299cd14d).

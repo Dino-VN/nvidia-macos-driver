@@ -773,9 +773,22 @@ if [ -n "${GPUTEST:-}" ]; then
     FWLIST="$FT.list"
     { grep -v '^#' "$MAN" | awk -v dirs="$FWDIRS" 'BEGIN{n=split(dirs,d," ")} {for(i=1;i<=n;i++) if (index($2,d[i])==1) {print $1 "  " $2; next}}' > "$FWLIST" \
       && [ -s "$FWLIST" ]; } || { rm -rf "$FT" "$FWLIST"; stop "the GPU firmware list has nothing for this Mac's hardware"; }
-    # each file from GitLab, else from kernel.org's mirror of the same commit; curl's retries back off on 429 and 5xx
-    # the file is the script's $2 (macOS xargs -I refuses a command over 255 bytes, so no {} substitution)
-    awk '{print $2}' "$FWLIST" | xargs -P 4 -n 1 sh -c 'mkdir -p "$(dirname "$0/$2")" &&
+    # One archive per folder first: fetching hundreds of files one by one drew HTTP 429 from GitLab and 503 from
+    # kernel.org on every try (1.14.1 reports NM-PN3THF98 and five more, an AMD GPU needs ~700 files). Only the listed
+    # files are kept from an archive, and every file is still checked against the list below.
+    FA="$FT.arc"
+    for d in $FWDIRS; do
+      rm -rf "$FA"; mkdir -p "$FA" || break
+      curl -fsSL --retry 4 --retry-delay 5 "https://gitlab.com/kernel-firmware/linux-firmware/-/archive/$COMMIT/linux-firmware-$COMMIT.tar.gz?path=${d%/}" \
+        | tar -xzf - -C "$FA" --strip-components 1 2>/dev/null || { note "folder archive for $d not available, fetching its files one by one"; continue; }
+      awk -v d="$d" 'index($2,d)==1{print $2}' "$FWLIST" | while IFS= read -r p; do
+        [ -f "$FA/$p" ] && mkdir -p "$(dirname "$FT/$p")" && mv -f "$FA/$p" "$FT/$p"; done
+    done
+    rm -rf "$FA"
+    # what is still missing: each file from GitLab, else from kernel.org's mirror of the same commit, 2 at a time;
+    # curl's retries back off on 429 and 5xx. The file is the script's $2 (macOS xargs -I refuses a command over
+    # 255 bytes, so no {} substitution)
+    awk '{print $2}' "$FWLIST" | while IFS= read -r p; do [ -f "$FT/$p" ] || printf '%s\n' "$p"; done | xargs -P 2 -n 1 sh -c 'mkdir -p "$(dirname "$0/$2")" &&
       { curl -fsSL --retry 5 --retry-delay 2 -o "$0/$2" "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/$1/$2" ||
         curl -fsSL --retry 5 --retry-delay 2 -o "$0/$2" "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/$2?id=$1"; }' "$FT" "$COMMIT" \
       || { rm -rf "$FT" "$FWLIST"; stop "downloading the GPU firmware failed (network?) - nothing was changed"; }
@@ -1011,8 +1024,21 @@ if [ "$UPD" = prepare ]; then
     *)
       case "$MODEL" in MacBook*) stop "this Mac is set up as $MODEL, which macOS 26 does not support; make a new EFI with 1401 1.14 (it picks a laptop model macOS 26 runs), then prepare again";; esac
       [ -n "$MK" ] || stop "the OpenCore config sets no Mac model (PlatformInfo); macOS 26 needs MacPro7,1 here - make a new EFI with 1401 1.14"
-      echo "CHANGE PlatformInfo: $MODEL -> MacPro7,1 (macOS 26 does not run $MODEL; MacPro7,1 runs macOS 15 and 26)"
-      EDITS+=("$MK|-string|MacPro7,1")
+      # Every section that names the model changes, not only the first: with PlatformInfo.Automatic off, macOS reads the
+      # SMBIOS/DataHub sections, and 1.14.1 changed Generic alone - the Mac stayed iMacPro1,1 (chat 10-12, botn0ught).
+      # Those sections also carry the board ID the installer checks, so it follows the model.
+      for k in PlatformInfo.Generic.SystemProductName PlatformInfo.SMBIOS.SystemProductName PlatformInfo.DataHub.SystemProductName; do
+        has "$k" || continue
+        v=$(get "$k"); [ "$v" = MacPro7,1 ] && continue
+        echo "CHANGE $k: $v -> MacPro7,1 (macOS 26 does not run $v; MacPro7,1 runs macOS 15 and 26)"
+        EDITS+=("$k|-string|MacPro7,1")
+      done
+      for k in PlatformInfo.SMBIOS.BoardProduct PlatformInfo.DataHub.BoardProduct; do
+        has "$k" || continue
+        v=$(get "$k"); [ "$v" = Mac-27AD2F918AE68F61 ] && continue
+        echo "CHANGE $k: $v -> Mac-27AD2F918AE68F61 (MacPro7,1's board)"
+        EDITS+=("$k|-string|Mac-27AD2F918AE68F61")
+      done
       if [ -z "$(kpos RestrictEvents.kext)" ]; then
         [ -d "$KX/RestrictEvents.kext" ] || { fetch_kext RestrictEvents.kext "$KX"; FETCH+=(RestrictEvents.kext); }
         ADDK+=(RestrictEvents.kext); echo "CHANGE Kernel -> Add: add RestrictEvents.kext (MacPro7,1's memory and PCI pages)"
