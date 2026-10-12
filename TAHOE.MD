@@ -1,6 +1,6 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide builds the Tahoe components from this fork after merging upstream **1.14.0** (`56ae15f`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too.
+This guide builds the Tahoe components from this fork after merging upstream **1.14.1** (`de9b33a`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too. The plugin and translator are unchanged from our tested 1.14.0 merge (`d7c77cf`).
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -8,11 +8,11 @@ This guide builds the Tahoe components from this fork after merging upstream **1
 | `libnvmtl_translate.dylib` | PR #112: preserve buffer offsets in CoreImage resize helpers, restoring small System Settings icon glyphs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 
-Use these outputs with the matching **1.14.0 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together.
+Use these outputs with the matching **1.14.1 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together. Version 1.14.1 additionally makes the GPU ACPI backlight queries opt-in (`nvrmacpibl=1`) to avoid the reported 1.14.0 startup hangs; leave that argument unset unless intentionally testing laptop backlight support.
 
 Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
 
-Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. Inspection of the shipped plugin found the PR #79 linking, linked-stage, and swizzle markers. The cause of that regression is not established, and retaining these source fixes alone does not establish that the merged build corrects it. Test the rebuilt plugin and translator together on the affected Mac.
+Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user subsequently confirmed that this fork's retained icon fixes resolve the issue on their Hackintosh. Preserve that working plugin and translator source when updating. Inspection of the official plugin found the PR #79 linking, linked-stage, and swizzle markers too; the reason for the difference in rendering has not been isolated.
 
 The merge keeps specialized-name linking, linked stages for pixel-sampler variants, and swizzled sampled views. Compute storage bindings also keep upstream's HDR storage-texture handling. Both files implementing and testing PR #112 are identical to our previously working fork. The fallback for missing NVIDIA Darwin build metadata remains in `build/accel_build.sh`.
 
@@ -111,7 +111,7 @@ If compilation fails, inspect the full compiler output:
 cat "$plugin_out/NVMTLDriver.err"
 ```
 
-PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.0 NVK runtime** from the complete package.
+PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.1 NVK runtime** from the complete package.
 
 ## 5. Build the System Settings glyph-fix translator
 
@@ -203,7 +203,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Package and install the matching components
 
-These build commands do not install anything. In a copy of the matching extracted **1.14.0** driver package, replace:
+These build commands do not install anything. In a copy of the matching extracted **1.14.1** driver package, replace:
 
 | Built artifact | Destination relative to the package's `pkgroot` |
 |---|---|
@@ -256,12 +256,13 @@ fi
 
 Reboot after moving the caches so IconServices and the desktop regenerate their images with the new translator. The first redraw can take longer. These rendered-icon caches are separate from the translator's shader cache.
 
-The reported 1.14 regression persisted after this cache reset, so do not treat repeated cache clearing as a fix. If the rebuilt components still show the same missing foregrounds, retain their hashes and the OS build number with the reproduction; that distinguishes the merged build from the official package when investigating the renderer.
+The official-package regression persisted after this cache reset, while the user confirmed the fork's retained fixes work. If it recurs with a later build, retain the installed component hashes and the OS build number with the reproduction to distinguish that build from the known-working fork.
 
 PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 26.6. Ghostty's incorrectly sized foreground remains outside these fixes. These patches are not a claim of complete Tahoe support.
 
 ## References
 
+- [Upstream 1.14.1 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.1).
 - [Upstream 1.14.0 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.0).
 - [Build both accelerators from the same source](https://github.com/nullmoth/nvidia-macos-driver/commit/8c9429c8984f5c8f0c18fb9ffafbf81b299cd14d).
 - [PR #79: Tahoe icon rendering fixes](https://github.com/nullmoth/nvidia-macos-driver/pull/79) — the patch applied here is revision `74c0dc30ab8e58139707fb603948329a1cede67f`.
