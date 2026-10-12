@@ -23,18 +23,23 @@ case "$NVDEV" in 1[eEfF]??|21[89a-fA-F]?) TURING=1;; *) TURING=0;; esac
 DROP_ARGS="nv_disable=1 -wegnoegpu"          # both hide the NVIDIA card from macOS
 SIP_BITS=$((0x0A43))
 TOOL_NAME="1401: Remove NVIDIA driver"; TOOL_FILE=NullMothSafe.efi
+# the same tool with Arguments "once": macOS starts one time without the driver (to reach Recovery, or to get past a bad
+# start), and the driver is back after that - OpenCore rewrites boot-args at every start. Asked for on Discord 10-11.
+ONCE_NAME="1401: Start once without NVIDIA driver"
+# the NullMoth boot logo (an OpenCore driver that draws it where boot.efi draws the Apple logo). On unless --logo off.
+LOGO=on; LOGO_FILE=NullMothLogo.efi
 ST=${NULLMOTH_STATE_DIR:-/Library/NullMoth}; STATE=$ST/state
 AGENT=/Library/LaunchAgents/com.nullmoth.crashcheck.plist
 RECOVER=/Library/LaunchDaemons/com.nullmoth.recover.plist
-KNOBS=(); PROFILE=""; COLLECT=""; UPD=""; VERB=""; PKG=""; SHA=""; CFG=""; EFI=auto; DRY=0; REMOVE=0; USBMAP=""; TOOL=""; APPBIN=""; MOUNTED=""; T=""
+KNOBS=(); PROFILE=""; COLLECT=""; UPD=""; VERB=""; PKG=""; SHA=""; CFG=""; EFI=auto; DRY=0; REMOVE=0; USBMAP=""; TOOL=""; APPBIN=""; MOUNTED=""; T=""; PKGDIR=""
 while [ $# -gt 0 ]; do case "$1" in
   --pkg) PKG=$2; shift;; --sha) SHA=$2; shift;; --config) CFG=$2; shift;; --efi) EFI=$2; shift;;
   --tool) TOOL=$2; shift;; --usbmap) USBMAP=$2; shift;; --app) APPBIN=$2; shift;; --dry) DRY=1;; --remove) REMOVE=1;; --verbose) VERB=$2; shift;; --update) UPD=$2; shift;; --collect-logs) COLLECT=$2; shift;;
-  --knob) KNOBS+=("$2"); shift;; --profile) PROFILE=$2; shift;;
+  --knob) KNOBS+=("$2"); shift;; --profile) PROFILE=$2; shift;; --logo) LOGO=$2; shift;; --set-logo) SETLOGO=$2; shift;; --gpu-test) GPUTEST=$2; shift;;
   *) echo "STOP unknown option $1"; echo "RESULT stop"; exit 2;; esac; shift; done
 step() { echo "STEP $*"; }; ok() { echo "OK $*"; }; note() { echo "NOTE $*"; }
 KT=""
-cleanup() { for d in $MOUNTED; do diskutil unmount "$d" >/dev/null 2>&1; done; [ -n "$T" ] && rm -rf "$T"; [ -n "${KT:-}" ] && rm -rf "$KT"; }
+cleanup() { for d in $MOUNTED; do diskutil unmount "$d" >/dev/null 2>&1; done; [ -n "$T" ] && rm -rf "$T"; [ -n "${KT:-}" ] && rm -rf "$KT"; [ -n "${PKGDIR:-}" ] && rm -rf "$PKGDIR"; }
 stop() { echo "STOP $*"; cleanup; echo "RESULT stop"; exit 1; }
 [ "$(id -u)" = 0 ] || { echo "STOP needs administrator rights"; echo "RESULT stop"; exit 1; }
 [ "$UPD" = finish ] && [ ! -f "$ST/update-pending" ] && { echo "RESULT ok"; exit 0; }
@@ -100,10 +105,20 @@ booted_part() { # the partition OpenCore started this Mac from, read from OpenCo
   for d in $(diskutil list | grep -oE 'disk[0-9]+s[0-9]+$' | sort -u); do
     diskutil info "$d" 2>/dev/null | grep -qi "Partition UUID: *$u" && { echo "$d"; return 0; }; done
   return 1; }
-tool_index() {  # index of our entry in Misc.Tools, or nothing
+tool_index() {  # index of our remove entry in Misc.Tools, or nothing (the once entry shares the file, not the Arguments)
   local i=0 p
   while p=$(plutil -extract Misc.Tools.$i.Path raw -o - "$C" 2>/dev/null); do
-    [ "$p" = "$TOOL_FILE" ] && { echo $i; return; }; i=$((i+1)); done; }
+    [ "$p" = "$TOOL_FILE" ] && [ "$(plutil -extract Misc.Tools.$i.Arguments raw -o - "$C" 2>/dev/null)" != once ] && { echo $i; return; }
+    i=$((i+1)); done; }
+once_index() {  # index of the start-once entry in Misc.Tools, or nothing
+  local i=0 p
+  while p=$(plutil -extract Misc.Tools.$i.Path raw -o - "$C" 2>/dev/null); do
+    [ "$p" = "$TOOL_FILE" ] && [ "$(plutil -extract Misc.Tools.$i.Arguments raw -o - "$C" 2>/dev/null)" = once ] && { echo $i; return; }
+    i=$((i+1)); done; }
+logo_index() {  # index of the boot-logo driver in UEFI.Drivers, or nothing
+  local i=0 p
+  while p=$(plutil -extract UEFI.Drivers.$i.Path raw -o - "$C" 2>/dev/null); do
+    [ "$p" = "$LOGO_FILE" ] && { echo $i; return; }; i=$((i+1)); done; }
 csr_of() { local h; h=$(get NVRAM.Add.$B.csr-active-config | base64 -D 2>/dev/null | xxd -p)
   [ ${#h} = 8 ] && echo $(( 0x${h:6:2}${h:4:2}${h:2:2}${h:0:2} )) || echo 0; }
 csr_data() { printf '%08x' "$1" | sed -E 's/(..)(..)(..)(..)/\4\3\2\1/' | xxd -r -p | base64; }
@@ -166,6 +181,7 @@ if [ -n "$COLLECT" ]; then
   for f in "$ST"/*.log "$ST/state"; do [ -f "$f" ] && cp "$f" "$COLLECT/driver-$(basename "$f").txt"; done
   { echo "macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))   model $(sysctl -n hw.model)"
     echo "boot-args: $(nvram boot-args 2>/dev/null | cut -f2-)"; echo "SIP: $(csrutil status 2>/dev/null)"
+    echo; echo "== install record"; cat "$ST/state" 2>/dev/null || echo "(none recorded)"
     echo; echo "== NullMoth kexts loaded"; kmutil showloaded --list-only 2>/dev/null | grep -i nullmoth
     echo; echo "== auxiliary collection"; kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -i nullmoth
     echo; echo "== driver files"; ls -la /Library/Extensions/NV*.kext /Library/GPUBundles 2>/dev/null
@@ -206,6 +222,29 @@ if [ -n "$COLLECT" ]; then
       --predicate 'process == "kernel" AND (eventMessage CONTAINS "NVRM-fb" OR eventMessage CONTAINS "nvkms")' 2>&1 \
       | grep -v -e 'kapi event type 5$' -e 'flipToMemory #' | head -n 4000
   } > "$COLLECT/driver-display.txt" 2>&1
+  # Every GPU and the processor, whatever the vendor and age, supported by NullMoth or not (Jake 10-11: "open macOS up
+  # for everyone"). The sections above only name NVIDIA; Intel iGPUs (HD to Xe and Arc), Radeon cards and Ryzen iGPUs
+  # need the same facts: what macOS bound to them, whether Metal sees them, and what the boot loader injected.
+  { echo "== every display device (any vendor)"
+    ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '
+      /\+-o / { if (gpu) print block "\n"; block=$0; gpu=0; next }
+      /"class-code" = <[0-9a-f][0-9a-f][0-9a-f][0-9a-f]0300>/ { gpu=1 }   # class 03xx: VGA (0300), XGA, 3D controller (0302: many laptop dGPUs)
+      /"(vendor-id|device-id|subsystem-vendor-id|subsystem-id|revision-id|class-code|model|acpi-path|pcidebug|AAPL,ig-platform-id|AAPL,snb-platform-id|framebuffer-[^"]*|device-id-spoof|built-in|hda-gfx|IOName|IOPCIExpressLinkStatus|IOPCIResourced)"/ { block=block "\n" $0 }
+      END { if (gpu) print block }'
+    echo; echo "== accelerators (a GPU macOS accelerates has one, with its Metal plugin)"
+    ioreg -r -c IOAccelerator -d 1 -w0 2>/dev/null | LC_ALL=C grep -aoE '\+-o [A-Za-z0-9_]+|"(MetalPluginName|MetalPluginClassName|IOGLBundleName|IOClass|GPUConfigurationVariable|model)" = [^,}]{0,120}'
+    echo; echo "== framebuffers (which driver owns each screen)"
+    ioreg -r -c IOFramebuffer -d 1 -w0 2>/dev/null | LC_ALL=C grep -aoE '\+-o [A-Za-z0-9_@,]+|"(IOFBCurrentPixelClock|IOFBCurrentPixelCount|IOFBDependentID|IOFBDependentIndex|AAPL,boot-display|IOFBScalerInfo)" = [^,}]{0,80}'
+    echo; echo "== graphics kexts loaded"
+    kmutil showloaded --list-only 2>/dev/null | grep -iE 'graphic|intel|amd|radeon|ati|nvidia|nullmoth|lilu|whatevergreen|noot|gfx|framebuffer|accel' | awk '{print $NF, $(NF-1)}'
+    echo; echo "== Metal"; system_profiler SPDisplaysDataType 2>/dev/null
+    echo; echo "== processor"
+    sysctl machdep.cpu hw.physicalcpu hw.logicalcpu hw.memsize hw.cpufrequency hw.packages 2>/dev/null
+    echo; echo "== graphics messages since this boot (non-NVIDIA drivers)"
+    boot=$(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+),.*/\1/')
+    log show --start "$(date -r "$boot" '+%Y-%m-%d %H:%M:%S')" --style compact \
+      --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "igfx" OR eventMessage CONTAINS[c] "IntelAccel" OR eventMessage CONTAINS[c] "AppleIntel" OR eventMessage CONTAINS[c] "AMDRadeon" OR eventMessage CONTAINS[c] "ATIController" OR eventMessage CONTAINS[c] "AMDFramebuffer" OR eventMessage CONTAINS[c] "NMIntelFB" OR eventMessage CONTAINS[c] "WhateverGreen" OR eventMessage CONTAINS[c] "IOAccel")' 2>&1 | head -n 3000
+  } > "$COLLECT/gpu-all.txt" 2>&1
   log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-kernel-log.txt"
   # The current kernel message ring can retain early GSP/BAR failures absent from the log store.
   { echo; echo "== current kernel message ring"; dmesg 2>&1 | grep -iE 'nvrm|nvaccel|nvidia|nullmoth|gsp' | tail -n 2000; } >> "$COLLECT/driver-kernel-log.txt"
@@ -214,6 +253,87 @@ if [ -n "$COLLECT" ]; then
     | tail -n 2000 > "$COLLECT/driver-update-log.txt"
   log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-update-log.txt"
   { echo; echo "== current update message ring"; dmesg 2>&1 | grep -iE 'apfs|MobileSoftwareUpdate|softwareupdated' | tail -n 1000; } >> "$COLLECT/driver-update-log.txt"
+  # NPUs (Intel NPU, AMD Ryzen AI): every layer from the PCI function up to the runtimes, so one report names the layer
+  # that failed. The runtime probes run as the logged-in user (apps do; root would also hide node-permission faults
+  # and make XRT ignore its debug ini) with their own debug logging on, each bounded in time.
+  npu_run() {  # <seconds> <command...>: runs it as the console user; kills it past the bound and says so
+    local secs=$1 p w rc; shift
+    if [ -z "${console_user:-}" ] || [ "$console_user" = root ] || [ "$console_user" = loginwindow ]; then
+      echo "(skipped: nobody is logged in to run it as)"; return 0
+    fi
+    sudo -u "$console_user" "$@" 2>&1 & p=$!
+    ( sleep "$secs"; kill -9 "$p" 2>/dev/null && echo "(killed after ${secs} s)" ) & w=$!
+    wait "$p"; rc=$?
+    kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+    echo "(exit $rc)"
+  }
+  console_user=$(stat -f %Su /dev/console 2>/dev/null)
+  NPUDIR=/Library/NullMoth/npu
+  {
+    echo "== NPU PCI functions (Intel class 12xxxx, AMD signal-processing 1180xx) and their properties"
+    # ioreg lists a device's properties alphabetically (class-code before vendor-id), so each device is judged at its end
+    ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '
+      function out() { if ((cls=="12" && v=="intel") || (cls=="1180" && v=="amd")) print block "\n" }
+      /\+-o / { out(); block=$0; cls=""; v=""; next }
+      /"vendor-id" = <8680/ { v="intel" } /"vendor-id" = <2210/ { v="amd" }
+      /"class-code" = <[0-9a-f][0-9a-f][0-9a-f][0-9a-f]1200>/ { cls="12" }
+      /"class-code" = <[0-9a-f][0-9a-f]801100>/ { cls="1180" }
+      /"(vendor-id|device-id|subsystem-vendor-id|subsystem-id|revision-id|class-code|IOName|IOPCIExpressLinkStatus|IOPCIResourced|assigned-addresses|acpi-path)"/ { block=block "\n" $0 }
+      END { out() }'
+    echo; echo "== what attached to them (NMXNPU is the NPU driver)"
+    ioreg -r -c NMXNPU -l -w0 2>/dev/null | head -60 || true
+    echo; echo "== NPU boot arguments"; nvram boot-args 2>/dev/null | tr ' \t' '\n\n' | grep -E 'nmx|npu' || echo "(none)"
+    echo; echo "== boot guards (set = the last attach never returned; the driver stays parked)"
+    nvram nullmoth-npu-attaching 2>/dev/null || echo "nullmoth-npu-attaching (not set)"
+    nvram nullmoth-gpu-attaching 2>/dev/null || echo "nullmoth-gpu-attaching (not set)"
+    echo; echo "== NMXNPU kext: loaded, in the auxiliary collection, installed file"
+    kmutil showloaded --list-only 2>/dev/null | grep -i nmxnpu || echo "(not loaded)"
+    kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -i nmxnpu || echo "(not in the auxiliary collection)"
+    [ ! -f /Library/Extensions/NMXNPU.kext/Contents/MacOS/NMXNPU ] || shasum -a 256 /Library/Extensions/NMXNPU.kext/Contents/MacOS/NMXNPU
+    echo; echo "== NPU firmware"; ls -la /Library/NullMoth/firmware/intel/vpu /Library/NullMoth/firmware/amdnpu/* 2>&1 | head -40
+    echo; echo "== device nodes"; ls -la /dev/accel 2>&1
+    echo; echo "== each node: driver, PCI identity, driver attributes (nmx-npu-probe)"
+    if [ -x "$NPUDIR/bin/nmx-npu-probe" ]; then npu_run 20 "$NPUDIR/bin/nmx-npu-probe"; else echo "(nmx-npu-probe not installed)"; fi
+    echo; echo "== NPU userland installed (sha256)"
+    if [ -d "$NPUDIR" ]; then find "$NPUDIR" -type f ! -name '*.a' -exec shasum -a 256 {} + 2>&1 | sed "s|$NPUDIR/||" | head -200; ls -la "$NPUDIR/xrt/share/amdxdna/bins" 2>&1
+    else echo "(no $NPUDIR)"; fi
+    echo; echo "== Intel: the NPU compiler on a small network (Meteor/Arrow Lake 3720, Lunar Lake 4000; needs no NPU)"
+    if [ -x "$NPUDIR/bin/nmx-npu-compile-check" ]; then npu_run 300 "$NPUDIR/bin/nmx-npu-compile-check"
+    else echo "(nmx-npu-compile-check not installed)"; fi
+    echo; echo "== Intel: OpenVINO devices with Level Zero, the NPU driver and the NPU plugin logging"
+    if [ -x "$NPUDIR/openvino/bin/hello_query_device" ]; then
+      npu_run 90 env ZE_ENABLE_LOADER_DEBUG_TRACE=1 ZE_INTEL_NPU_LOGLEVEL=INFO OV_NPU_LOG_LEVEL=LOG_INFO \
+        "$NPUDIR/openvino/bin/hello_query_device"
+    else echo "(OpenVINO not installed)"; fi
+    echo; echo "== AMD: xrt-smi examine, then examine and validate on each AMD NPU, with XRT's runtime log on"
+    if [ -x "$NPUDIR/xrt/bin/xrt-smi" ]; then
+      ini=$(sudo -u "$console_user" mktemp -d /tmp/nullmoth-xrt.XXXXXX 2>/dev/null)/xrt.ini
+      if [ -n "$console_user" ] && [ "$ini" != /xrt.ini ]; then
+        printf '[Runtime]\nverbosity=7\nruntime_log=console\n' | sudo -u "$console_user" tee "$ini" > /dev/null
+      fi
+      npu_run 60 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" examine
+      for bdf in $("$NPUDIR/bin/nmx-npu-probe" 2>/dev/null | awk '/^  driver amdxdna/ {a=1} a && /^  pci / {print $2; a=0}'); do
+        echo; echo "-- examine -d $bdf -r all"; npu_run 60 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" examine -d "$bdf" -r all
+        echo; echo "-- validate -d $bdf"; npu_run 240 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" validate -d "$bdf"
+      done
+      [ "$ini" = /xrt.ini ] || rm -rf "$(dirname "$ini")"
+    else echo "(XRT not installed)"; fi
+    echo; echo "== NPU kernel messages since this boot"
+    boot=$(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+),.*/\1/')
+    log show --start "$(date -r "$boot" '+%Y-%m-%d %H:%M:%S')" --style compact \
+      --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "NMXNPU" OR eventMessage CONTAINS[c] "ivpu" OR eventMessage CONTAINS[c] "intel_vpu" OR eventMessage CONTAINS[c] "amdxdna" OR eventMessage CONTAINS[c] "xdna" OR eventMessage CONTAINS "NullMoth drm")' 2>&1 | head -n 4000
+    echo; echo "== NPU messages in the kernel ring"; dmesg 2>&1 | grep -iE 'nmxnpu|ivpu|intel_vpu|amdxdna|xdna|nullmoth drm' | tail -n 1000
+    echo; echo "== app messages from the NPU runtimes, last 3 days"
+    log show --last 3d --style compact --predicate 'process != "kernel" AND (eventMessage CONTAINS[c] "ze_intel_npu" OR eventMessage CONTAINS[c] "level_zero" OR eventMessage CONTAINS[c] "openvino" OR eventMessage CONTAINS[c] "xrt" OR eventMessage CONTAINS[c] "amdxdna")' 2>&1 | tail -n 2000
+  } > "$COLLECT/npu.txt" 2>&1
+  # crash reports of processes that had the NPU runtimes loaded (newest three)
+  n_npu=0
+  for ips in $(ls -t /Library/Logs/DiagnosticReports/*.ips /Users/*/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -n 200); do
+    [ "$n_npu" -lt 3 ] || break
+    grep -q "/Library/NullMoth/npu/" "$ips" 2>/dev/null || continue
+    # the uploader takes only plain file names
+    cp "$ips" "$COLLECT/npu-crash-$(basename "$ips" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')" && n_npu=$((n_npu+1))
+  done
   # Release builds report failures to syslog rather than nvmtl.log. Debug builds may use either
   # the system temp directory or the console user's temp directory.
   log show --last 3d --style compact --predicate 'process != "kernel" AND (eventMessage CONTAINS[c] "NVMTL" OR eventMessage CONTAINS[c] "NullMoth" OR eventMessage CONTAINS[c] "nvk-reason")' 2>&1 \
@@ -226,7 +346,9 @@ if [ -n "$COLLECT" ]; then
   fi
   for f in /private/tmp/nvmtl.log "${console_tmp:+${console_tmp%/}/nvmtl.log}"; do
     [ -f "$f" ] || continue
-    { echo; echo "== plugin file log"; tail -c 262144 "$f"; } >> "$COLLECT/driver-plugin-log.txt"
+    # /tmp is writable by every account: read as nobody so a planted link to a root-only file stays unreadable
+    reader=nobody; [ -n "$console_tmp" ] && [ "$f" = "${console_tmp%/}/nvmtl.log" ] && reader=$console_user
+    { echo; echo "== plugin file log"; sudo -u "$reader" tail -c 262144 "$f"; } >> "$COLLECT/driver-plugin-log.txt"
   done
   # The rolling logs above keep only the newest lines, so the boot where WindowServer actually crashed was usually
   # gone by the time the user sent logs: eight crash reports in one day named the abort ("Failed to create
@@ -392,6 +514,8 @@ if [ $REMOVE = 1 ]; then
       if [ "$(csr_of)" = "${NEW_CSR:-x}" ]; then plutil -replace NVRAM.Add.$B.csr-active-config -data "$(csr_data "$OLD_CSR")" "$C" || stop "could not stage the recorded SIP setting - nothing changed"; fi
       if [ -n "${OLD_SBM:-}" ] && [ "$(get Misc.Security.SecureBootModel)" = Disabled ]; then plutil -replace Misc.Security.SecureBootModel -string "$OLD_SBM" "$C" || stop "could not stage SecureBootModel - nothing changed"; fi
       i=$(tool_index); if [ -n "$i" ]; then plutil -remove Misc.Tools.$i "$C" || stop "could not stage removal of the picker tool - nothing changed"; fi
+      # the start-once entry goes with the driver (it only switches the driver off); the boot logo stays, it is not the driver's
+      i=$(once_index); if [ -n "$i" ]; then plutil -remove Misc.Tools.$i "$C" || stop "could not stage removal of the start-once entry - nothing changed"; fi
       # back to the installer-safe settings 1401 wrote: small BAR for macOS, firmware framebuffer allowed
       plutil -replace UEFI.Quirks.ResizeGpuBars -integer -1 "$C" && plutil -replace Booter.Quirks.ResizeAppleGpuBars -integer 0 "$C" || stop "could not stage installer-safe BAR settings - nothing changed"
       bi=$(bidx 2>/dev/null); if [ -n "$bi" ]; then plutil -replace Kernel.Block.$bi.Enabled -bool false "$C" || stop "could not stage firmware display support - nothing changed"; fi
@@ -431,6 +555,9 @@ INSTALL_THEN_PREPARE=0; [ "$UPD" = prepare ] && [ -n "$PKG" ] && INSTALL_THEN_PR
 if [ -z "$USBMAP" ] && [ -z "$VERB" ] && { [ -z "$UPD" ] || [ $INSTALL_THEN_PREPARE = 1 ]; }; then
 step "Checking the driver package"
 [ -f "$PKG" ] || stop "package not found: $PKG"
+# the app's copy is writable by the user: hash and unpack a root-owned copy, so it cannot be swapped after the check
+PKGDIR=$(mktemp -d /var/tmp/nullmoth-pkg.XXXX) && cp "$PKG" "$PKGDIR/" || stop "could not copy the package for checking"
+PKG=$PKGDIR/$(basename "$PKG")
 got=$(shasum -a 256 "$PKG" | awk '{print $1}')
 [ "$got" = "$SHA" ] || stop "package checksum $got does not match $SHA - download it again"
 ok "package matches its SHA-256"
@@ -498,8 +625,12 @@ else
         # The usual tie: OpenCore was copied from the 1401 stick to the macOS disk, so both configs set this serial.
         # The copy on the disk macOS runs from is the one in use once a Mac starts without the stick (measured on a
         # Mac with both: the internal copy is what started it).
-        esp=$(boot_esp)
-        for d in $match; do [ "$d" = "$esp" ] && { found=$d; BOOT_BOUND=1; ok "OpenCore started this Mac from $d (on the macOS disk; the copy on$(echo " $match" | sed "s/ $d//") sets the same serial)"; }; done
+        # Only when one match is on that disk: with two OpenCore partitions on the macOS disk itself (an EFI partition and
+        # a FAT one labelled EFI, issue #81) the ESP is not necessarily the one that started it; the boot-args test below decides.
+        esp=$(boot_esp); edisk=${esp%s[0-9]*}; ondisk=0
+        for d in $match; do [ "${d%s[0-9]*}" = "$edisk" ] && ondisk=$((ondisk + 1)); done
+        [ "$ondisk" = 1 ] && for d in $match; do [ "$d" = "$esp" ] && { found=$d; BOOT_BOUND=1; ok "OpenCore started this Mac from $d (on the macOS disk; the copy on$(echo " $match" | sed "s/ $d//") sets the same serial)"; }; done
+        [ "$ondisk" -gt 1 ] && found=${match# }
       fi
     fi
     # Still two or more (user reports 10-10, Mac 1.5 and 1.6: disk0s1 + disk2s1, neither config's serial matched): OpenCore
@@ -567,6 +698,147 @@ if [ -n "$VERB" ]; then
   [ "$VERB" = on ] && nv="$nv -v"; nv=${nv# }
   nvram boot-args="$nv" && ok "NVRAM boot-args: $nv" || note "could not write NVRAM boot-args; the config change still applies"
   ok "verbose startup $VERB - takes effect at the next restart"; cleanup; echo "RESULT ok"; exit 0
+fi
+
+if [ -n "${SETLOGO:-}" ]; then
+  # The app's "Boot logo on/off": only the logo driver's entry changes (backup first, restored on any failure).
+  # -nmlogooff in boot-args turns it off for one start without touching the config.
+  case "$SETLOGO" in on|off) ;; *) stop "--set-logo takes on or off";; esac
+  step "Turning the NullMoth boot logo $SETLOGO"
+  BKC="$C.nullmoth-logo-$(date +%Y%m%d-%H%M%S)"; cp -p "$C" "$BKC" || stop "could not back up $C"
+  LOGOSRC="$(dirname "${TOOL:-/nonexistent}")/$LOGO_FILE"; li=$(logo_index); fail=0
+  if [ "$SETLOGO" = on ]; then
+    if [ -z "$li" ]; then
+      [ -f "$LOGOSRC" ] || stop "this copy of the app has no boot logo file"
+      has UEFI.Drivers || plutil -insert UEFI.Drivers -array "$C" || fail=1
+      hv=""; plutil -extract UEFI.Drivers.0.HideVerbose raw -o - "$C" >/dev/null 2>&1 && hv=',"HideVerbose":false'
+      plutil -insert UEFI.Drivers -json "{\"Arguments\":\"\",\"Comment\":\"NullMoth boot logo\",\"Enabled\":true,\"LoadEarly\":false,\"Path\":\"$LOGO_FILE\"$hv}" -append "$C" || fail=1
+    else plutil -replace UEFI.Drivers.$li.Enabled -bool true "$C" || fail=1; fi
+    [ ! -f "$LOGOSRC" ] || { mkdir -p "$MP/$OCREL/Drivers" && cp "$LOGOSRC" "$MP/$OCREL/Drivers/$LOGO_FILE"; } || fail=1
+  elif [ -n "$li" ]; then plutil -replace UEFI.Drivers.$li.Enabled -bool false "$C" || fail=1; fi
+  if [ $fail = 1 ] || ! plutil -lint "$C" >/dev/null; then cp -p "$BKC" "$C"; stop "editing the config failed - the original is restored"; fi
+  ok "boot logo $SETLOGO - takes effect at the next restart"; cleanup; echo "RESULT ok"; exit 0
+fi
+
+if [ -n "${GPUTEST:-}" ]; then
+  # The app's "AMD / Intel GPU driver (test)": NMXGPU (amdgpu, i915 and xe for macOS) for the AMD and Intel GPUs this Mac
+  # has, opt-in per vendor with nmxamd=1 / nmxintel=1. On: the GPU firmware from linux-firmware at the commit the
+  # manifest pins, every file SHA-256 checked; the kext into /Library/Extensions; a new auxiliary kernel collection,
+  # checked to contain it; the boot argument. Off undoes each step. The "Start once without NVIDIA driver" entry
+  # (-nvoff) parks this driver too, and taking a GPU that lights the screen resets that screen, so it stays opt-in.
+  case "$GPUTEST" in on|off) ;; *) stop "--gpu-test takes on or off";; esac
+  GK=/Library/NullMoth/kexts/15/NMXGPU.kext; GFW=/Library/NullMoth/firmware; EXT=/Library/Extensions
+  GA=/Library/NullMoth/kexts/15/NMXAccel.kext; GU=/Library/NullMoth/gpu-userland; GB=/Library/GPUBundles
+  GN=/Library/NullMoth/kexts/15/NMXNPU.kext
+  MAN="$(dirname "${TOOL:-/nonexistent}")/nullmoth-gpu-firmware.txt"; [ -f "$MAN" ] || MAN="$(dirname "$0")/nullmoth-gpu-firmware.txt"
+  # vendors of the display-class PCI functions present (class 03xxxx; ioreg prints vendor-id/class-code little-endian)
+  # (the two keys come in either order, so each device's pair is printed when the next device starts)
+  VENDORS=$(ioreg -r -c IOPCIDevice -l -w0 | LC_ALL=C awk -F'<|>' '/\+-o /{if (c=="03") print v; c=""; v=""}
+    /"vendor-id" =/{v=substr($2,3,2) substr($2,1,2)} /"class-code" =/{c=substr($2,5,2)} END{if (c=="03") print v}' | sort -u)
+  WANT=""; for v in $VENDORS; do case $v in 1002) WANT="$WANT -nmxamd";; 8086) WANT="$WANT -nmxintel";; esac; done
+  # NPUs: Intel's is a processing accelerator (class 12xxxx), AMD's Ryzen AI NPU a signal-processing controller (1180xx)
+  NPUS=$(ioreg -r -c IOPCIDevice -l -w0 | LC_ALL=C awk -F'<|>' 'function out(){if ((c=="12" && v=="8086") || (c=="11" && s=="80" && v=="1022")) print v}
+    /\+-o /{out(); c=""; s=""; v=""} /"vendor-id" =/{v=substr($2,3,2) substr($2,1,2)} /"class-code" =/{c=substr($2,5,2); s=substr($2,3,2)} END{out()}' | sort -u)
+  [ -n "$NPUS" ] && [ -d "$GN" ] && WANT="$WANT -nmxnpu"
+  BKC="$C.nullmoth-gputest-$(date +%Y%m%d-%H%M%S)"; cp -p "$C" "$BKC" || stop "could not back up $C"
+  ga() {  # $1 = add|del, $2 = boot argument; the config and NVRAM together
+    local a new="" nv=""
+    for a in $(get NVRAM.Add.$B.boot-args); do [ "$a" = "$2" ] || new="$new $a"; done
+    [ "$1" = add ] && new="$new $2"; new=${new# }
+    if has NVRAM.Add.$B.boot-args; then plutil -replace NVRAM.Add.$B.boot-args -string "$new" "$C"; else plutil -insert NVRAM.Add.$B.boot-args -string "$new" "$C"; fi
+    for a in $(nvram boot-args 2>/dev/null | cut -f2-); do [ "$a" = "$2" ] || nv="$nv $a"; done
+    [ "$1" = add ] && nv="$nv $2"; nvram boot-args="${nv# }" || note "could not write NVRAM boot-args"; }
+  auxkc() {
+    K=/System/Library/Kernels/kernel; KA=(--allow-missing-kdk); [ -f "$K" ] && KA+=(--kernel "$K")
+    kmutil create -n aux --volume-root / "${KA[@]}" -B /System/Library/KernelCollections/BootKernelExtensions.kc \
+      -S /System/Library/KernelCollections/SystemKernelExtensions.kc --repository "$EXT" \
+      -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc -z > "$ST/gputest-kmutil.log" 2>&1; }
+  if [ "$GPUTEST" = on ]; then
+    [ -n "$WANT" ] || stop "this Mac has no AMD or Intel GPU for this driver"
+    [ -d "$GK" ] || stop "this driver package has no AMD/Intel GPU driver (NMXGPU) - update the driver first"
+    [ -f "$MAN" ] || stop "this copy of the app has no GPU firmware list"
+    step "Downloading the GPU firmware (linux-firmware, every file checked)"
+    COMMIT=$(awk 'NR==2{print}' "$MAN" | grep -oE 'raw/[0-9a-f]{40}' | cut -d/ -f2); [ -n "$COMMIT" ] || stop "the GPU firmware list names no commit"
+    FT="$GFW.new"; rm -rf "$FT"; mkdir -p "$FT" || stop "cannot create $FT"
+    # Only this Mac's hardware's firmware (the list holds every vendor's: 699 AMD GPU files alone). 1.14 test, 10-11: all
+    # 847 files 8 at a time drew HTTP 429 from GitLab on an NPU-only Mac that needed 3 of them.
+    FWDIRS="LICENSES/"
+    for v in $VENDORS; do case $v in 1002) FWDIRS="$FWDIRS amdgpu/";; 8086) FWDIRS="$FWDIRS i915/ xe/";; esac; done
+    for v in $NPUS; do case $v in 8086) FWDIRS="$FWDIRS intel/vpu/";; 1022) FWDIRS="$FWDIRS amdnpu/";; esac; done
+    # shasum -c reads "<sha>  <path>" (two spaces); the list has one. WAS: the list was fed as is, so every check failed
+    # and --gpu-test on could never finish (1.14 test on an NPU-only Mac, 10-11)
+    FWLIST="$FT.list"
+    { grep -v '^#' "$MAN" | awk -v dirs="$FWDIRS" 'BEGIN{n=split(dirs,d," ")} {for(i=1;i<=n;i++) if (index($2,d[i])==1) {print $1 "  " $2; next}}' > "$FWLIST" \
+      && [ -s "$FWLIST" ]; } || { rm -rf "$FT" "$FWLIST"; stop "the GPU firmware list has nothing for this Mac's hardware"; }
+    # each file from GitLab, else from kernel.org's mirror of the same commit; curl's retries back off on 429 and 5xx
+    # the file is the script's $2 (macOS xargs -I refuses a command over 255 bytes, so no {} substitution)
+    awk '{print $2}' "$FWLIST" | xargs -P 4 -n 1 sh -c 'mkdir -p "$(dirname "$0/$2")" &&
+      { curl -fsSL --retry 5 --retry-delay 2 -o "$0/$2" "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/$1/$2" ||
+        curl -fsSL --retry 5 --retry-delay 2 -o "$0/$2" "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/$2?id=$1"; }' "$FT" "$COMMIT" \
+      || { rm -rf "$FT" "$FWLIST"; stop "downloading the GPU firmware failed (network?) - nothing was changed"; }
+    (cd "$FT" && shasum -a 256 -c --quiet < "$FWLIST") >/dev/null 2>&1 || { rm -rf "$FT" "$FWLIST"; stop "a GPU firmware file did not match its checksum - nothing was changed"; }
+    # the names drivers ask for that linux-firmware publishes as links (WHENCE "Link:"), within one directory only
+    grep '^#link ' "$MAN" | while read -r _ n _ tgt; do
+      case "$n/$tgt" in *..*|/*|*//*) continue;; esac
+      case "$tgt" in */*) continue;; esac
+      [ -f "$FT/$(dirname "$n")/$tgt" ] && ln -sfh "$tgt" "$FT/$n"
+    done
+    rm -rf "$GFW" && mv "$FT" "$GFW" && chown -R root:wheel "$GFW" && chmod -R go-w,a+rX "$GFW" || stop "cannot install the GPU firmware"
+    ok "GPU firmware installed ($(wc -l < "$FWLIST" | tr -d ' ') files for this Mac, $(du -sh "$GFW" | cut -f1))"; rm -f "$FWLIST"
+    step "Installing the AMD/Intel GPU driver"
+    rm -rf "$EXT/NMXGPU.kext" && ditto "$GK" "$EXT/NMXGPU.kext" && chown -R root:wheel "$EXT/NMXGPU.kext" && chmod -R 755 "$EXT/NMXGPU.kext" || stop "cannot copy NMXGPU.kext"
+    # Metal on the AMD/Intel GPU: its accelerator (NMXAccel) and the Vulkan drivers the Metal plugin runs on it (RADV, ANV)
+    if [ -d "$GA" ] && [ -d "$GU" ]; then
+      rm -rf "$EXT/NMXAccel.kext" && ditto "$GA" "$EXT/NMXAccel.kext" && chown -R root:wheel "$EXT/NMXAccel.kext" && chmod -R 755 "$EXT/NMXAccel.kext" || stop "cannot copy NMXAccel.kext"
+      ditto "$GU" "$GB/nvmtl" && chown -R root:wheel "$GB/nvmtl" && chmod -R go-w,a+rX "$GB/nvmtl" || stop "cannot copy the AMD/Intel Vulkan drivers"
+    else
+      note "this driver package has no AMD/Intel Metal accelerator: the GPU gets a screen, apps get no Metal on it"
+    fi
+    # the NPU driver (NMXNPU: Intel NPU, AMD Ryzen AI), when this Mac has an NPU
+    if [ -n "$NPUS" ] && [ -d "$GN" ]; then
+      rm -rf "$EXT/NMXNPU.kext" && ditto "$GN" "$EXT/NMXNPU.kext" && chown -R root:wheel "$EXT/NMXNPU.kext" && chmod -R 755 "$EXT/NMXNPU.kext" || stop "cannot copy NMXNPU.kext"
+    fi
+    # AMD NPU: the validation archive xrt-smi validate runs on this NPU's family (AMD's VTD, pinned, every file checked).
+    # Only the family present is fetched (the three together are 150 MB). Without it the NPU still works, only
+    # validate cannot, so a failed download is a note, not a stop.
+    AMDNPU=$(ioreg -r -c IOPCIDevice -l -w0 | LC_ALL=C awk -F'<|>' 'function out(){if (c=="11" && s=="80" && v=="1022") print d}
+      /\+-o /{out(); c=""; s=""; v=""; d=""} /"vendor-id" =/{v=substr($2,3,2) substr($2,1,2)} /"device-id" =/{d=substr($2,3,2) substr($2,1,2)}
+      /"class-code" =/{c=substr($2,5,2); s=substr($2,3,2)} END{out()}' | sort -u)
+    VT="$(dirname "$MAN")/nullmoth-npu-tests.txt"
+    VB=/Library/NullMoth/npu/xrt/share/amdxdna/bins
+    if [ -n "$AMDNPU" ] && [ -d "$EXT/NMXNPU.kext" ] && [ -f "$VT" ]; then
+      VC=$(awk 'NR==2{print}' "$VT" | grep -oE 'VTD/[0-9a-f]{40}' | cut -d/ -f2)
+      for d in $AMDNPU; do case $d in 1502) echo phx;; 17f0) echo strx;; 17f1|17f2|17f3|1b0a|1b0b|1b0c) echo npu3;; esac; done | sort -u | while read -r fam; do
+        grep -v '^#' "$VT" | awk -v f="$fam" '$2==f || $2=="license"' | while read -r sum _ p; do
+          case "$p" in *..*|/*) continue;; esac
+          if mkdir -p "$VB" && curl -fsSL --retry 3 -o "$VB/.dl" "https://raw.githubusercontent.com/Xilinx/VTD/$VC/$p" \
+             && [ "$(shasum -a 256 "$VB/.dl" | cut -d' ' -f1)" = "$sum" ]; then mv -f "$VB/.dl" "$VB/$(basename "$p")"
+          else rm -f "$VB/.dl"; note "could not fetch the NPU validation archive $p (xrt-smi validate needs it; the NPU works without it)"; fi
+        done
+      done
+      [ ! -d "$VB" ] || { chown -R root:wheel "$VB"; chmod -R go-w,a+rX "$VB"; }
+    fi
+    if ! auxkc || ! kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -q com.nullmoth.NMXGPU \
+       || { [ -d "$EXT/NMXAccel.kext" ] && ! kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -q com.nullmoth.NMXAccel; } \
+       || { [ -d "$EXT/NMXNPU.kext" ] && ! kmutil inspect -a x86_64 -A /Library/KernelCollections/AuxiliaryKernelExtensions.kc 2>/dev/null | grep -q com.nullmoth.NMXNPU; }; then
+      rm -rf "$EXT/NMXGPU.kext" "$EXT/NMXAccel.kext" "$EXT/NMXNPU.kext"; auxkc; cp -p "$BKC" "$C"; stop "the kernel collection did not take NMXGPU/NMXAccel/NMXNPU (log: $ST/gputest-kmutil.log) - removed again"
+    fi
+    for a in $WANT; do ga add "${a#-}=1"; done
+    # the drivers' boot guards: an attach that never returned parks the driver until on/off clears this
+    nvram -d nullmoth-npu-attaching 2>/dev/null; nvram -d nullmoth-gpu-attaching 2>/dev/null
+  else
+    step "Removing the AMD/Intel GPU driver"
+    ga del nmxamd=1; ga del nmxintel=1; ga del nmxnpu=1
+    nvram -d nullmoth-npu-attaching 2>/dev/null; nvram -d nullmoth-gpu-attaching 2>/dev/null
+    if [ -d "$EXT/NMXGPU.kext" ] || [ -d "$EXT/NMXAccel.kext" ] || [ -d "$EXT/NMXNPU.kext" ]; then
+      rm -rf "$EXT/NMXGPU.kext" "$EXT/NMXAccel.kext" "$EXT/NMXNPU.kext" && auxkc || note "the kernel collection rebuild reported an error (log: $ST/gputest-kmutil.log)"
+    fi
+    # the AMD/Intel Vulkan drivers come out of nvmtl by the names the cache holds; NVK's files are never touched
+    if [ -d "$GU" ]; then (cd "$GU" && find . -type f) | while read -r f; do rm -f "$GB/nvmtl/${f#./}"; done; rmdir "$GB/nvmtl/share/libdrm" "$GB/nvmtl/share" 2>/dev/null; fi
+    rm -rf "$GFW" /Library/NullMoth/npu/xrt/share/amdxdna/bins
+  fi
+  plutil -lint "$C" >/dev/null || { cp -p "$BKC" "$C"; stop "editing the config failed - the original is restored"; }
+  ok "AMD/Intel GPU driver $GPUTEST - takes effect at the next restart"; cleanup; echo "RESULT ok"; exit 0
 fi
 
 if [ -n "$UPD" ]; then
@@ -781,7 +1053,10 @@ for k in boot-args csr-active-config; do echo "$del" | grep -q "<string>$k</stri
 # login, and "nvram -d" did not help), so the flag came back at every boot, kept the kexts off and ran the removal again.
 # OpenCore writes through the firmware before macOS starts, so it clears the flag there. The picker tool still works on
 # these machines when macOS is chosen in the same picker session, because the tool runs after OpenCore's delete.
-if nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 && ! echo "$del" | grep -q "<string>nullmoth-remove</string>"; then
+# Booter > Quirks > DisableVariableWrite (1401 1.14 sets it on Ryzen 7000/8000/9000 desktops, which froze 19 minutes into
+# the install) blocks every NVRAM write from macOS, so on those machines the flag is cleared by OpenCore from the start.
+if { nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 || [ "$(get Booter.Quirks.DisableVariableWrite)" = true ]; } \
+   && ! echo "$del" | grep -q "<string>nullmoth-remove</string>"; then
   DELADD+=("nullmoth-remove"); echo "CHANGE NVRAM Delete: add nullmoth-remove (a leftover remove flag this Mac cannot clear from macOS)"
 fi
 NEEDTOOL=0; [ -z "$(tool_index)" ] && { NEEDTOOL=1; echo "CHANGE boot picker: add \"$TOOL_NAME\" (the way back if the driver ever stops macOS starting)"; }
@@ -790,7 +1065,18 @@ NEEDTOOL=0; [ -z "$(tool_index)" ] && { NEEDTOOL=1; echo "CHANGE boot picker: ad
 ti=$(tool_index); if [ -n "$ti" ] && [ "$(get Misc.Tools.$ti.TextMode)" != true ]; then
   echo "CHANGE boot picker: show \"$TOOL_NAME\" in text mode, so its question is visible"; EDITS+=("Misc.Tools.$ti.TextMode|-bool|true"); fi
 REFRESHTOOL=0; [ -n "$ti" ] && [ -f "$TOOL" ] && ! cmp -s "$TOOL" "$(dirname "$C")/Tools/$TOOL_FILE" && REFRESHTOOL=1
-[ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDBLOCK = 0 ] && [ $NEEDAMFIPASS = 0 ] && ok "OpenCore already has every setting the driver needs"
+NEEDONCE=0; [ -z "$(once_index)" ] && { NEEDONCE=1; echo "CHANGE boot picker: add \"$ONCE_NAME\" (start macOS or Recovery one time without the driver)"; }
+LOGOSRC="$(dirname "${TOOL:-/nonexistent}")/$LOGO_FILE"; NEEDLOGO=0; REFRESHLOGO=0; li=$(logo_index)
+if [ "$LOGO" != off ] && [ -f "$LOGOSRC" ]; then
+  if [ -z "$li" ]; then NEEDLOGO=1; echo "CHANGE boot logo: add the NullMoth boot logo (turn it off in the app, or with -nmlogooff)"
+  else
+    [ "$(get UEFI.Drivers.$li.Enabled)" = true ] || { echo "CHANGE boot logo: turn the NullMoth boot logo on"; EDITS+=("UEFI.Drivers.$li.Enabled|-bool|true"); }
+    cmp -s "$LOGOSRC" "$(dirname "$C")/Drivers/$LOGO_FILE" || { REFRESHLOGO=1; echo "CHANGE boot logo: update the NullMoth boot logo driver to this version"; }
+  fi
+elif [ "$LOGO" = off ] && [ -n "$li" ] && [ "$(get UEFI.Drivers.$li.Enabled)" = true ]; then
+  echo "CHANGE boot logo: turn the NullMoth boot logo off (the Apple logo shows again)"; EDITS+=("UEFI.Drivers.$li.Enabled|-bool|false")
+fi
+[ ${#EDITS[@]} = 0 ] && [ ${#DELADD[@]} = 0 ] && [ $NEEDTOOL = 0 ] && [ $NEEDONCE = 0 ] && [ $NEEDLOGO = 0 ] && [ $NEEDBLOCK = 0 ] && [ $NEEDAMFIPASS = 0 ] && ok "OpenCore already has every setting the driver needs"
 
 if [ $SIPON = 1 ]; then
   note "SIP is still fully on in this boot: only SIP, Secure Boot, boot arguments and the boot picker entry change now"
@@ -835,6 +1121,19 @@ if [ $DRY = 0 ]; then
     mkdir -p "$MP/$OCREL/Tools" && cp "$TOOL" "$MP/$OCREL/Tools/$TOOL_FILE" || fail=1
   fi
   [ "${REFRESHTOOL:-0}" = 1 ] && { cp "$TOOL" "$MP/$OCREL/Tools/$TOOL_FILE" || fail=1; }   # the current tool (drains stale keys)
+  if [ $NEEDONCE = 1 ]; then
+    plutil -extract Misc.Tools xml1 -o - "$C" >/dev/null 2>&1 || plutil -insert Misc.Tools -array "$C" || fail=1
+    plutil -insert Misc.Tools -json "{\"Arguments\":\"once\",\"Auxiliary\":false,\"Comment\":\"NullMoth: start macOS once without the NVIDIA driver\",\"Enabled\":true,\"Flavour\":\"Auto\",\"FullNvramAccess\":true,\"Name\":\"$ONCE_NAME\",\"Path\":\"$TOOL_FILE\",\"RealPath\":false,\"TextMode\":true}" -append "$C" || fail=1
+    [ -f "$MP/$OCREL/Tools/$TOOL_FILE" ] || { mkdir -p "$MP/$OCREL/Tools" && cp "$TOOL" "$MP/$OCREL/Tools/$TOOL_FILE"; } || fail=1
+  fi
+  if [ $NEEDLOGO = 1 ]; then
+    has UEFI.Drivers || plutil -insert UEFI.Drivers -array "$C" || fail=1
+    # the entry carries the keys this config's own driver entries carry, so an older OpenCore never meets a key it lacks
+    hv=""; plutil -extract UEFI.Drivers.0.HideVerbose raw -o - "$C" >/dev/null 2>&1 && hv=',"HideVerbose":false'
+    plutil -insert UEFI.Drivers -json "{\"Arguments\":\"\",\"Comment\":\"NullMoth boot logo\",\"Enabled\":true,\"LoadEarly\":false,\"Path\":\"$LOGO_FILE\"$hv}" -append "$C" || fail=1
+    mkdir -p "$MP/$OCREL/Drivers" && cp "$LOGOSRC" "$MP/$OCREL/Drivers/$LOGO_FILE" || fail=1
+  fi
+  [ "${REFRESHLOGO:-0}" = 1 ] && { cp "$LOGOSRC" "$MP/$OCREL/Drivers/$LOGO_FILE" || fail=1; }
   if [ $fail = 1 ] || ! plutil -lint "$C" >/dev/null; then cp -p "$BKC" "$C"; stop "editing the config failed - the original is restored"; fi
   ok "OpenCore config updated"
   mkdir -p "$ST"
@@ -890,7 +1189,8 @@ if [ -f "$CONF" ]; then
   fi
 fi
 if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
-  cp "$PROFILE" "$ST/system-profile.json.tmp" && chmod 644 "$ST/system-profile.json.tmp" && mv "$ST/system-profile.json.tmp" "$ST/system-profile.json"
+  # read as the console user: root would follow a link in the user's temp folder to a root-only file
+  sudo -u "$(stat -f %Su /dev/console)" cat "$PROFILE" > "$ST/system-profile.json.tmp" && chmod 644 "$ST/system-profile.json.tmp" && mv "$ST/system-profile.json.tmp" "$ST/system-profile.json"
   rm -f "$PROFILE"
 fi
 # the version the app compares with the newest release ("Update driver"); world-readable, the app runs as the user
@@ -948,6 +1248,9 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin
 [ -e /Library/NullMoth/no-wsreset ] && exit 0
 MARK=/var/run/nullmoth-wsreset.done
 [ -e "$MARK" ] && exit 0
+# 1401 issue #108: launchd starts this before the kexts are listed, and a single check ended the run for the whole
+# boot (no display-trace directory, no capture). Wait up to 60 s for the driver, then decide.
+for i in $(seq 1 60); do kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel && break; sleep 1; done
 kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel || exit 0
 nvram 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove >/dev/null 2>&1 && exit 0
 LOG=/Library/NullMoth/wsreset.log
@@ -1022,6 +1325,9 @@ ok "flicker stopgap armed (restarts WindowServer once per boot; opt out with /Li
 cat > /Library/NullMoth/nullmoth-displaytrace.sh <<'DT'
 #!/bin/bash
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
+# 1401 issue #108: launchd starts this before the kexts are listed, and a single check ended the run for the whole
+# boot (no display-trace directory, no capture). Wait up to 60 s for the driver, then decide.
+for i in $(seq 1 60); do kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel && break; sleep 1; done
 kextstat 2>/dev/null | grep -q com.nullmoth.NVAccel || exit 0
 D=/Library/NullMoth/display-trace; mkdir -p "$D"; chmod 755 "$D"
 T=$D/trace.txt; K=$D/kernel.txt; W=$D/ws.txt; CAP=8388608

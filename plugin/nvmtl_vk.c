@@ -54,12 +54,60 @@ static inline const char *nvmtl_pick_vk(const char *staged, const char *dev) {
 }
 #define NVMTL_LOADER nvmtl_pick_vk("/Library/GPUBundles/nvmtl/libvulkan.dylib", \
                                    "/Library/GPUBundles/nvmtl/libvulkan.dylib")
-#define NVMTL_ICD    nvmtl_pick_vk("/Library/GPUBundles/nvmtl/nvk_icd.json", \
-                                   "/Library/GPUBundles/nvmtl/nvk_icd.json")
+/*
+ * The Vulkan driver under this process's Metal device follows the GPU it runs on: NVK for NVIDIA (the NVAccel
+ * accelerator), RADV for AMD and ANV for Intel (NMXAccel, the accelerator for the GPUs NMXGPU drives).
+ */
+#include <IOKit/IOKitLib.h>
+static uint16_t g_vendor;
+static uint16_t nvmtl_pci_vendor_of(io_service_t accel)
+{
+    io_registry_entry_t pci = 0; uint16_t v = 0;
+    if (IORegistryEntryGetParentEntry(accel, kIOServicePlane, &pci) != KERN_SUCCESS) return 0;
+    CFTypeRef d = IORegistryEntryCreateCFProperty(pci, CFSTR("vendor-id"), kCFAllocatorDefault, 0);
+    if (d && CFGetTypeID(d) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)d) >= 2) {
+        const UInt8 *b = CFDataGetBytePtr((CFDataRef)d); v = (uint16_t)(b[0] | (b[1] << 8));
+    }
+    if (d) CFRelease(d);
+    IOObjectRelease(pci);
+    return v;
+}
+/* the vendor of the accelerator a Metal device was made on (0 if the port is neither of ours); the first one wins */
+uint16_t nvmtl_vk_set_accelerator(mach_port_t accel)
+{
+    uint16_t v = 0;
+    if (accel && IOObjectConformsTo(accel, "NMXAccel")) { v = nvmtl_pci_vendor_of(accel); if (v != 0x1002 && v != 0x8086) v = 0; }
+    else if (accel && IOObjectConformsTo(accel, "NVAccel")) v = 0x10de;
+    if (v && !g_vendor) g_vendor = v;
+    return v;
+}
+/* a process that starts Vulkan before Metal makes a device: NVIDIA when its accelerator runs, else the AMD/Intel one */
+uint16_t nvmtl_vk_vendor(void)
+{
+    if (g_vendor) return g_vendor;
+    io_service_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("NVAccel"));
+    if (s) { IOObjectRelease(s); g_vendor = 0x10de; return g_vendor; }
+    s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("NMXAccel"));
+    uint16_t v = s ? nvmtl_pci_vendor_of(s) : 0;
+    if (s) IOObjectRelease(s);
+    g_vendor = (v == 0x1002 || v == 0x8086) ? v : 0x10de;
+    return g_vendor;
+}
+static const char *nvmtl_vk_icd_json(void) {
+    switch (nvmtl_vk_vendor()) {
+    case 0x1002: return "/Library/GPUBundles/nvmtl/radeon_icd.json";
+    case 0x8086: return "/Library/GPUBundles/nvmtl/intel_icd.json";
+    default:     return "/Library/GPUBundles/nvmtl/nvk_icd.json";
+    }
+}
+#define NVMTL_ICD    nvmtl_vk_icd_json()
 static inline const char *nvmtl_icd_lib_path(void) {
     const char *e = getenv("NVMTL_ICD_LIB"); if (e && access(e, R_OK) == 0) return e;
-    return nvmtl_pick_vk("/Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib",
-                         "/Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib");
+    switch (nvmtl_vk_vendor()) {
+    case 0x1002: return "/Library/GPUBundles/nvmtl/libvulkan_radeon.dylib";
+    case 0x8086: return "/Library/GPUBundles/nvmtl/libvulkan_intel.dylib";
+    default:     return "/Library/GPUBundles/nvmtl/libvulkan_nouveau.dylib";
+    }
 }
 #define NVMTL_ICD_LIB nvmtl_icd_lib_path()
 
@@ -1695,6 +1743,8 @@ static int nvmtl_vk_image_create_typed_lifetime_body(uint32_t w, uint32_t h, uin
 static int nvmtl_gpu_headless(void)
 {
     static int h = -1;
+    /* AMD/Intel (NMXAccel): WindowServer draws into NMXGPU's framebuffer, so this device is always an app-only GPU */
+    if (h < 0 && nvmtl_vk_vendor() != 0x10de) { h = 1; nvlog("AMD/Intel GPU: IOSurfaces are copied out to system memory"); }
     if (h < 0) { int v = 0; size_t n = sizeof v; h = sysctlbyname("debug.nvaccel_headless", &v, &n, NULL, 0) == 0 && v;
                  if (h) nvlog("headless GPU: the display belongs to another GPU - IOSurfaces are copied out to system memory"); }
     return h;
@@ -2725,7 +2775,10 @@ int nvmtl_vk_bind_sampler(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_sampl
 int nvmtl_vk_sample_positions_backend(void) { return nvmtl_vk_init() == 0 && g_sample_locations; }
 int nvmtl_vk_sample_positions_default(uint32_t count, nvmtl_sample_pattern *out)
 {
-    if (!nvmtl_vk_sample_positions_backend() || !(g_sample_props.sampleLocationSampleCounts & count)) return -1;
+    /* Without the programmable-position backend the hardware still draws the standard pattern, which is Metal's default.
+       Apps read these positions and pass them back to setSamplePositions; returning nothing left their array
+       uninitialised, the pass then failed validation and drew nothing (Chess). */
+    if (nvmtl_vk_sample_positions_backend() && !(g_sample_props.sampleLocationSampleCounts & count)) return -1;
     return nvmtl_sample_default(count, out);
 }
 static VkSampleLocationsInfoEXT nvmtl_sample_info(const nvmtl_sample_pattern *p, VkSampleLocationEXT vk[8])
@@ -3856,6 +3909,7 @@ int nvmtl_vk_cmd_dispatch_sass(nvk_cmdbuf *c,
     uint32_t grid[3];
 
     if (!c || !c->cb || !sass || !sass_len) return -1;
+    if (nvmtl_vk_vendor() != 0x10de) return -3;     /* NVIDIA machine code: the caller dispatches the SPIR-V instead */
     if (nparams > 16) { nvlog("sass dispatch: %u parameters is more than 16 — REFUSED", nparams); return -2; }
 
     if (!looked) {
@@ -4208,8 +4262,17 @@ int nvmtl_vk_cmd_begin_pass(nvk_cmdbuf *c, const nvk_pass *ps, nvk_pipeline *p)
     if (!nvmtl_sample_pattern_valid(&pattern) || pattern.count != (p->samples > 1 ? p->samples : 1)) {
         nvlog("sample positions: count/pattern incompatible with render pipeline"); return -1;
     }
-    if (ps->sample_pattern.count && !g_sample_locations) { nvlog("sample positions: backend unavailable"); return -1; }
     if (nvmtl_sample_pattern_quantize(&pattern, &pattern)) return -1;
+    if (ps->sample_pattern.count && !g_sample_locations) {
+        /* No programmable-position backend: the pass draws at the standard positions. A pass asking for exactly those
+           (what getDefaultSamplePositions returns) is plain MSAA. Any other pattern is drawn at the standard positions
+           too, said once, instead of refusing the pass: refusing it left Chess's 4x MSAA passes black. */
+        nvmtl_sample_pattern std;
+        int same = !nvmtl_sample_default(pattern.count, &std) && !nvmtl_sample_pattern_quantize(&std, &std) &&
+                   !memcmp(std.position, pattern.position, pattern.count * sizeof pattern.position[0]);
+        static int said;
+        if (!same && said++ < 4) nvlog("sample positions: backend unavailable; custom %u-sample pattern drawn at the standard positions", pattern.count);
+    }
     uint32_t cf[NVMTL_NCOL], rmask, ncol = nvmtl_rt_shape(p, cf, &rmask);
     for (uint32_t i = 0; i < ncol; i++) {
         if (!cf[i]) continue;
@@ -5411,31 +5474,72 @@ void nvmtl_vk_queue_destroy(nvk_queue *q)
 
 size_t nvmtl_vk_allocated_bytes(void) { return g_alloc_bytes; }
 
+/* One reusable staging buffer per thread for surface uploads, instead of a new one per upload (community patch #96).
+ * The upload itself stays synchronous: #96 also deferred the fence wait to overlap uploads, but
+ * nvmtl_vk_image_destroy() frees an image and its memory at once, so an app that uploads a surface and frees it
+ * (IOSurface-backed textures do) would leave the GPU copying into freed memory. A thread keeps at most
+ * NVMTL_UPSTAGE_KEEP bytes between uploads (a 4K BGRA frame); a larger one-off upload frees its buffer afterwards. */
+#define NVMTL_UPSTAGE_KEEP (32u << 20)
+typedef struct { nvk_buffer buf; nvk_cmdbuf cb; } nvmtl_upstage;
+static pthread_key_t g_upstage_key; static pthread_once_t g_upstage_once = PTHREAD_ONCE_INIT;
+static void nvmtl_upstage_free(void *p)
+{
+    nvmtl_upstage *st = p;
+    if (!st) return;
+    if (st->buf.buf) nvmtl_vk_buffer_destroy(&st->buf);
+    free(st);
+}
+static void nvmtl_upstage_key_make(void)
+{
+    if (pthread_key_create(&g_upstage_key, nvmtl_upstage_free)) nvlog("stage: pthread_key_create FAILED");
+}
+static nvmtl_upstage *nvmtl_upstage_get(size_t size)
+{
+    pthread_once(&g_upstage_once, nvmtl_upstage_key_make);
+    nvmtl_upstage *st = pthread_getspecific(g_upstage_key);
+    if (!st) {
+        st = calloc(1, sizeof *st);
+        if (!st) return NULL;
+        if (pthread_setspecific(g_upstage_key, st)) { free(st); return NULL; }
+    }
+    if (!st->buf.buf || st->buf.size < size) {
+        if (st->buf.buf) nvmtl_vk_buffer_destroy(&st->buf);
+        memset(&st->buf, 0, sizeof st->buf);
+        if (nvmtl_vk_buffer_create(size, 1, &st->buf)) { memset(&st->buf, 0, sizeof st->buf); return NULL; }
+    }
+    return st;
+}
+
 int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes)
 {
     const size_t bpp = img->bpp ? img->bpp : 4;
     const uint32_t cols = nvmtl_blocks(img->w, img->bw), rows = nvmtl_blocks(img->h, img->bh);
     if (row_bytes < (size_t)cols * bpp) { nvlog("image_write: bytesPerRow %zu < %u blocks * %zu B", row_bytes, cols, bpp); return -1; }
-    nvk_buffer stage;
-    if (nvmtl_vk_stage(q, (size_t)cols * rows * bpp, &stage)) return -1;
-    uint8_t *dst = (uint8_t *)stage.map;
-    for (uint32_t y = 0; y < rows; y++)
-        memcpy(dst + (size_t)y * cols * bpp, (const uint8_t *)src + (size_t)y * row_bytes, (size_t)cols * bpp);
-    nvk_cmdbuf c; if (nvmtl_vk_cmd_begin(q, &c)) return -1;
+    const size_t tight = (size_t)cols * bpp;
+    nvmtl_upstage *sl = nvmtl_upstage_get(tight * (size_t)rows);
+    if (!sl) return -1;
+    uint8_t *dst = (uint8_t *)sl->buf.map;
+    if (row_bytes == tight) memcpy(dst, src, tight * (size_t)rows);   /* a 4K surface is 2160 rows of 15 KB: one pass, not 2160 calls */
+    else for (uint32_t y = 0; y < rows; y++)
+        memcpy(dst + (size_t)y * tight, (const uint8_t *)src + (size_t)y * row_bytes, tight);
+    nvk_cmdbuf *const c = &sl->cb;
+    if (nvmtl_vk_cmd_begin(q, c)) return -1;
     VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
     VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
-    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
+    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
     VkBufferImageCopy bic = { 0, 0, 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
-    pvkCmdCopyBufferToImage(c.cb, (VkBuffer)stage.buf, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
+    pvkCmdCopyBufferToImage(c->cb, (VkBuffer)sl->buf.buf, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
-    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toRead);
+    pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toRead);
     img->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return nvmtl_vk_submit_wait(&c);
+    const int rc = nvmtl_vk_submit_wait_at(c, "surface upload");
+    if (sl->buf.size > NVMTL_UPSTAGE_KEEP) { nvmtl_vk_buffer_destroy(&sl->buf); memset(&sl->buf, 0, sizeof sl->buf); }
+    return rc;
 }
 
 int nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size)
@@ -5458,6 +5562,17 @@ int nvmtl_vk_image_read(nvk_queue *q, nvk_image *img, void *dst, size_t row_byte
     nvk_buffer stage;
     if (nvmtl_vk_stage(q, (size_t)cols * rows * bpp, &stage)) return -1;
     nvk_cmdbuf c; if (nvmtl_vk_cmd_begin(q, &c)) return -1;
+    // SurfaceOut also reads images last used as sampled/storage images or blit
+    // destinations. A completed fence does not change their image layout or
+    // provide the transfer-read dependency. Transition the copied subresource.
+    VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
+    VkImageMemoryBarrier toSrc = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
+        VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+        (VkImageLayout)img->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
+    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &toSrc);
+    img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     VkBufferImageCopy bic = { 0, 0, 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
     pvkCmdCopyImageToBuffer(c.cb, img->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stage.buf, 1, &bic);
     if (nvmtl_vk_submit_wait(&c)) return -1;
@@ -6872,9 +6987,15 @@ int nvmtl_vk_image_size_align(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t m
     return rc;
 }
 
-int nvmtl_vk_cmd_copy_image_sub(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uint32_t ss, uint32_t sx, uint32_t sy,
-                                nvk_image *dst, uint32_t dl, uint32_t ds, uint32_t dx, uint32_t dy, uint32_t w, uint32_t h)
+/* Texture-to-texture copy with a depth range. A 3D image keeps its depth in ->layers; a Metal copy into or out of a 3D texture names
+   the plane with origin.z and the plane count with size.depth (slice must be 0). WAS: z and depth were dropped, so every plane of a
+   3D destination landed on plane 0 (Factorio builds its night colour-grading LUT, a 16x16x16 3D texture, from sixteen 16x16 copies). */
+int nvmtl_vk_cmd_copy_image_sub3(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uint32_t ss, uint32_t sx, uint32_t sy, uint32_t sz,
+                                 nvk_image *dst, uint32_t dl, uint32_t ds, uint32_t dx, uint32_t dy, uint32_t dz,
+                                 uint32_t w, uint32_t h, uint32_t depth)
 {
+    if (!depth) depth = 1;
+    const int s3 = src && src->mtl_type == 7, d3 = dst && dst->mtl_type == 7;
     if (!c || !src || !dst || !w || !h || src->fmt != dst->fmt
         || (src->samples ? src->samples : 1) != (dst->samples ? dst->samples : 1)
         || ss >= (src->layers ? src->layers : 1) || ds >= (dst->layers ? dst->layers : 1)
@@ -6889,14 +7010,24 @@ int nvmtl_vk_cmd_copy_image_sub(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uint
         nvlog("copy_image_sub: region outside selected mip extent");
         return -1;
     }
+    {   /* planes: a 3D image has nvmtl_lvl(layers, level) of them; a 2D image only plane 0 */
+        const uint32_t sd = s3 ? nvmtl_lvl(src->layers ? src->layers : 1, sl) : 1u, dd = d3 ? nvmtl_lvl(dst->layers ? dst->layers : 1, dl) : 1u;
+        if ((s3 ? (sz > sd || depth > sd - sz) : (sz != 0 || (!d3 && depth != 1)))
+            || (d3 ? (dz > dd || depth > dd - dz) : (dz != 0 || (!s3 && depth != 1)))) {
+            nvlog("copy_image_sub: depth range z %u/%u +%u is outside the 3D extent (%u / %u planes)", sz, dz, depth, sd, dd);
+            return -1;
+        }
+    }
 
     const VkImageAspectFlags aspects = nvmtl_barrier_aspect(src);
     VkImageCopy regions[2]; uint32_t count = 0;
     for (VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
          aspect <= VK_IMAGE_ASPECT_STENCIL_BIT; aspect <<= 1) {
         if (!(aspects & aspect)) continue;
-        regions[count++] = (VkImageCopy){ { aspect, sl, ss, 1 }, { (int32_t)sx, (int32_t)sy, 0 },
-                                         { aspect, dl, ds, 1 }, { (int32_t)dx, (int32_t)dy, 0 }, { w, h, 1 } };
+        /* Vulkan: a 3D image uses base layer 0 / layer count 1 and offset.z; a 2D side of a 2D<->3D copy carries the plane count as its layerCount */
+        regions[count++] = (VkImageCopy){ { aspect, sl, s3 ? 0u : ss, s3 ? 1u : (d3 ? depth : 1u) }, { (int32_t)sx, (int32_t)sy, s3 ? (int32_t)sz : 0 },
+                                         { aspect, dl, d3 ? 0u : ds, d3 ? 1u : (s3 ? depth : 1u) }, { (int32_t)dx, (int32_t)dy, d3 ? (int32_t)dz : 0 },
+                                         { w, h, depth } };
     }
     nvmtl_vk_cmd_barrier(c);
     img_to(c, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
@@ -6909,6 +7040,11 @@ int nvmtl_vk_cmd_copy_image_sub(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uint
            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     nvmtl_vk_cmd_barrier(c);
     return 0;
+}
+int nvmtl_vk_cmd_copy_image_sub(nvk_cmdbuf *c, nvk_image *src, uint32_t sl, uint32_t ss, uint32_t sx, uint32_t sy,
+                                nvk_image *dst, uint32_t dl, uint32_t ds, uint32_t dx, uint32_t dy, uint32_t w, uint32_t h)
+{
+    return nvmtl_vk_cmd_copy_image_sub3(c, src, sl, ss, sx, sy, 0, dst, dl, ds, dx, dy, 0, w, h, 1);
 }
 int nvmtl_vk_image_view_create_range(nvk_image *img, uint32_t vkfmt, int a8, uint32_t baseLevel, uint32_t levelCount,
                                      uint32_t baseLayer, uint32_t layerCount, uint32_t mtl_view_type, void **out_view)

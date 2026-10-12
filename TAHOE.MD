@@ -1,30 +1,31 @@
-# Building the Tahoe fixes
+# Building the Tahoe driver with the retained icon fixes
 
-This guide builds the three components needed for the Tahoe fixes in this fork:
+This guide builds the Tahoe components from this fork after merging upstream **1.14.0** (`56ae15f`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too.
 
 | Component | Purpose | Build output |
 |---|---|---|
 | `NVMTLDriver` | PR #79: shader linking, sampler variants, and texture channel mapping for icon layers | `out/plugin-<commit>-release/NVMTLDriver` |
 | `libnvmtl_translate.dylib` | PR #112: preserve buffer offsets in CoreImage resize helpers, restoring small System Settings icon glyphs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
-| `NVAccel.kext` | Tahoe accelerator rebuilt with the current VRAM interface, avoiding the ABI 1/2 mismatch that causes a black desktop | `out/tahoe/NVAccel.kext` |
+| `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 
-The patched sources described here are based on **1.13.0**. Use the outputs with the matching **1.13.0 driver package and user-space libraries**. Rebuild from matching sources when moving to another driver version.
+Use these outputs with the matching **1.14.0 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together.
 
 Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
 
-If the PR #79 plugin and rebuilt Tahoe accelerator already work on your machine, build and replace only the translator for PR #112. Rebuilding the plugin alone does not include this glyph fix.
+Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. Inspection of the shipped plugin found the PR #79 linking, linked-stage, and swizzle markers. The cause of that regression is not established, and retaining these source fixes alone does not establish that the merged build corrects it. Test the rebuilt plugin and translator together on the affected Mac.
 
-## 1. Commit and transfer your changes
+The merge keeps specialized-name linking, linked stages for pixel-sampler variants, and swizzled sampled views. Compute storage bindings also keep upstream's HDR storage-texture handling. Both files implementing and testing PR #112 are identical to our previously working fork. The fallback for missing NVIDIA Darwin build metadata remains in `build/accel_build.sh`.
 
-The plugin build script requires a clean Git working tree. If the fixes and this guide are still uncommitted on Windows, run these commands from your repository in PowerShell:
+## 1. Use the committed merge
 
-```powershell
-git add -- TAHOE.MD plugin/NVMTLDevice.m plugin/NVMTLEmbedded.m plugin/NVMTLLibraryLoad.m plugin/NVMTLObjects.h plugin/NVMTLObjects.m translator/translator/src/native/emitter/mod.rs translator/translator/src/native/tests/buffers.rs
-git commit -m "Apply Tahoe icon and glyph fixes and document builds"
-git push origin main
+The plugin build script requires a clean Git working tree. Use the merged commit in your macOS checkout and check its identity before building:
+
+```bash
+git log -1 --oneline
+git status --short
 ```
 
-Skip this step if those changes have already been committed and pushed.
+If transferring through GitHub, the merge must first be pushed to the fork. Pulling before that still retrieves the old 1.13-based commit. The clone and pull commands below assume the merged commit is available there.
 
 ## 2. Prepare the macOS toolchain
 
@@ -110,7 +111,7 @@ If compilation fails, inspect the full compiler output:
 cat "$plugin_out/NVMTLDriver.err"
 ```
 
-PR #79 only changes the plugin. PR #112 also requires the translator build below. Neither patch requires rebuilding Mesa; keep the matching 1.13.0 NVK runtime.
+PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.0 NVK runtime** from the complete package.
 
 ## 5. Build the System Settings glyph-fix translator
 
@@ -192,9 +193,17 @@ cat out/tahoe/accel.err
 cat out/tahoe/accelld.err
 ```
 
+To build both Sequoia and Tahoe accelerators from this same checkout, upstream 1.14 adds:
+
+```bash
+bash build/accel_build_all.sh kexts/NVRM out/accel
+```
+
+This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It calls this fork's `accel_build.sh`, including the metadata fallback. The script clears each OS-specific output directory before building; use a directory reserved for generated output.
+
 ## 7. Package and install the matching components
 
-These build commands do not install anything. In a copy of the matching extracted driver package, replace:
+These build commands do not install anything. In a copy of the matching extracted **1.14.0** driver package, replace:
 
 | Built artifact | Destination relative to the package's `pkgroot` |
 |---|---|
@@ -202,11 +211,29 @@ These build commands do not install anything. In a copy of the matching extracte
 | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` |
 | `out/tahoe/NVAccel.kext` | `Library/NullMoth/kexts/26/NVAccel.kext` |
 
+If you used `accel_build_all.sh`, use `out/accel/26/NVAccel.kext` for the Tahoe row and replace `Library/NullMoth/kexts/15/NVAccel.kext` with `out/accel/15/NVAccel.kext` as well.
+
 Preserve the plugin bundle's other resources and the matching runtime libraries. Regenerate the package's `SHA256SUMS` after replacing the artifacts, then install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation.
 
 The loader prefers a translator library beside the plugin executable if one exists: `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib`. If your package contains a separate copy there, replace it with the same rebuilt library too; a symlink to the canonical `nvmtl` library can keep pointing there. Otherwise that older copy would take precedence over the patched translator.
 
-An NVAccel rebuild addresses the VRAM interface mismatch; PR #79's plugin rebuild addresses icon layers; PR #112's translator rebuild addresses the small Settings glyphs. Include the components needed by your installation. The plugin keys its shader cache by translator content, so the rebuilt library gets a new shader-cache identity after the process restarts.
+The plugin and translator builds retain the icon and glyph fixes; building the accelerators together keeps the framebuffer interface consistent. The plugin keys its shader cache by translator content, so a changed library gets a new shader-cache identity after the process restarts. An identical translator binary does not invalidate cached images.
+
+After installing, verify that the active files match the outputs you built. Each pair below should have the same SHA-256:
+
+```bash
+shasum -a 256 "$plugin_out/NVMTLDriver" \
+  /Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/NVMTLDriver
+shasum -a 256 "$translator_out" \
+  /Library/GPUBundles/nvmtl/libnvmtl_translate.dylib
+
+bundled_translator=/Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib
+if [ -e "$bundled_translator" ]; then
+  shasum -a 256 "$translator_out" "$bundled_translator"
+fi
+```
+
+For comparison, the plugin extracted from the official 1.14.0 package during this audit had SHA-256 `97dec4756bbf404dde6532e949237de9bafc8835e0640503b933001c753bb85b`. Its bundled translator had SHA-256 `808c76cfe0ab76cc28c5542b59ecdf9b49ad92e01741da66af2b8080baeec1ba`. These identify the audited binaries, not a known-good rendering result.
 
 After installing and rebooting, quit and reopen System Settings. If old rendered icons remain, run this as the desktop user to back up the IconServices and Dock caches:
 
@@ -229,10 +256,14 @@ fi
 
 Reboot after moving the caches so IconServices and the desktop regenerate their images with the new translator. The first redraw can take longer. These rendered-icon caches are separate from the translator's shader cache.
 
+The reported 1.14 regression persisted after this cache reset, so do not treat repeated cache clearing as a fix. If the rebuilt components still show the same missing foregrounds, retain their hashes and the OS build number with the reproduction; that distinguishes the merged build from the official package when investigating the renderer.
+
 PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 26.6. Ghostty's incorrectly sized foreground remains outside these fixes. These patches are not a claim of complete Tahoe support.
 
 ## References
 
+- [Upstream 1.14.0 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.0).
+- [Build both accelerators from the same source](https://github.com/nullmoth/nvidia-macos-driver/commit/8c9429c8984f5c8f0c18fb9ffafbf81b299cd14d).
 - [PR #79: Tahoe icon rendering fixes](https://github.com/nullmoth/nvidia-macos-driver/pull/79) — the patch applied here is revision `74c0dc30ab8e58139707fb603948329a1cede67f`.
 - [PR #112: CoreImage resize and System Settings glyph fix](https://github.com/nullmoth/nvidia-macos-driver/pull/112) — the patch applied here is revision `a6c38cd52ee23e335e08af89824b72aca4f9fcdb`.
 - [Issue #51: Tahoe NVAccel VRAM ABI mismatch](https://github.com/nullmoth/nvidia-macos-driver/issues/51).

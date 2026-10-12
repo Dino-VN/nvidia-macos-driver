@@ -106,6 +106,7 @@ public:
     static void headWatch(void *p0, wait_result_t w);
     IOBufferMemoryDescriptor *fBootScreen = nullptr; uint32_t fBootW = 0, fBootH = 0, fBootPitch = 0;
     uint32_t     fAutoGoSettleMs = 10000;
+    bool         fBar1Placed = false;
     volatile UInt32 fBootHold = 0;
     virtual IOReturn callPlatformFunction(const OSSymbol *fn, bool wait,
                                          void *p1, void *p2, void *p3, void *p4) override;
@@ -289,6 +290,7 @@ bool NVRM::start(IOService *provider)
     nv_xnu_log_init();
     UInt8 bus = fPCI->getBusNumber(), dev = fPCI->getDeviceNumber(), fn = fPCI->getFunctionNumber();
     nv_xnu_register_pci(fPCI, 0, bus, dev, fn);
+    nv_xnu_register_all_pci();   // RM's chipset init needs the whole PCI tree (host bridge, root ports)
     nv_state_t *nv = &fNv;
     nv->pci_info.domain    = 0;
     nv->pci_info.bus       = bus;
@@ -303,6 +305,7 @@ bool NVRM::start(IOService *provider)
     nv->fb   = &nv->bars[NV_GPU_BAR_INDEX_FB];
     snapshotBootScreen();
     const bool bar1Placed = placeLargeBar1();
+    fBar1Placed = bar1Placed;
     readBARs();
     {
         const char *nm = rm_get_device_name(nv->pci_info.device_id, nv->subsystem_vendor, nv->subsystem_id);
@@ -579,6 +582,24 @@ void NVRM::autoGo(void *p0, wait_result_t)
         s->releaseBootHold(armed == 1 && ag == 1 && iop == 1 ? "display armed" : "display PARTIAL");
         if (armed == 1 && iop == 1 && !PE_parse_boot_argn("-nvrmnoflip", nb, sizeof(nb))) {
             IOSleep(60000);
+            // Zero-copy scan-out shows only what sits in this GPU's VRAM. Two setups black the screen (cursor only) the
+            // moment it starts, 60 s after the desktop came up on the copy path, and every report was fixed by
+            // -nvrmnoflip: a second accelerated GPU (Intel/AMD iGPU; WindowServer composites there, issues #16 #26), and
+            // a BAR1 left at its small firmware window (256 MB, no Resizable BAR; #20 #54 #82). Both keep the copy path.
+            const char *why = nullptr;
+            if (!s->fBar1Placed) why = "BAR1 not placed (small firmware window)";
+            else if (OSIterator *it = IOService::getMatchingServices(IOService::serviceMatching("IOAccelerator"))) {
+                while (OSObject *o = it->getNextObject()) {
+                    const char *cn = o->getMetaClass()->getClassName();
+                    if (cn && strncmp(cn, "NV", 2)) { why = "another GPU's accelerator is running"; LOG("auto-go: accelerator %s present", cn); break; }
+                }
+                it->release();
+            }
+            if (why) {
+                LOG("auto-go: zero-copy flip NOT started: %s; the copy path stays (as -nvrmnoflip)", why);
+                s->setProperty("nvrm-flip", "off (copy path)");
+                s->release(); thread_terminate(current_thread()); return;
+            }
             int f = -99; nvrmSysW("debug.nvaccel_iop_flip", 1); nvrmSysR("debug.nvaccel_iop_flip", &f);
             LOG("auto-go: flip debug.nvaccel_iop_flip=%d (60 s after the release)", f);
             s->setProperty("nvrm-flip", f == 1 ? "on" : "FAILED");
@@ -692,6 +713,50 @@ static bool nvrmRangeBusy(UInt64 lo, UInt64 hi, IOPCIDevice *self, IOPCIDevice *
     return busy;
 }
 
+// 10-11 (community fix, Discord #general, i5-6500 on B150): Intel's reference _CRS leaves out the 64-bit window when the
+// firmware sets M64L to 0, which this board does even with Above 4G Decoding on. The fallback above then clipped to an
+// empty window at the CPU's 39-bit top ("cannot hold 8224 MB — not placing"), then the 100 s timeout and a black screen.
+// An SSDT giving the same window through _CRS placed BAR1 at 0x7c00000000 and ran the desktop. Every Intel 6th-14th gen
+// probe reports PCI 64-bit space ending at 0x7fffffffff, so the 256-512 GB range is used, but only when the firmware has
+// already put BAR1 above 4 GB (it decodes 64-bit there), the CPU is Intel and reaches 39 bits, and RAM + 4 GB stays below
+// 256 GB. Otherwise the reason is returned and the old window is kept; AMD is unchanged.
+static const UInt64 kIntel39Min = 0x4000000000ULL, kIntel39Max = 0x7fffffffffULL;
+static const char *nvrmIntel39Window(unsigned physBits, UInt64 fwBar1)
+{
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0u), "c"(0u));
+    if (!(b == 0x756e6547u && d == 0x49656e69u && c == 0x6c65746eu)) return "not an Intel CPU";
+    if (physBits < 39) return "CPU reaches fewer than 39 bits";
+    if (fwBar1 < (4ULL << 30)) return "firmware left BAR1 below 4 GB";
+    UInt64 memsize = 0; size_t l = sizeof memsize;
+    if (sysctlbyname("hw.memsize", &memsize, &l, NULL, 0) != 0 || !memsize) return "hw.memsize unreadable";
+    if (memsize + (4ULL << 30) >= kIntel39Min) return "RAM reaches into 256 GB";
+    return NULL;
+}
+
+// True when the bus numbers advertised by a root port contain another PCI function. When BAR1 is moved,
+// placeLargeBar1() replaces that root port's prefetchable window, so a sibling behind the same port must keep
+// the old forwarding window and makes the move unsafe.
+static bool nvrmBusRangeHasOtherDevices(UInt8 first, UInt8 last, IOPCIDevice *self)
+{
+    IORegistryIterator *it = IORegistryIterator::iterateOver(gIOServicePlane, kIORegistryIterateRecursively);
+    if (!it) return true;  // Fail closed: do not replace a bridge window if the bus range cannot be checked.
+    bool found = false;
+    while (OSObject *e = it->getNextObject()) {
+        IOPCIDevice *d = OSDynamicCast(IOPCIDevice, e);
+        if (!d || d == self) continue;
+        const UInt8 bus = d->getBusNumber();
+        if (bus >= first && bus <= last) {
+            LOG("bar1: root port bus range %u-%u also contains PCI device %u:%u:%u",
+                first, last, bus, d->getDeviceNumber(), d->getFunctionNumber());
+            found = true;
+            break;
+        }
+    }
+    it->release();
+    return found;
+}
+
 bool NVRM::placeLargeBar1()
 {
     static const UInt64 kBigBase = 0x10000000000ULL;
@@ -741,15 +806,36 @@ bool NVRM::placeLargeBar1()
         if (m->getPhysicalAddress() == bar3Old) bar3Size = m->getLength();
         if (m->getPhysicalAddress() == (lo10 & ~0xFULL)) bar0 = m;
     }
-    if (!bar0 || !bar3Size) { LOG("bar1: BAR0/BAR3 apertures not found in the nub (bar0 %d bar3 %llu) — not placing", bar0 != NULL, bar3Size); return false; }
+    // 10-09 (RTX 5050, MacPro7,1 + npci=0x3000): the nub's apertures can be stale — they sit at 0x100000000+ while
+    // config space and assigned-addresses agree on BAR0 0x40000000 / BAR3 0x46000000 — so neither lookup above hits
+    // and BAR1 is never placed. Take the missing BAR0/BAR3 from assigned-addresses, only where it agrees with the
+    // live BAR register.
+    UInt64 bar0Size = 0;
+    if (!bar0 || !bar3Size) {
+        UInt64 a0 = 0, s0 = 0, a3 = 0, s3 = 0;
+        if (OSData *aa = OSDynamicCast(OSData, fPCI->getProperty("assigned-addresses"))) {
+            const UInt32 *c = (const UInt32 *)aa->getBytesNoCopy();
+            for (unsigned i = 0; c && i + 5 <= aa->getLength() / 4; i += 5) {
+                const UInt64 a = ((UInt64)c[i + 1] << 32) | c[i + 2], s = ((UInt64)c[i + 3] << 32) | c[i + 4];
+                if ((c[i] & 0xff) == 0x10) { a0 = a; s0 = s; }
+                if ((c[i] & 0xff) == 0x1c) { a3 = a; s3 = s; }
+            }
+        }
+        if (!bar0 && s0 && a0 == (lo10 & ~0xFULL)) { bar0Size = s0; LOG("bar1: BAR0 0x%llx+0x%llx taken from assigned-addresses (nub stale)", a0, s0); }
+        if (!bar3Size && s3 && a3 == bar3Old) { bar3Size = s3; LOG("bar1: BAR3 0x%llx+0x%llx taken from assigned-addresses (nub stale)", a3, s3); }
+    }
+    if ((!bar0 && !bar0Size) || !bar3Size) { LOG("bar1: BAR0/BAR3 apertures not found in the nub (bar0 %d bar3 %llu) — not placing", bar0 != NULL, bar3Size); return false; }
     UInt64 wMin = 0, wMax = 0;
     const unsigned physBits = nvrmPhysBits();
     const UInt64 physTop = physBits >= 63 ? ~0ULL : (1ULL << physBits) - 1;
     if (nvrmHostWindow(fPCI, &wMin, &wMax)) {
         LOG("bar1: host bridge 64-bit window 0x%llx-0x%llx (ACPI _CRS), CPU reaches %u bits", wMin, wMax, physBits);
-    } else {
+    } else if (const char *why = nvrmIntel39Window(physBits, ((UInt64)old18 << 32) | (lo14 & ~0xFULL))) {
         wMin = kBigBase; wMax = kHostWindowEnd;   // the pre-10-07 placement, kept only where the CPU can reach it
-        LOG("bar1: no 64-bit window in the host bridge's _CRS — using 0x%llx-0x%llx (CPU reaches %u bits)", wMin, wMax, physBits);
+        LOG("bar1: no 64-bit window in the host bridge's _CRS (%s) — using 0x%llx-0x%llx (CPU reaches %u bits)", why, wMin, wMax, physBits);
+    } else {
+        wMin = kIntel39Min; wMax = kIntel39Max;
+        LOG("bar1: no 64-bit window in the host bridge's _CRS — using Intel's 256-512 GB PCI range 0x%llx-0x%llx (CPU reaches %u bits)", wMin, wMax, physBits);
     }
     if (wMax > physTop) wMax = physTop;
     const UInt64 total = bar1Size + bar3Size;
@@ -772,13 +858,25 @@ bool NVRM::placeLargeBar1()
     }
     UInt32 busr = rp->configRead32(0x18);
     UInt8 sec = (busr >> 8) & 0xff, sub = (busr >> 16) & 0xff, mybus = fPCI->getBusNumber();
-    if (sec != mybus || sub != mybus) { LOG("bar1: root port spans buses %u-%u, not only ours (%u) — not placing", sec, sub, mybus); return false; }
+    if (sec != mybus || sub < mybus) { LOG("bar1: root port bus range %u-%u does not cover our bus %u — not placing", sec, sub, mybus); return false; }
+    // Firmware can leave unused subordinate bus numbers reserved (for example, GPU bus 1 with range 1-5).
+    // Accept that range only when no other PCI function occupies it: changing the root port's window would
+    // otherwise stop forwarding the sibling's BARs.
+    // Only the buses BELOW ours: the GPU's own bus also carries its HDMI audio (and USB-C) functions, which sit behind
+    // this window today and always did - counting them refused every card whose firmware reserved spare bus numbers.
+    if (sub > mybus && nvrmBusRangeHasOtherDevices(mybus + 1, sub, fPCI)) {
+        LOG("bar1: root port range %u-%u has other PCI devices — not placing", sec, sub);
+        return false;
+    }
     UInt32 rp24 = rp->configRead32(0x24), rp28 = rp->configRead32(0x28), rp2c = rp->configRead32(0x2c);
     if ((rp24 & 0xf) != 1) { LOG("bar1: root port prefetchable window is not 64-bit (0x%x) — not placing", rp24); return false; }
+    // The top slot can be taken by another device (a second GPU, an NVMe's 64-bit BAR); try the slots below it.
+    for (unsigned tries = 1; nvrmRangeBusy(bar1Base, winEnd, fPCI, rp); tries++) {
+        if (tries >= 16 || bar1Base < wMin + bar1Size) { LOG("bar1: destination is in use — not placing"); return false; }
+        bar1Base -= bar1Size; bar3Base = bar1Base + bar1Size; winEnd = bar3Base + bar3Size - 1;
+    }
     LOG("bar1: placing BAR1 %llu MB @0x%llx, BAR3 %llu MB @0x%llx, root port window 0x%llx-0x%llx (was 0x%08x %08x/%08x)",
         bar1Size >> 20, bar1Base, bar3Size >> 20, bar3Base, bar1Base, winEnd, rp24, rp28, rp2c);
-
-    if (nvrmRangeBusy(bar1Base, winEnd, fPCI, rp)) { LOG("bar1: destination is in use — not placing"); return false; }
 
     UInt16 cmd = fPCI->configRead16(0x04);
     fPCI->configWrite16(0x04, cmd & ~0x2);
@@ -813,11 +911,14 @@ bool NVRM::placeLargeBar1()
     }
     fPCI->configWrite16(0x04, cmd | 0x2);
 
-    OSArray *arr = OSArray::withCapacity(mem->getCount() + 1);
+    const unsigned memCount = mem ? mem->getCount() : 0;
+    OSArray *arr = OSArray::withCapacity(memCount + 3);
     IODeviceMemory *m1 = IODeviceMemory::withRange(bar1Base, bar1Size), *m3 = IODeviceMemory::withRange(bar3Base, bar3Size);
-    if (!arr || !m1 || !m3) { LOG("bar1: placed in hardware but the aperture list could not be built (no memory)"); OSSafeReleaseNULL(arr); OSSafeReleaseNULL(m1); OSSafeReleaseNULL(m3); return false; }
-    arr->setObject(bar0); arr->setObject(m1); arr->setObject(m3);
-    for (unsigned i = 0; i < mem->getCount(); i++) {
+    IODeviceMemory *m0 = bar0 ? NULL : IODeviceMemory::withRange(lo10 & ~0xFULL, bar0Size);
+    if (!arr || !m1 || !m3 || (!bar0 && !m0)) { LOG("bar1: placed in hardware but the aperture list could not be built (no memory)"); OSSafeReleaseNULL(arr); OSSafeReleaseNULL(m1); OSSafeReleaseNULL(m3); OSSafeReleaseNULL(m0); return false; }
+    arr->setObject(bar0 ? bar0 : m0); arr->setObject(m1); arr->setObject(m3);
+    OSSafeReleaseNULL(m0);
+    for (unsigned i = 0; i < memCount; i++) {
         IOMemoryDescriptor *m = OSDynamicCast(IOMemoryDescriptor, mem->getObject(i));
         if (!m || m == bar0) continue;
         UInt64 pa = m->getPhysicalAddress();
@@ -1004,6 +1105,10 @@ IOReturn NVRM::callPlatformFunction(const OSSymbol *fn, bool wait, void *p1, voi
         if (!fBootScreen) return kIOReturnNotFound;
         *outp = fBootScreen->getBytesNoCopy(); dims[0] = fBootW; dims[1] = fBootH; dims[2] = fBootPitch;
         return kIOReturnSuccess;
+    }
+    if (fn && fn->isEqualTo("NVRMBacklight")) {      // NVRMFB: laptop panel brightness. p1 = NvU32 *percent, p2 != NULL sets it
+        NvU32 *percent = (NvU32 *)p1; if (!percent) return kIOReturnBadArgument;
+        return nvkms_xnu_backlight(p2 != NULL, percent) ? kIOReturnSuccess : kIOReturnNotFound;
     }
     if (fn && fn->isEqualTo("NVRMBootScreenDone")) {
         if (fBootScreen) { fBootScreen->release(); fBootScreen = nullptr; LOG("boot screen: buffer released after the takeover"); }
