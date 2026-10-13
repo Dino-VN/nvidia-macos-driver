@@ -1,6 +1,6 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond release **1.14.7**, plus PRs **#171, #136, #147 and #131**. The PR #79 Dock icon fixes and PR #112 System Settings glyph fix from our working fork are retained. The source and regression lines added by both icon patches were checked against the combined tree.
+This guide targets upstream **1.15.0 at `56bc4f9`**, plus PRs **#171, #136, #147 and #131**. Our working PR #79 Dock icon fixes and PR #112 System Settings glyph fix are preserved. Upstream 1.15.0 already contains equivalent implementations of both icon fixes, so the merge keeps one implementation of each. Their implementation code was compared with the previously tested fork and remains unchanged.
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -11,13 +11,13 @@ This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. This Tahoe test workflow does not require code signing; signing would not grant kext loading approval.
 
-The upstream merge itself also updates `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
+The upstream merge itself also updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the main RM binary, framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. PR #131 preserves the modern framebuffer's `NVRMBootFB` personality; its test compares the NVIDIA claim in both plist copies without requiring the entire files to be identical.
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
-Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 1.15.0 tree still needs fresh package builds and hardware validation.
 
 Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That result applies to the previously tested build; the new merged build still needs macOS and GPU validation.
 
@@ -311,7 +311,7 @@ PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 2
 
 ## References
 
-- [Upstream snapshot merged into this fork](https://github.com/nullmoth/nvidia-macos-driver/commit/4b0a8c7926afb884b55dc0603f5b8057e1779bb2).
+- [Upstream 1.15.0 snapshot merged into this fork](https://github.com/nullmoth/nvidia-macos-driver/commit/56bc4f9ae3105df052eefd3ea094c782e56853c3).
 - [Upstream 1.14.7 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.7).
 - [PR #171: WoW Classic shader translation and Vulkan feature fixes](https://github.com/nullmoth/nvidia-macos-driver/pull/171) — revision `47e3e08192d36e6aef67cf433adb24c4dce9eddf`.
 - [PR #136: MSAA without programmable 1x sample positions](https://github.com/nullmoth/nvidia-macos-driver/pull/136) — revision `a4d77592b2bca750a346f20475dce462cf120bd1`, adapted to retain upstream's default-position fallback.

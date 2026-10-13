@@ -9,10 +9,10 @@ import WebKit
 import UniformTypeIdentifiers
 
 struct Package {
-    static let version = "1.14.7"
-    static let name = "nullmoth-nvidia-1.14.7.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.14.7/nullmoth-nvidia-1.14.7.tar.gz")!
-    static let sha256 = "8e6ae5a235506acf9c4c5da77fd162002bc96202c05c8eec89574ba9c9b2fd82"
+    static let version = "1.15.0"
+    static let name = "nullmoth-nvidia-1.15.0.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v1.15.0/nullmoth-nvidia-1.15.0.tar.gz")!
+    static let sha256 = "6101cf8c37e4a500059ea8ce4d9f131ea107e35ccbeafcbb124d78a97e37e3ec"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -284,7 +284,7 @@ func makeReport(_ crashes: [URL]) -> String {
     var r = ""
     for u in crashes.suffix(3) {
         // The date and "before this install" ride in the header: 1.12 reports carried mediaanalysisd crashes from a 1.9
-        // plugin (the return address fits only 1.3-1.9's drawPrimitives) and read as a 1.12 regression (10-11).
+        // plugin (the return address fits only 1.3-1.9's drawPrimitives) and read as a 1.12 regression.
         let fmc = FileManager.default
         let when = (try? fmc.attributesOfItem(atPath: u.path))?[.modificationDate] as? Date
         let installed = (try? fmc.attributesOfItem(atPath: "/Library/NullMoth/state"))?[.modificationDate] as? Date
@@ -569,7 +569,9 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         }.resume()
     }
     func startDownload(name: String, sha: String, url: URL, efi: String?) {
-        guard pendingDownload == nil, !runningSetup else { return }
+        // A click while busy used to return silently, leaving "Downloading the newest driver..." on screen for good.
+        if pendingDownload != nil { send("dl", ["state": "error", "why": "a download is already running; wait for it to finish"]); return }
+        if runningSetup { send("dl", ["state": "error", "why": "setup is still running; try again when it has finished"]); return }
         do { try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true) }
         catch { send("dl", ["state": "error", "why": error.localizedDescription]); return }
         let task = downloadSession.downloadTask(with: url)
@@ -913,6 +915,24 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             send("run", ["state": "end", "mode": mode, "ok": false, "why": "Could not save a local report: \(error.localizedDescription)"])
             return
         }
+        // macOS checks its Removable Volumes privacy setting against this app even for the root shell that runs setup, so
+        // a USB stick's OpenCore config could not be opened there ("Code=257", seven Macs on 1.10 to 1.14.5, reported as
+        // "no OpenCore config"). Opening it here first lets macOS ask the user in 1401's name before setup needs it.
+        // Off the main thread and bounded: a stalled stick or a spun-down disk must not freeze the window (1.15 review).
+        // Network volumes are skipped: OpenCore never starts from them, and an unreachable share would only add a wait.
+        let preread = DispatchGroup()
+        DispatchQueue.global(qos: .userInitiated).async(group: preread) {
+            for volume in FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeIsInternalKey, .volumeIsLocalKey], options: [.skipHiddenVolumes]) ?? [] {
+                let values = try? volume.resourceValues(forKeys: [.volumeIsInternalKey, .volumeIsLocalKey])
+                if values?.volumeIsInternal == true || values?.volumeIsLocal == false { continue }
+                for rel in ["EFI/OC/config.plist", "EFI/BOOT/config.plist"] {
+                    let file = volume.appendingPathComponent(rel)
+                    guard FileManager.default.fileExists(atPath: file.path), let handle = FileHandle(forReadingAtPath: file.path) else { continue }
+                    _ = handle.readData(ofLength: 1); handle.closeFile()
+                }
+            }
+        }
+        _ = preread.wait(timeout: .now() + 3)
         let res = Bundle.main.resourceURL!
         var args: [String]
         switch mode {

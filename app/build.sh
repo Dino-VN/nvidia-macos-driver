@@ -14,6 +14,9 @@ xcrun clang -O2 -Wall -Wextra -Werror -target x86_64-apple-macos15.0 -isysroot "
 codesign --force --runtime-version 15.0.0 --options runtime,library -s - "$APP/Contents/Resources/nullmoth-log-watch"
 chmod 755 "$APP/Contents/Resources/nullmoth-runtime-check.sh"
 chmod 755 "$APP/Contents/Resources/nullmoth-setup.sh"
+# setup runs the installers only when they are executable ([ -x ]); a source file that lost its mode made every app
+# install stop with "the audited installer is missing from the app" (1.15 review), so the bundle sets it here
+chmod 755 "$APP/Contents/Resources/nullmoth-install.sh" "$APP/Contents/Resources/nullmoth-uninstall.sh"
 xcrun clang -fobjc-arc -O1 -Wno-deprecated-declarations -target x86_64-apple-macos15.0 -isysroot "$SDK" \
   -ffile-prefix-map="$(pwd)/DiagnosticsNative=/src/diagnostics" -fdebug-prefix-map="$(pwd)/DiagnosticsNative=/src/diagnostics" \
   DiagnosticsNative/preflight.m DiagnosticsNative/authority/NDSecurityState.m DiagnosticsNative/authority/NDAuthorityPolicy.m \
@@ -39,11 +42,12 @@ cat > "$APP/Contents/Info.plist" <<PL
 <key>CFBundleName</key><string>1401</string>
 <key>CFBundleDisplayName</key><string>1401</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.14.7</string>
-<key>CFBundleVersion</key><string>71</string>
+<key>CFBundleShortVersionString</key><string>1.15.0</string>
+<key>CFBundleVersion</key><string>75</string>
 <key>LSMinimumSystemVersion</key><string>15.0</string>
 <key>NSHumanReadableCopyright</key><string>© 2026 NullMoth Systems</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSRemovableVolumesUsageDescription</key><string>1401 reads the OpenCore settings on your USB stick or disk to install the driver there.</string>
 <key>NSAppleEventsUsageDescription</key><string>1401 asks macOS for your password to install the driver, and to restart when you click Restart.</string>
 </dict></plist>
 PL

@@ -94,8 +94,12 @@ fetch_kext() {
   local k=$1 u s
   [ -n "$KT" ] || KT=$(mktemp -d) || stop "could not create a download folder"
   read -r u s <<<"$(kurl $k)"
-  curl -fsSL --max-time 180 -o "$KT/$k.zip" "$u" \
-    || stop "$k could not be downloaded ($u). Check the internet connection and try again, or put $k in $2"
+  # GitHub first, then the same bytes from nullmothsystems.com/mirror/<sha256> (the mirror 1401 uses). Four 1.14.7 setups
+  # stopped on "curl: (56) Recv failure: Operation timed out" at raw.githubusercontent.com, which some networks block.
+  # The SHA-256 below is checked whichever source answered.
+  curl -fsSL --connect-timeout 20 --max-time 120 --retry 2 --retry-delay 3 -o "$KT/$k.zip" "$u" \
+    || curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 3 -o "$KT/$k.zip" "https://nullmothsystems.com/mirror/$s" \
+    || stop "$k could not be downloaded ($u, or the NullMoth mirror). Check the internet connection and try again, or put $k in $2"
   [ "$(shasum -a 256 "$KT/$k.zip" | awk '{print $1}')" = "$s" ] || stop "$k download did not match its SHA-256; nothing was changed. Try again"
   ditto -x -k "$KT/$k.zip" "$KT/$k.x" && [ -f "$KT/$k.x/$k/Contents/Info.plist" ] || stop "$k download could not be unpacked; nothing was changed"
 }
@@ -145,6 +149,12 @@ lshow() {  # <seconds> <log show arguments...>
   kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
   return $rc
 }
+# Keeps the first $1 and the last $2 lines of its input, with a marker between: a boot's start (where a GPU driver
+# says whether it started) and its end (what the user saw last). WAS a plain tail: on an RX 7900 XTX + RTX 2060 machine
+# Per-allocation lines filled the 512 KB upload, and the test driver's start-up lines were gone.
+headtail() { awk -v h="$1" -v t="$2" 'NR <= h { print; next } { r[NR % t] = $0 }
+  END { if (NR > h) { s = (NR - t > h) ? NR - t + 1 : h + 1; if (s > h + 1) printf "... %d lines left out ...\n", s - h - 1
+        for (i = s; i <= NR; i++) print r[i % t] } }'; }
 # Copy newest files without splitting volume or file names at whitespace.
 collect_recent_logs() {
   local prefix=$1 limit=$2 f i; shift 2
@@ -224,7 +234,8 @@ if [ -n "$COLLECT" ]; then
   boot=$(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+),.*/\1/')
   lshow 45 --start "$(date -r "$boot" '+%Y-%m-%d %H:%M:%S')" --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "nvrm" OR eventMessage CONTAINS[c] "nvaccel" OR eventMessage CONTAINS[c] "nvidia" OR eventMessage CONTAINS[c] "nullmoth" OR eventMessage CONTAINS[c] "gsp" OR eventMessage CONTAINS[c] "nmx" OR eventMessage CONTAINS[c] "amdgpu" OR eventMessage CONTAINS[c] "i915" OR eventMessage CONTAINS "[drm]" OR eventMessage CONTAINS "xe " OR sender == "NMXGPU" OR sender == "NMXAccel" OR sender == "NMXNPU" OR sender == "NMIntelFB")' 2>&1 \
     | grep -v -e 'NVRM-fb: kapi event type 5$' -e 'NVRM-xnu: >os_map_kernel_space' -e 'NVRM-fb: flipToMemory #' \
-    | tail -n 6000 > "$COLLECT/driver-kernel-log.txt"
+             -e 'NVAccel: newVidMemory -> ' -e 'NVVidMemory::allocPhysical(.*bytes of REAL VRAM' \
+    | headtail 1500 1500 > "$COLLECT/driver-kernel-log.txt"
   log_status=${PIPESTATUS[0]}; echo "log show exit: $log_status" >> "$COLLECT/driver-kernel-log.txt"
   # 1.9.0 report (10-10, 2K 165 Hz monitor stuck at 1080p 60 Hz): the 6000-line tail above was all os_map_kernel_space
   # and flipToMemory lines, so the boot-time mode list, the EDID and why each mode was or was not offered were gone.
@@ -262,7 +273,7 @@ if [ -n "$COLLECT" ]; then
       --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "igfx" OR eventMessage CONTAINS[c] "IntelAccel" OR eventMessage CONTAINS[c] "AppleIntel" OR eventMessage CONTAINS[c] "AMDRadeon" OR eventMessage CONTAINS[c] "ATIController" OR eventMessage CONTAINS[c] "AMDFramebuffer" OR eventMessage CONTAINS[c] "NMIntelFB" OR eventMessage CONTAINS[c] "WhateverGreen" OR eventMessage CONTAINS[c] "IOAccel")' 2>&1 | head -n 3000
   } > "$COLLECT/gpu-all.txt" 2>&1
   # The current kernel message ring can retain early GSP/BAR failures absent from the log store.
-  { echo; echo "== current kernel message ring"; dmesg 2>&1 | grep -iE 'nvrm|nvaccel|nvidia|nullmoth|gsp|nmx|amdgpu|i915|\[drm\]' | tail -n 2000; } >> "$COLLECT/driver-kernel-log.txt"
+  { echo; echo "== current kernel message ring"; dmesg 2>&1 | grep -iE 'nvrm|nvaccel|nvidia|nullmoth|gsp|nmx|amdgpu|i915|\[drm\]' | grep -v -e 'newVidMemory -> ' -e 'bytes of REAL VRAM' | headtail 300 300; } >> "$COLLECT/driver-kernel-log.txt"
   # Keep update/snapshot context separate so APFS traffic cannot crowd out GPU errors.
   lshow 20 --last 1d --style compact --predicate '(process == "kernel" AND eventMessage CONTAINS[c] "apfs") OR process == "MobileSoftwareUpdate" OR process == "softwareupdated"' 2>&1 \
     | tail -n 2000 > "$COLLECT/driver-update-log.txt"
@@ -284,17 +295,21 @@ if [ -n "$COLLECT" ]; then
   }
   console_user=$(stat -f %Su /dev/console 2>/dev/null)
   NPUDIR=/Library/NullMoth/npu
-  {
-    echo "== NPU PCI functions (Intel class 12xxxx, AMD signal-processing 1180xx) and their properties"
-    # ioreg lists a device's properties alphabetically (class-code before vendor-id), so each device is judged at its end
-    ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '
+  # The runtime probes below (compiler check, OpenVINO, XRT) and the userland hashes ran on every Mac with the NPU
+  # userland installed, NPU or not, and alone could outlast the whole collection limit: 7 of 28 1.14.7 reports came
+  # back without their kernel log (status 124). They now run only where an NPU PCI function exists, each bounded short.
+  npu_pci=$(ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '
       function out() { if ((cls=="12" && v=="intel") || (cls=="1180" && v=="amd")) print block "\n" }
       /\+-o / { out(); block=$0; cls=""; v=""; next }
       /"vendor-id" = <8680/ { v="intel" } /"vendor-id" = <2210/ { v="amd" }
       /"class-code" = <[0-9a-f][0-9a-f][0-9a-f][0-9a-f]1200>/ { cls="12" }
       /"class-code" = <[0-9a-f][0-9a-f]801100>/ { cls="1180" }
       /"(vendor-id|device-id|subsystem-vendor-id|subsystem-id|revision-id|class-code|IOName|IOPCIExpressLinkStatus|IOPCIResourced|assigned-addresses|acpi-path)"/ { block=block "\n" $0 }
-      END { out() }'
+      END { out() }')
+  {
+    echo "== NPU PCI functions (Intel class 12xxxx, AMD signal-processing 1180xx) and their properties"
+    # ioreg lists a device's properties alphabetically (class-code before vendor-id), so each device is judged at its end
+    if [ -n "$npu_pci" ]; then printf '%s\n' "$npu_pci"; else echo "(no NPU PCI function: runtime probes skipped)"; fi
     echo; echo "== what attached to them (NMXNPU is the NPU driver)"
     ioreg -r -c NMXNPU -l -w0 2>/dev/null | head -60 || true
     echo; echo "== NPU boot arguments"; nvram boot-args 2>/dev/null | tr ' \t' '\n\n' | grep -E 'nmx|npu' || echo "(none)"
@@ -308,20 +323,20 @@ if [ -n "$COLLECT" ]; then
     echo; echo "== NPU firmware"; ls -la /Library/NullMoth/firmware/intel/vpu /Library/NullMoth/firmware/amdnpu/* 2>&1 | head -40
     echo; echo "== device nodes"; ls -la /dev/accel 2>&1
     echo; echo "== each node: driver, PCI identity, driver attributes (nmx-npu-probe)"
-    if [ -x "$NPUDIR/bin/nmx-npu-probe" ]; then npu_run 20 "$NPUDIR/bin/nmx-npu-probe"; else echo "(nmx-npu-probe not installed)"; fi
+    if [ -n "$npu_pci" ] && [ -x "$NPUDIR/bin/nmx-npu-probe" ]; then npu_run 20 "$NPUDIR/bin/nmx-npu-probe"; else echo "(nmx-npu-probe not installed)"; fi
     echo; echo "== NPU userland installed (sha256)"
-    if [ -d "$NPUDIR" ]; then find "$NPUDIR" -type f ! -name '*.a' -exec shasum -a 256 {} + 2>&1 | sed "s|$NPUDIR/||" | head -200; ls -la "$NPUDIR/xrt/share/amdxdna/bins" 2>&1
+    if [ -d "$NPUDIR" ]; then find "$NPUDIR" -type f ! -name '*.a' 2>/dev/null | head -200 | tr '\n' '\0' | xargs -0 shasum -a 256 2>&1 | sed "s|$NPUDIR/||"; ls -la "$NPUDIR/xrt/share/amdxdna/bins" 2>&1
     else echo "(no $NPUDIR)"; fi
     echo; echo "== Intel: the NPU compiler on a small network (Meteor/Arrow Lake 3720, Lunar Lake 4000; needs no NPU)"
-    if [ -x "$NPUDIR/bin/nmx-npu-compile-check" ]; then npu_run 300 "$NPUDIR/bin/nmx-npu-compile-check"
+    if [ -n "$npu_pci" ] && [ -x "$NPUDIR/bin/nmx-npu-compile-check" ]; then npu_run 60 "$NPUDIR/bin/nmx-npu-compile-check"
     else echo "(nmx-npu-compile-check not installed)"; fi
     echo; echo "== Intel: OpenVINO devices with Level Zero, the NPU driver and the NPU plugin logging"
-    if [ -x "$NPUDIR/openvino/bin/hello_query_device" ]; then
-      npu_run 90 env ZE_ENABLE_LOADER_DEBUG_TRACE=1 ZE_INTEL_NPU_LOGLEVEL=INFO OV_NPU_LOG_LEVEL=LOG_INFO \
+    if [ -n "$npu_pci" ] && [ -x "$NPUDIR/openvino/bin/hello_query_device" ]; then
+      npu_run 45 env ZE_ENABLE_LOADER_DEBUG_TRACE=1 ZE_INTEL_NPU_LOGLEVEL=INFO OV_NPU_LOG_LEVEL=LOG_INFO \
         "$NPUDIR/openvino/bin/hello_query_device"
-    else echo "(OpenVINO not installed)"; fi
+    else echo "(no NPU, or OpenVINO not installed)"; fi
     echo; echo "== AMD: xrt-smi examine, then examine and validate on each AMD NPU, with XRT's runtime log on"
-    if [ -x "$NPUDIR/xrt/bin/xrt-smi" ]; then
+    if [ -n "$npu_pci" ] && [ -x "$NPUDIR/xrt/bin/xrt-smi" ]; then
       ini=$(sudo -u "$console_user" mktemp -d /tmp/nullmoth-xrt.XXXXXX 2>/dev/null)/xrt.ini
       if [ -n "$console_user" ] && [ "$ini" != /xrt.ini ]; then
         printf '[Runtime]\nverbosity=7\nruntime_log=console\n' | sudo -u "$console_user" tee "$ini" > /dev/null
@@ -329,7 +344,7 @@ if [ -n "$COLLECT" ]; then
       npu_run 60 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" examine
       for bdf in $("$NPUDIR/bin/nmx-npu-probe" 2>/dev/null | awk '/^  driver amdxdna/ {a=1} a && /^  pci / {print $2; a=0}'); do
         echo; echo "-- examine -d $bdf -r all"; npu_run 60 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" examine -d "$bdf" -r all
-        echo; echo "-- validate -d $bdf"; npu_run 240 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" validate -d "$bdf"
+        echo; echo "-- validate -d $bdf"; npu_run 60 env XRT_INI_PATH="$ini" "$NPUDIR/xrt/bin/xrt-smi" validate -d "$bdf"
       done
       [ "$ini" = /xrt.ini ] || rm -rf "$(dirname "$ini")"
     else echo "(XRT not installed)"; fi
@@ -421,10 +436,10 @@ if [ -n "$COLLECT" ]; then
     mount_efi "$d" || continue; mp=$MOUNT_POINT
     collect_recent_logs "$d" 3 "$mp"/opencore-*.txt
     collect_recent_logs "$d" 5 "$mp"/panic-*.txt
-    # The EFI itself (10-09): most machines that fail run their own OpenCore config, and without it every fix was a
+    # The EFI itself: most machines that fail run their own OpenCore config, and without it every fix was a
     # guess from symptoms. The config goes up with the machine's identity removed (serial, board serial, UUID, ROM),
     # plus the list of kexts, drivers and ACPI files beside it, so the working and the broken EFIs can be compared.
-    # The live config and its two newest backups only: every install leaves a backup, and 35 of them (studio, 10-12)
+    # The live config and its two newest backups only: every install leaves a backup, and 35 of them on one test machine
     # filled the report's 48 file slots before the panics, crash reports and GPU logs were reached.
     cfs=("$mp"/EFI/OC/config.plist)   # a volume name can hold spaces ("NO NAME"): read paths line by line, never split them
     while IFS= read -r cf; do cfs+=("$cf"); done < <(ls -t "$mp"/EFI/OC/config.plist.nullmoth-* 2>/dev/null | head -n 2)
@@ -623,6 +638,17 @@ else
       diskutil list 2>&1 | grep -E '^ +[0-9]+:|^/dev/' | head -n 40 | sed 's/^/NOTE disks: /'
       [ -n "$clover" ] && ! nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:opencore-version >/dev/null 2>&1 && \
         stop "this Mac starts with Clover, not OpenCore - the NVIDIA driver's settings are made for OpenCore. Make an OpenCore setup (1401 on Windows builds one), start from it, then run this again"
+      # 10-12 (seven Macs, 1401 Mac 1.10 to 1.14.5): the stick's config was there and plutil answered "Code=257" (no
+      # permission). macOS checks its Removable Volumes privacy setting against the 1401 app even for this root shell,
+      # so a stick's files cannot be opened until the user allows it. Say that, not "no OpenCore config".
+      denied=""; for d in $(diskutil list | awk '/ EFI | DOS_FAT_32 | Windows_FAT_32 | Microsoft Basic Data /{print $NF}' | grep -E '^disk[0-9]+s[0-9]+$'); do
+        mount_efi "$d" || continue; mp=$MOUNT_POINT
+        for c in "$mp/EFI/OC/config.plist" "$mp/EFI/BOOT/config.plist"; do
+          [ -e "$c" ] && ! head -c 1 "$c" >/dev/null 2>&1 && { denied="$denied $d"; break; }; done; done
+      # six of the 10-12 reports: OpenCore's boot path was a USB device (the 1401 stick) that was no longer connected
+      nvram 4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102:boot-path 2>/dev/null | grep -q 'USB(' && [ -z "$denied" ] && \
+        stop "this Mac started OpenCore from a USB stick that is not connected now - plug that stick back in (the one you start the Mac from), then try again"
+      [ -n "$denied" ] && stop "macOS is not letting 1401 read the OpenCore config on$denied. Open System Settings > Privacy & Security > Files & Folders, turn on Removable Volumes for 1401 (or add 1401 under Full Disk Access), then try again"
       stop "no OpenCore config for this Mac ($(sysctl -n hw.model)) on any connected disk - plug in the disk or USB stick OpenCore started from, then try again (the NOTE lines above show what each partition holds)"
     fi
     # A shared SMBIOS model or the macOS disk does not identify the booted EFI.
@@ -1030,7 +1056,7 @@ lp=$(kpos Lilu.kext); ap=$(kpos AMFIPass.kext)
 NEEDAMFIPASS=$(( ${#ADDK[@]} + ${#FETCH[@]} ))
 # Tahoe preparation: macOS 26 refuses Mac models it dropped ("This version of Mac OS X is not supported on this platform").
 # Every desktop 1401 built before 1.14 is iMacPro1,1, one of them, so the update stopped there on every such PC (10-12, the
-# studio itself). Desktops take MacPro7,1, which runs macOS 15 and 26, with RestrictEvents (its memory and PCI slot pages),
+# the test machine). Desktops take MacPro7,1, which runs macOS 15 and 26, with RestrictEvents (its memory and PCI slot pages),
 # as 1401 1.14 builds them; a laptop on a dropped model is told to rebuild its EFI with 1401 1.14 (its model needs the
 # laptop's own SMBIOS choice). The serial numbers stay: macOS does not check them against the model.
 if [ "$UPD" = prepare ]; then
@@ -1075,7 +1101,7 @@ NEEDBLOCK=0; bi=$(bidx)
 # that GPU on (no disable-gpu, no framebuffer properties) so the panel shows macOS through the firmware framebuffer.
 # Excluding IONDRVSupport there leaves the built-in screen dark (10-10: 86 of 184 scans had the panel on the Intel GPU).
 IGPU="PciRoot(0x0)/Pci(0x2,0x0)"; INTELPANEL=0
-# LC_ALL=C: ioreg prints raw bytes, and awk in a UTF-8 locale stops on them (measured on studio256)
+# LC_ALL=C: ioreg prints raw bytes, and awk in a UTF-8 locale stops on them
 if ioreg -r -c IOPCIDevice -l -w0 2>/dev/null | LC_ALL=C awk '/\+-o /{v=0;c=0} /"vendor-id" = <86800000>/{v=1} /"class-code" = <00000300>/{c=1} v&&c{f=1} END{exit !f}' \
    && ! has "DeviceProperties.Add.$IGPU.disable-gpu" && ! has "DeviceProperties.Add.$IGPU.AAPL,ig-platform-id"; then
   INTELPANEL=1; note "the built-in screen runs on the Intel GPU through the firmware framebuffer; IONDRVSupport stays on"
@@ -1369,7 +1395,7 @@ SINCE=$(date -r "$(sysctl -n kern.boottime | sed -E 's/.*\{ sec = ([0-9]+),.*/\1
 capture "BEFORE restart"
 SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 : > "$MARK"   # claim the single shot BEFORE touching WindowServer, so a respawn can never loop
-# Only ever at the login window. 1.9.0 (10-10): with auto-login the session already existed when this fired, so the
+# Only ever at the login window. In 1.9.0, with auto-login the session already existed when this fired, so the
 # restart logged the user out to the password screen. A restart under a logged-in user ends their session; never do it.
 CONSOLE=$(stat -f%Su /dev/console 2>/dev/null)
 if [ -n "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null)" ]; then
@@ -1453,7 +1479,7 @@ while :; do
   cur="$(sysctl $CTRS 2>/dev/null | sed -E 's/^debug\.(nvaccel_|nvrmfb_)?//; s/: /=/' | tr '\n' ' ')$(hz)"
   if [ "$cur" != "$PREV" ] || [ $((i % 30)) = 0 ]; then echo "$(date -u +%H:%M:%S) ws=$w $cur" >> "$T"; PREV=$cur; fi
   i=$((i + 1))
-  # every second for the first 15 minutes after boot (the handoff and login), then every 5 s
+  # every second for the first 15 minutes after boot (display hand-over and login), then every 5 s
   if [ $(( $(date +%s) - BOOT )) -lt 900 ]; then sleep 1; else sleep 5; fi
   [ $((i % 300)) = 0 ] && { rot "$T"; for f in "$K" "$W"; do s=$(stat -f%z "$f" 2>/dev/null || echo 0); [ "$s" -gt $CAP ] && { cp "$f" "$f.1"; : > "$f"; }; done; }
 done
