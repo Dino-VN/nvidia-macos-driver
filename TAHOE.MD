@@ -9,7 +9,7 @@ This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 | `NVRMFB.kext/Contents/Info.plist` | PR #131: restrict the framebuffer claim to NVIDIA display-class PCI devices | `kexts/NVRMFB/fb/Info.plist` |
 
-None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary.
+None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires re-signing and reinstalling that bundle, then refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. Editing `Info.plist` changes a file covered by the bundle's signature.
 
 The upstream merge itself also updates `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
@@ -221,7 +221,17 @@ These build commands do not install anything. Use a package staging tree with th
 
 If you used `accel_build_all.sh`, use `out/accel/26/NVAccel.kext` for the Tahoe row and replace `Library/NullMoth/kexts/15/NVAccel.kext` with `out/accel/15/NVAccel.kext` as well.
 
-Preserve the plugin bundle's other resources and use the matching runtime libraries and framebuffer binary. Re-sign and strictly verify the complete `NVMTLDriver.bundle` after replacing its executable or bundled translator. Regenerate the package's `SHA256SUMS` after replacing the artifacts, then install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation.
+Preserve the plugin bundle's other resources and use the matching runtime libraries and framebuffer binary. After replacing all artifacts, sign the staged package on macOS with:
+
+```bash
+bash build/sign_package.sh "/path/to/pkgroot"
+```
+
+The helper signs the canonical translator and regular `.dylib` files inside `NVMTLDriver.bundle` first, then signs and strictly verifies the complete plugin bundle, `NVRMFB.kext`, and both macOS 15 and 26 accelerator bundles. Both accelerator variants are required by the package installer, even when distributing primarily for Tahoe. Symlinks to the canonical translator are preserved. The helper verifies the new SHA-256 manifest before replacing `SHA256SUMS`; a failure leaves the previous manifest in place. Re-signing changes package artifacts, so rerun the helper after any further edits before archiving.
+
+Ad hoc signing repairs bundle integrity; recipients must still use the SIP and Secure Boot settings described in [README.md](README.md#wiring-into-an-existing-opencore-setup) to allow these kexts to load. The helper does not install the driver or build a kernel collection.
+
+After the helper succeeds, create the distribution archive outside `pkgroot`, or install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation and check `kmutil showloaded --list-only | grep nullmoth` for `NVRM`, `NVRMFB`, `NVAccel` and `NVRMAGDC`. A boot log that reports no published framebuffer heads and no active accelerator requires checking kext loading and the kernel collection before investigating shader rendering.
 
 The loader prefers a translator library beside the plugin executable if one exists: `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib`. If your package contains a separate copy there, replace it with the same rebuilt library too; a symlink to the canonical `nvmtl` library can keep pointing there. Otherwise that older copy would take precedence over the patched translator.
 
