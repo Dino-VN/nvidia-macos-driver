@@ -9,7 +9,7 @@ This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 | `NVRMFB.kext/Contents/Info.plist` | PR #131: restrict the framebuffer claim to NVIDIA display-class PCI devices | `kexts/NVRMFB/fb/Info.plist` |
 
-None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires re-signing and reinstalling that bundle, then refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. Editing `Info.plist` changes a file covered by the bundle's signature.
+None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. A separate kext-signing step is not required for the documented configuration that permits unsigned development kexts. Signing does not grant kext loading approval.
 
 The upstream merge itself also updates `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
@@ -208,32 +208,66 @@ bash build/accel_build_all.sh kexts/NVRM out/accel
 
 This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It calls this fork's `accel_build.sh`, including the metadata fallback. The script clears each OS-specific output directory before building; use a directory reserved for generated output.
 
-## 7. Package and install the matching components
+## 7. Stage the Tahoe PR outputs in an upstream package
 
-These build commands do not install anything. Use a package staging tree with the matching upstream components, then replace:
-
-| Built artifact | Destination relative to the package's `pkgroot` |
-|---|---|
-| `out/plugin-<commit>-release/NVMTLDriver` | `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/NVMTLDriver` |
-| `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` |
-| `out/tahoe/NVAccel.kext` | `Library/NullMoth/kexts/26/NVAccel.kext` |
-| `kexts/NVRMFB/fb/Info.plist` | `Library/Extensions/NVRMFB.kext/Contents/Info.plist` |
-
-If you used `accel_build_all.sh`, use `out/accel/26/NVAccel.kext` for the Tahoe row and replace `Library/NullMoth/kexts/15/NVAccel.kext` with `out/accel/15/NVAccel.kext` as well.
-
-Preserve the plugin bundle's other resources and use the matching runtime libraries and framebuffer binary. After replacing all artifacts, sign the staged package on macOS with:
+Extract an upstream prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
 
 ```bash
-bash build/sign_package.sh "/path/to/pkgroot"
+cd "$HOME/nvmtl-build/LIVE"
+python3 build/stage_package.py "/path/to/upstream/pkgroot" \
+  "$HOME/nvmtl-build/tahoe-package/pkgroot"
 ```
 
-The helper signs the canonical translator and regular `.dylib` files inside `NVMTLDriver.bundle` first, then signs and strictly verifies the complete plugin bundle, `NVRMFB.kext`, and both macOS 15 and 26 accelerator bundles. Both accelerator variants are required by the package installer, even when distributing primarily for Tahoe. Symlinks to the canonical translator are preserved. The helper verifies the new SHA-256 manifest before replacing `SHA256SUMS`; a failure leaves the previous manifest in place. Re-signing changes package artifacts, so rerun the helper after any further edits before archiving.
+The output directory must be new and outside the input package. The helper creates its parent directories and publishes the output only after all copies and checksum checks succeed. The upstream package and original build outputs remain intact.
 
-Ad hoc signing repairs bundle integrity; recipients must still use the SIP and Secure Boot settings described in [README.md](README.md#wiring-into-an-existing-opencore-setup) to allow these kexts to load. The helper does not install the driver or build a kernel collection.
+By default, this stages the Tahoe PR changes using these exact paths in the checkout:
 
-After the helper succeeds, create the distribution archive outside `pkgroot`, or install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation and check `kmutil showloaded --list-only | grep nullmoth` for `NVRM`, `NVRMFB`, `NVAccel` and `NVRMAGDC`. A boot log that reports no published framebuffer heads and no active accelerator requires checking kext loading and the kernel collection before investigating shader rendering.
+| Built artifact | Destination relative to the output `pkgroot` |
+|---|---|
+| `out/plugin-<current-commit>-release/NVMTLDriver` | `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/NVMTLDriver` |
+| `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` and the plugin's separate translator copy, if present |
+| `kexts/NVRMFB/fb/Info.plist` | `Library/Extensions/NVRMFB.kext/Contents/Info.plist` |
 
-The loader prefers a translator library beside the plugin executable if one exists: `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib`. If your package contains a separate copy there, replace it with the same rebuilt library too; a symlink to the canonical `nvmtl` library can keep pointing there. Otherwise that older copy would take precedence over the patched translator.
+The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. Plugin resources, the prebuilt NVRM/NVRMAGDC/framebuffer binaries, NVK, firmware, and the Sequoia accelerator are retained from the base package.
+
+The four PRs do not require rebuilding NVAccel. If you also built the Tahoe accelerator in section 6 and have a compatible prebuilt framebuffer, include it explicitly:
+
+```bash
+python3 build/stage_package.py "/path/to/upstream/pkgroot" \
+  "$HOME/nvmtl-build/tahoe-package/pkgroot" \
+  --accel-26 out/tahoe/NVAccel.kext
+```
+
+This replaces `Library/NullMoth/kexts/26/NVAccel.kext` and refreshes its nested `SHA256SUMS`. With `accel_build_all.sh`, the corresponding input is `out/accel/26/NVAccel.kext`. Both prebuilt OS variants must be present because upstream's installer requires them; this helper updates only the Tahoe accelerator when requested.
+
+For outputs in other locations, use `--plugin /path/to/NVMTLDriver`, `--translator /path/to/libnvmtl_translate.dylib`, and optionally `--framebuffer-plist /path/to/Info.plist`. The helper checks that replacement binaries contain x86_64 code. It copies finalized binaries byte-for-byte and performs no signing or install-name edits. Complete the translator build steps in section 5 first.
+
+The package's upstream `install.sh`, `uninstall.sh`, supporting tools, and `VERSION` are preserved. The helper makes the two scripts executable, regenerates the root `SHA256SUMS` over the final package, and verifies every generated checksum. These are packaging checks; they do not establish compatibility between a newer source build and an older prebuilt framebuffer or NVK. This stages the Tahoe PR outputs, not every component changed by the upstream merge described at the top of this guide.
+
+The standalone signing helper has been removed. This workflow uses the SIP and Secure Boot settings in [README.md](README.md#wiring-into-an-existing-opencore-setup). [Apple documents unsigned development kexts](https://developer.apple.com/library/archive/documentation/Security/Conceptual/System_Integrity_Protection_Guide/KernelExtensions/KernelExtensions.html) with the relevant SIP restrictions disabled. The staging helper does not validate or repair code signatures: changing a signed bundle can invalidate its existing seal, as described in [Apple's code signature guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/AboutCS/AboutCS.html). A correct package checksum is separate from kernel approval and loading.
+
+Install the resulting package **while running Tahoe**:
+
+```bash
+cd "$HOME/nvmtl-build/tahoe-package/pkgroot"
+shasum -a 256 -c SHA256SUMS --quiet
+sudo bash ./install.sh
+```
+
+After the installer reports success, reboot. It selects the Tahoe accelerator and rebuilds the Auxiliary Kernel Collection. Verify after reboot:
+
+```bash
+kmutil showloaded --list-only | grep nullmoth
+```
+
+Expect `NVRM`, `NVRMFB`, `NVAccel`, and `NVRMAGDC`. The preserved uninstaller is available as `sudo bash ./uninstall.sh` from the same package directory. Use these tools on the installed OS, not in Recovery against another mounted volume.
+
+For distribution, create the archive outside `pkgroot`:
+
+```bash
+tar -czf "$HOME/nvmtl-build/nullmoth-tahoe-custom.tar.gz" \
+  -C "$HOME/nvmtl-build/tahoe-package" pkgroot
+```
 
 The plugin and translator builds retain the icon and glyph fixes; building the accelerators together keeps the framebuffer interface consistent. The plugin keys its shader cache by translator content, so a changed library gets a new shader-cache identity after the process restarts. An identical translator binary does not invalidate cached images.
 

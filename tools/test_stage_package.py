@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Real package copies/hashes, with only Apple's build tools simulated.
+
+This validates packaging on Windows/Linux too; it does not test macOS signing
+policy, an actual kmutil collection build, or GPU operation.
+"""
+import argparse
+import hashlib
+import importlib.util
+import io
+import os
+import plistlib
+import subprocess
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("stage_package", ROOT / "build/stage_package.py")
+STAGE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(STAGE)
+
+
+class StagePackage(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="nullmoth stage tests ")
+        self.root = Path(self.temp.name).resolve()
+        self.base = self.root / "upstream pkgroot"
+        self.output = self.root / "fork pkgroot"
+        self.build = self.root / "built outputs"
+        self.build.mkdir()
+        self.calls = []
+        for name in ("install.sh", "uninstall.sh", "nullmoth-runtime-check.sh", "nullmoth-runtime-check"):
+            self.put(self.base / name, b"upstream tool: " + name.encode())
+        self.put(self.base / "VERSION", b"1.14.7\n")
+        self.put(self.base / "Users/Shared/nvfw/firmware.bin", b"firmware")
+        self.put(self.base / "Library/GPUBundles/nvmtl-allow.txt", b"WindowServer\n")
+        self.put(self.base / "Library/GPUBundles/NVIDIAShared.bundle/Contents/resource", b"shared resource")
+        self.put(self.base / "payload with spaces.txt", b"other payload")
+        for relative, name in ((STAGE.PLUGIN, "NVMTLDriver"), (STAGE.FRAMEBUFFER, "NVRMFB"),
+                               (STAGE.ACCEL["15"], "NVAccel"), (STAGE.ACCEL["26"], "NVAccel"),
+                               (Path("Library/Extensions/NVRM.kext"), "NVRM"),
+                               (Path("Library/Extensions/NVRMAGDC.kext"), "NVRMAGDC")):
+            self.make_bundle(self.base / relative, name, b"upstream binary")
+        self.put(self.base / STAGE.PLUGIN / "Contents/Resources/preserved.txt", b"plugin resources")
+        self.put(self.base / STAGE.TRANSLATOR, b"old canonical translator")
+        self.put(self.base / STAGE.BUNDLED_TRANSLATOR, b"old preferred translator")
+        self.put(self.base / STAGE.RUNTIME / "libvulkan_nouveau.dylib", b"old NVK")
+        self.plugin = self.put(self.build / "NVMTLDriver", b"new plugin")
+        self.translator = self.put(self.build / "libnvmtl_translate.dylib", b"new translator")
+        self.plist = self.put(self.build / "Info.plist", (ROOT / "kexts/NVRMFB/fb/Info.plist").read_bytes())
+        self.args = argparse.Namespace(base=self.base, output=self.output, plugin=self.plugin,
+                                      translator=self.translator, framebuffer_plist=self.plist,
+                                      accel_26=None)
+        self.seal_base()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @staticmethod
+    def put(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def make_bundle(self, path, name, data):
+        self.put(path / "Contents/Info.plist", plistlib.dumps({"CFBundleExecutable": name}))
+        self.put(path / "Contents/MacOS" / name, data)
+        return path
+
+    @staticmethod
+    def snapshot(root):
+        return {p.relative_to(root).as_posix(): os.readlink(p) if p.is_symlink() else p.read_bytes()
+                for p in root.rglob("*") if p.is_symlink() or p.is_file()}
+
+    def seal_base(self):
+        for relative in STAGE.ACCEL.values():
+            STAGE.write_manifest(self.base / relative.parent)
+        STAGE.write_manifest(self.base)
+        self.original = self.snapshot(self.base)
+        self.original_build = self.snapshot(self.build)
+
+    def fake_run(self, *args, check=True):
+        args = tuple(str(a) for a in args)
+        self.calls.append(args)
+        tool, status, stdout = args[0], 0, ""
+        if tool == "git":
+            stdout = "feed123\n"
+        elif tool == "lipo":
+            status = int(Path(args[-1]).read_bytes().startswith(b"ARM64"))
+        else:
+            self.fail("unexpected command: " + repr(args))
+        result = subprocess.CompletedProcess(args, status, stdout, "simulated failure" if status else "")
+        if check and status:
+            raise ValueError(tool + " failed")
+        return result
+
+    def stage(self):
+        with mock.patch.object(STAGE.sys, "platform", "darwin"), \
+                mock.patch.object(STAGE, "run", side_effect=self.fake_run), redirect_stdout(io.StringIO()):
+            return STAGE.stage(self.args)
+
+    def assert_unchanged(self):
+        self.assertEqual(self.snapshot(self.base), self.original)
+        self.assertEqual(self.snapshot(self.build), self.original_build)
+        self.assertFalse(list(self.root.glob(".nullmoth-stage-*")))
+
+    def assert_manifest(self, root):
+        # Independently check coverage as well as every digest, including the
+        # nested accelerator manifests used by the package layout.
+        entries = {}
+        for row in (root / "SHA256SUMS").read_text().splitlines():
+            checksum, relative = row.split("  ", 1)
+            entries[relative] = checksum
+            self.assertEqual(hashlib.sha256((root / relative).read_bytes()).hexdigest(), checksum)
+        expected = {"./" + p.relative_to(root).as_posix() for p in root.rglob("*")
+                    if p.is_file() and not p.is_symlink() and p != root / "SHA256SUMS"}
+        self.assertEqual(set(entries), expected)
+
+    def test_pr_outputs_and_manifests_preserve_upstream_tools_and_unsigned_kexts(self):
+        self.stage()
+        self.assert_unchanged()
+        for name in ("install.sh", "uninstall.sh", "nullmoth-runtime-check.sh", "nullmoth-runtime-check", "VERSION"):
+            self.assertEqual((self.output / name).read_bytes(), (self.base / name).read_bytes())
+        self.assertEqual((self.output / STAGE.PLUGIN / "Contents/MacOS/NVMTLDriver").read_bytes(), b"new plugin")
+        self.assertEqual((self.output / STAGE.BUNDLED_TRANSLATOR).read_bytes(),
+                         (self.output / STAGE.TRANSLATOR).read_bytes())
+        self.assertEqual((self.output / STAGE.TRANSLATOR).read_bytes(), self.translator.read_bytes())
+        self.assertEqual((self.output / STAGE.FRAMEBUFFER / "Contents/Info.plist").read_bytes(), self.plist.read_bytes())
+        self.assertEqual((self.output / STAGE.PLUGIN / "Contents/Resources/preserved.txt").read_bytes(), b"plugin resources")
+        for relative in STAGE.ACCEL.values():
+            self.assertEqual((self.output / relative / "Contents/MacOS/NVAccel").read_bytes(), b"upstream binary")
+            self.assert_manifest(self.output / relative.parent)
+        self.assert_manifest(self.output)
+
+    def test_optional_tahoe_accelerator_replaces_whole_bundle_and_preserves_sequoia(self):
+        self.args.accel_26 = self.make_bundle(self.build / "26/NVAccel.kext", "NVAccel", b"Tahoe accelerator")
+        self.put(self.base / STAGE.ACCEL["26"] / "Contents/obsolete.txt", b"must not survive overlay")
+        self.seal_base()
+        self.stage()
+        self.assert_unchanged()
+        self.assertFalse((self.output / STAGE.ACCEL["26"] / "Contents/obsolete.txt").exists())
+        for major, expected in (("26", b"Tahoe accelerator"), ("15", b"upstream binary")):
+            self.assertEqual((self.output / STAGE.ACCEL[major] / "Contents/MacOS/NVAccel").read_bytes(), expected)
+        self.assertEqual(self.snapshot(self.output / STAGE.ACCEL["15"].parent),
+                         self.snapshot(self.base / STAGE.ACCEL["15"].parent))
+        self.assertEqual((self.output / STAGE.FRAMEBUFFER / "Contents/MacOS/NVRMFB").read_bytes(), b"upstream binary")
+        self.assertEqual((self.output / STAGE.RUNTIME / "libvulkan_nouveau.dylib").read_bytes(), b"old NVK")
+        self.assert_manifest(self.output / STAGE.ACCEL["26"].parent)
+        self.assert_manifest(self.output)
+
+    def test_package_without_bundled_translator_uses_the_canonical_library(self):
+        (self.base / STAGE.BUNDLED_TRANSLATOR).unlink()
+        self.seal_base()
+        self.stage()
+        self.assertFalse((self.output / STAGE.BUNDLED_TRANSLATOR).exists())
+        self.assertEqual((self.output / STAGE.TRANSLATOR).read_bytes(), self.translator.read_bytes())
+        self.assert_unchanged()
+
+    def symlink(self, link, target):
+        try:
+            link.symlink_to(Path(target))
+        except OSError as error:
+            self.skipTest("symlinks unavailable: " + str(error))
+
+    def test_translator_symlink_keeps_pointing_at_the_updated_canonical_library(self):
+        link = self.base / STAGE.BUNDLED_TRANSLATOR
+        link.unlink()
+        self.symlink(link, "../../../nvmtl/libnvmtl_translate.dylib")
+        self.seal_base()
+        self.stage()
+        result = self.output / STAGE.BUNDLED_TRANSLATOR
+        self.assertTrue(result.is_symlink())
+        self.assertEqual(result.read_bytes(), (self.output / STAGE.TRANSLATOR).read_bytes())
+        self.assert_unchanged()
+        self.assert_manifest(self.output)
+
+    def test_missing_prebuilt_accelerator_is_rejected(self):
+        (self.base / STAGE.ACCEL["15"] / "Contents/MacOS/NVAccel").unlink()
+        self.seal_base()
+        with self.assertRaisesRegex(ValueError, "missing regular file"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_bad_input_checksum_is_rejected_without_publishing(self):
+        self.put(self.base / "VERSION", b"tampered")
+        self.original = self.snapshot(self.base)
+        with self.assertRaisesRegex(ValueError, "SHA256SUMS mismatch"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_failed_copy_does_not_publish_or_modify_input(self):
+        replace = STAGE.replace_file
+        def fail_translator(source, destination):
+            if destination.name == "libnvmtl_translate.dylib":
+                raise OSError("simulated copy failure")
+            replace(source, destination)
+        with mock.patch.object(STAGE, "replace_file", side_effect=fail_translator), \
+                self.assertRaisesRegex(OSError, "simulated copy failure"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_failed_manifest_verification_does_not_publish(self):
+        verify = STAGE.verify_manifest
+        def fail_candidate(root):
+            if root != self.base:
+                raise ValueError("candidate checksum failure")
+            verify(root)
+        with mock.patch.object(STAGE, "verify_manifest", side_effect=fail_candidate), \
+                self.assertRaisesRegex(ValueError, "candidate checksum failure"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_wrong_architecture_is_rejected_before_copying(self):
+        self.plugin.write_bytes(b"ARM64-only plugin")
+        self.original_build = self.snapshot(self.build)
+        with self.assertRaisesRegex(ValueError, "lipo failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_existing_output_is_not_overwritten(self):
+        self.put(self.output / "keep.txt", b"previous package")
+        with self.assertRaisesRegex(ValueError, "output already exists"):
+            self.stage()
+        self.assertEqual((self.output / "keep.txt").read_bytes(), b"previous package")
+        self.assert_unchanged()
+
+    def test_output_inside_input_is_rejected(self):
+        self.args.output = self.base / "nested"
+        with self.assertRaisesRegex(ValueError, "outside the upstream package"):
+            self.stage()
+        self.assert_unchanged()
+
+    def test_external_symlink_is_rejected_without_touching_its_target(self):
+        external = self.put(self.root / "external.dylib", b"must not change")
+        self.symlink(self.base / "external.dylib", "../external.dylib")
+        self.seal_base()
+        with self.assertRaisesRegex(ValueError, "symlink escapes"):
+            self.stage()
+        self.assertEqual(external.read_bytes(), b"must not change")
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_non_macos_refuses(self):
+        with mock.patch.object(STAGE.sys, "platform", "win32"), self.assertRaisesRegex(ValueError, "macOS"):
+            STAGE.stage(self.args)
+        self.assertFalse(self.output.exists())
+
+    def test_manifest_escaping_round_trip(self):
+        for name in ("./plain name", "./with\\backslash", "./with\nnewline", "./with\rcarriage"):
+            prefix, escaped = STAGE.manifest_name(name)
+            self.assertEqual(STAGE.decode_name(escaped) if prefix else escaped, name)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

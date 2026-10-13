@@ -1,5 +1,6 @@
 # Preserve Unix line endings in the patch applied to Mesa on macOS.
 nvk/nvk-macos.patch text eol=lf
 
-# This helper runs directly with macOS bash.
-build/sign_package.sh text eol=lf
+# Keep the package helper and its regression tests portable.
+build/stage_package.py text eol=lf
+tools/test_stage_package.py text eol=lf
