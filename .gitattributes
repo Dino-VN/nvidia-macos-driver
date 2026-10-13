@@ -1,0 +1,2 @@
+# Preserve Unix line endings in the patch applied to Mesa on macOS.
+nvk/nvk-macos.patch text eol=lf
