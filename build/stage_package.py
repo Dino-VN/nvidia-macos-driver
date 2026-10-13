@@ -49,11 +49,20 @@ def digest(path):
 
 
 def validate_links(root):
-    # Absolute links would keep pointing at the input (or installed system).
+    # Resolve installed absolute paths against the staged package root. This
+    # accepts the package's /Library/... runtime links without following them
+    # into the live system or the source package.
     for entry in root.rglob("*"):
         if entry.is_symlink():
-            require(not os.path.isabs(os.readlink(entry)), "absolute package symlink: " + str(entry))
-            require(inside(entry.resolve(strict=True), root), "package symlink escapes its root: " + str(entry))
+            current = entry
+            seen = set()
+            while current.is_symlink():
+                require(current not in seen, "package symlink loop: " + str(entry))
+                seen.add(current)
+                target = Path(os.readlink(current))
+                require(".." not in target.parts, "package symlink contains parent traversal: " + str(entry))
+                current = (root / target.relative_to("/")) if target.is_absolute() else (current.parent / target)
+            require(inside(current.resolve(strict=True), root), "package symlink escapes its root: " + str(entry))
 
 
 def regular(path):
@@ -141,7 +150,16 @@ def stage(args):
         bundle(base / "Library/Extensions" / (name + ".kext"), name)
     for path in ACCEL.values():
         bundle(base / path, "NVAccel")
-    regular(base / TRANSLATOR)
+    # Older upstream package builds keep the translator only beside the
+    # plugin executable. Accept that layout; staging creates the canonical
+    # nvmtl copy and refreshes the plugin copy below.
+    canonical_translator = base / TRANSLATOR
+    bundled_translator = base / BUNDLED_TRANSLATOR
+    require(
+        (canonical_translator.is_file() and not canonical_translator.is_symlink())
+        or bundled_translator.is_file(),
+        "missing packaged translator: " + str(TRANSLATOR),
+    )
     regular(base / RUNTIME / "libvulkan_nouveau.dylib")
     validate_links(base)
     verify_manifest(base)
@@ -159,9 +177,9 @@ def stage(args):
     if args.accel_26:
         bundle(args.accel_26, "NVAccel")
         validate_links(args.accel_26.resolve())
-        run("lipo", "-verify_arch", "x86_64", args.accel_26 / "Contents/MacOS/NVAccel")
+        run("lipo", args.accel_26 / "Contents/MacOS/NVAccel", "-verify_arch", "x86_64")
     for source, _ in replacements:
-        run("lipo", "-verify_arch", "x86_64", source)
+        run("lipo", source, "-verify_arch", "x86_64")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".nullmoth-stage-", dir=output.parent) as temporary:

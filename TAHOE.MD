@@ -9,7 +9,7 @@ This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 | `NVRMFB.kext/Contents/Info.plist` | PR #131: restrict the framebuffer claim to NVIDIA display-class PCI devices | `kexts/NVRMFB/fb/Info.plist` |
 
-None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. A separate kext-signing step is not required for the documented configuration that permits unsigned development kexts. Signing does not grant kext loading approval.
+None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. This Tahoe test workflow does not require code signing; signing would not grant kext loading approval.
 
 The upstream merge itself also updates `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
@@ -107,10 +107,9 @@ A successful build prints `markers-missing 0` and the path to the executable. Ve
 plugin_out="$HOME/nvmtl-build/LIVE/out/plugin-$(git rev-parse --short HEAD)-release"
 
 file "$plugin_out/NVMTLDriver"
-codesign --verify --verbose=2 "$plugin_out/NVMTLDriver"
 ```
 
-Expect an **x86_64 Mach-O bundle** and successful signature verification. This produces the plugin executable, rather than an entire `.bundle` directory or installer.
+Expect an **x86_64 Mach-O bundle**. This produces the plugin executable, rather than an entire `.bundle` directory or installer.
 
 If compilation fails, inspect the full compiler output:
 
@@ -136,18 +135,16 @@ cargo build --release \
 
 This direct Cargo command uses the translator in this checkout. The repository's `build/build_xlate.sh` defaults to a separate `~/nvmtl-build/bindless` tree and also expects release-check files outside this public checkout, so use the command above for this guide.
 
-Set the library's install name, sign it, and verify the output:
+Set the library's install name and inspect the output:
 
 ```bash
 translator_out="$HOME/nvmtl-build/LIVE/out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib"
 
 install_name_tool -id @rpath/libnvmtl_translate.dylib "$translator_out"
-codesign --force --sign - "$translator_out"
 file "$translator_out"
-codesign --verify --verbose=2 "$translator_out"
 ```
 
-Expect an **x86_64 Mach-O dynamic library** and successful signature verification. The build uses the Rust sources directly; Apple's private AIR fixtures are not required to build the release library. The full translator test suite does reference unpublished `validation/fixtures`, so a missing-fixture test failure is distinct from a release-library build failure.
+Expect an **x86_64 Mach-O dynamic library**. The build uses the Rust sources directly; Apple's private AIR fixtures are not required to build the release library. The full translator test suite does reference unpublished `validation/fixtures`, so a missing-fixture test failure is distinct from a release-library build failure.
 
 ## 6. Build NVAccel.kext for Tahoe
 
@@ -244,7 +241,7 @@ For outputs in other locations, use `--plugin /path/to/NVMTLDriver`, `--translat
 
 The package's upstream `install.sh`, `uninstall.sh`, supporting tools, and `VERSION` are preserved. The helper makes the two scripts executable, regenerates the root `SHA256SUMS` over the final package, and verifies every generated checksum. These are packaging checks; they do not establish compatibility between a newer source build and an older prebuilt framebuffer or NVK. This stages the Tahoe PR outputs, not every component changed by the upstream merge described at the top of this guide.
 
-The standalone signing helper has been removed. This workflow uses the SIP and Secure Boot settings in [README.md](README.md#wiring-into-an-existing-opencore-setup). [Apple documents unsigned development kexts](https://developer.apple.com/library/archive/documentation/Security/Conceptual/System_Integrity_Protection_Guide/KernelExtensions/KernelExtensions.html) with the relevant SIP restrictions disabled. The staging helper does not validate or repair code signatures: changing a signed bundle can invalidate its existing seal, as described in [Apple's code signature guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/AboutCS/AboutCS.html). A correct package checksum is separate from kernel approval and loading.
+This workflow uses the SIP and Secure Boot settings in [README.md](README.md#wiring-into-an-existing-opencore-setup). [Apple documents unsigned development kexts](https://developer.apple.com/library/archive/documentation/Security/Conceptual/System_Integrity_Protection_Guide/KernelExtensions/KernelExtensions.html) with the relevant SIP restrictions disabled. A correct package checksum is separate from kernel approval and loading.
 
 Install the resulting package **while running Tahoe**:
 
