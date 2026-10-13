@@ -1,22 +1,27 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide builds the Tahoe components from this fork after merging upstream **1.14.2** (`1083a98`). The PR #79 icon fixes and PR #112 Settings glyph fix from our working 1.13-based fork are retained; upstream now includes those changes too. The five Objective-C files carrying PR #79 and the entire translator are unchanged from our tested 1.14.0 merge (`d7c77cf`). Version 1.14.2 adds crash guards in the plugin's Vulkan backend; those checks still use the texture view's format when present.
+This guide targets upstream **main at `4b0a8c7`**, which contains changes beyond release **1.14.7**, plus PRs **#171, #136, #147 and #131**. The PR #79 Dock icon fixes and PR #112 System Settings glyph fix from our working fork are retained. The source and regression lines added by both icon patches were checked against the combined tree.
 
 | Component | Purpose | Build output |
 |---|---|---|
-| `NVMTLDriver` | PR #79: shader linking, sampler variants, and texture channel mapping for icon layers | `out/plugin-<commit>-release/NVMTLDriver` |
-| `libnvmtl_translate.dylib` | PR #112: preserve buffer offsets in CoreImage resize helpers, restoring small System Settings icon glyphs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
+| `NVMTLDriver` | Retained icon rendering, PR #171 Vulkan features, PR #136 MSAA sample positions, and optional PR #147 surface scheduling | `out/plugin-<commit>-release/NVMTLDriver` |
+| `libnvmtl_translate.dylib` | Retained Settings glyph fix and PR #171 shader translation repairs | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` |
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
+| `NVRMFB.kext/Contents/Info.plist` | PR #131: restrict the framebuffer claim to NVIDIA display-class PCI devices | `kexts/NVRMFB/fb/Info.plist` |
 
-Use these outputs with the matching **1.14.2 driver package and user-space libraries**. Upgrade the complete package when moving from 1.13; keep the kernel drivers, NVK runtime, plugin, and translator from the matching version. The original stale Tahoe accelerator issue is reported fixed in upstream 1.14.0, which also supplies a script to build both accelerators together. Version 1.14.1 additionally makes the GPU ACPI backlight queries opt-in (`nvrmacpibl=1`) to avoid the reported 1.14.0 startup hangs; leave that argument unset unless intentionally testing laptop backlight support.
+None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary.
 
-Version 1.14.2 fixes a black login window reported on high-refresh monitors and adds Vulkan crash guards. Its published NVK patch also includes the system-memory mapping flag needed by RTX 20 / GTX 16 GPUs, bringing the source into line with the shipped runtime. Upstream still lists a dark or frozen screen during "Start once without NVIDIA driver" as unresolved; the new firmware-framebuffer fallback does not establish that this recovery path works on every PC.
+The upstream merge itself also updates `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
+
+PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. PR #131 preserves the modern framebuffer's `NVRMBootFB` personality; its test compares the NVIDIA claim in both plist copies without requiring the entire files to be identical.
+
+PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
 Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. macOS compilation and GPU testing have not been performed in this Windows workspace.
 
-Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user subsequently confirmed that this fork's retained icon fixes resolve the issue on their Hackintosh. Preserve that working plugin and translator source when updating. Inspection of the official plugin found the PR #79 linking, linked-stage, and swizzle markers too; the reason for the difference in rendering has not been isolated.
+Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That result applies to the previously tested build; the new merged build still needs macOS and GPU validation.
 
-The merge keeps specialized-name linking, linked stages for pixel-sampler variants, and swizzled sampled views. Compute storage bindings also keep upstream's HDR storage-texture handling. Both files implementing and testing PR #112 are identical to our previously working fork. The fallback for missing NVIDIA Darwin build metadata remains in `build/accel_build.sh`.
+The merge keeps specialized-name linking, linked stages for pixel-sampler variants, swizzled sampled views and the buffer-offset repair for CoreImage resize helpers. It also keeps upstream's HDR storage-texture handling and newer stage-output repair. The fallback for missing NVIDIA Darwin build metadata remains in `build/accel_build.sh`.
 
 ## 1. Use the committed merge
 
@@ -113,7 +118,7 @@ If compilation fails, inspect the full compiler output:
 cat "$plugin_out/NVMTLDriver.err"
 ```
 
-PR #79 changes the plugin; PR #112 changes the translator. Build both for this verification. These two fixes do not require a custom Mesa build; use the matching **1.14.2 NVK runtime** from the complete package.
+PRs #79, #136, #147 and #171 affect the plugin; PRs #112 and #171 affect the translator. Build both for this verification. These PRs do not themselves change Mesa, but current upstream main includes an NVK connection-pool repair beyond the released 1.14.7 runtime.
 
 ## 5. Build the System Settings glyph-fix translator
 
@@ -205,17 +210,18 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Package and install the matching components
 
-These build commands do not install anything. In a copy of the matching extracted **1.14.2** driver package, replace:
+These build commands do not install anything. Use a package staging tree with the matching upstream components, then replace:
 
 | Built artifact | Destination relative to the package's `pkgroot` |
 |---|---|
 | `out/plugin-<commit>-release/NVMTLDriver` | `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/NVMTLDriver` |
 | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` |
 | `out/tahoe/NVAccel.kext` | `Library/NullMoth/kexts/26/NVAccel.kext` |
+| `kexts/NVRMFB/fb/Info.plist` | `Library/Extensions/NVRMFB.kext/Contents/Info.plist` |
 
 If you used `accel_build_all.sh`, use `out/accel/26/NVAccel.kext` for the Tahoe row and replace `Library/NullMoth/kexts/15/NVAccel.kext` with `out/accel/15/NVAccel.kext` as well.
 
-Preserve the plugin bundle's other resources and the matching runtime libraries. Regenerate the package's `SHA256SUMS` after replacing the artifacts, then install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation.
+Preserve the plugin bundle's other resources and use the matching runtime libraries and framebuffer binary. Re-sign and strictly verify the complete `NVMTLDriver.bundle` after replacing its executable or bundled translator. Regenerate the package's `SHA256SUMS` after replacing the artifacts, then install the corrected package **while running Tahoe**. The installer selects the accelerator for the running OS, updates its cached copy, and rebuilds the Auxiliary Kernel Collection. Reboot after installation.
 
 The loader prefers a translator library beside the plugin executable if one exists: `Library/GPUBundles/NVMTLDriver.bundle/Contents/MacOS/libnvmtl_translate.dylib`. If your package contains a separate copy there, replace it with the same rebuilt library too; a symlink to the canonical `nvmtl` library can keep pointing there. Otherwise that older copy would take precedence over the patched translator.
 
@@ -264,6 +270,12 @@ PR #112 reports restored System Settings sidebar glyphs on RTX 5070 Ti / macOS 2
 
 ## References
 
+- [Upstream snapshot merged into this fork](https://github.com/nullmoth/nvidia-macos-driver/commit/4b0a8c7926afb884b55dc0603f5b8057e1779bb2).
+- [Upstream 1.14.7 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.7).
+- [PR #171: WoW Classic shader translation and Vulkan feature fixes](https://github.com/nullmoth/nvidia-macos-driver/pull/171) — revision `47e3e08192d36e6aef67cf433adb24c4dce9eddf`.
+- [PR #136: MSAA without programmable 1x sample positions](https://github.com/nullmoth/nvidia-macos-driver/pull/136) — revision `a4d77592b2bca750a346f20475dce462cf120bd1`, adapted to retain upstream's default-position fallback.
+- [PR #147: optional scheduled notification after surface writes](https://github.com/nullmoth/nvidia-macos-driver/pull/147) — revision `648df70fe27f302634045611ad5042fdc88764bc`.
+- [PR #131: NVIDIA-only framebuffer claim](https://github.com/nullmoth/nvidia-macos-driver/pull/131) — revision `1f10026e780c104b90a3aa011ac93c2208bbd439`, with its plist-equality test adapted.
 - [Upstream 1.14.2 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.2).
 - [Upstream 1.14.1 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.1).
 - [Upstream 1.14.0 release](https://github.com/nullmoth/nvidia-macos-driver/releases/tag/v1.14.0).

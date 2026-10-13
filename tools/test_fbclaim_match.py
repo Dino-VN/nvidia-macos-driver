@@ -37,8 +37,10 @@ class FBClaim(unittest.TestCase):
     def setUp(self):
         self.claim = plistlib.loads(FB[0].read_bytes())["IOKitPersonalities"]["NVRMFBClaim"]
 
-    def test_both_fb_plists_identical(self):
-        self.assertEqual(FB[0].read_bytes(), FB[1].read_bytes())
+    def test_both_fb_claims_identical(self):
+        # The modern framebuffer also has NVRMBootFB; only the PCI claim must match.
+        legacy = plistlib.loads(FB[1].read_bytes())["IOKitPersonalities"]["NVRMFBClaim"]
+        self.assertEqual(self.claim, legacy)
 
     def test_same_vendor_and_class_match_as_nvrm(self):
         nvrm = plistlib.loads((ROOT / "kexts/NVRM/Info.plist").read_bytes())["IOKitPersonalities"]["NVRM"]
