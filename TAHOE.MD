@@ -9,7 +9,7 @@ This guide targets upstream **1.15.0 at `56bc4f9`**, plus PRs **#171, #136, #147
 | `NVAccel.kext` | Tahoe accelerator built from the same source as NVRMFB, keeping their VRAM interface compatible | `out/tahoe/NVAccel.kext` |
 | `NVRMFB.kext/Contents/Info.plist` | PR #131: restrict the framebuffer claim to NVIDIA display-class PCI devices | `kexts/NVRMFB/fb/Info.plist` |
 
-None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. This Tahoe test workflow does not require code signing; signing would not grant kext loading approval.
+None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
 The upstream merge itself also updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the main RM binary, framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
@@ -141,10 +141,11 @@ Set the library's install name and inspect the output:
 translator_out="$HOME/nvmtl-build/LIVE/out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib"
 
 install_name_tool -id @rpath/libnvmtl_translate.dylib "$translator_out"
+codesign --force --sign - "$translator_out"
 file "$translator_out"
 ```
 
-Expect an **x86_64 Mach-O dynamic library**. The build uses the Rust sources directly; Apple's private AIR fixtures are not required to build the release library. The full translator test suite does reference unpublished `validation/fixtures`, so a missing-fixture test failure is distinct from a release-library build failure.
+Expect an **x86_64 Mach-O dynamic library**. WindowServer requires an ad-hoc signature on this userland library. Sign it after setting its install name; the staging helper preserves the finalized bytes. The build uses the Rust sources directly; Apple's private AIR fixtures are not required to build the release library. The full translator test suite does reference unpublished `validation/fixtures`, so a missing-fixture test failure is distinct from a release-library build failure.
 
 ## 6. Build NVAccel.kext for Tahoe
 
