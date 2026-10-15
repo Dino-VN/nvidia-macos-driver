@@ -50,12 +50,12 @@ with tempfile.TemporaryDirectory() as d:
         sys.exit('could not compile the budget functions - check is UNKNOWN, not clean')
     rows = {int(a): (int(b), int(p)) for a, b, p in (l.split() for l in subprocess.check_output([str(exe)], text=True).splitlines())}
 check('a 64 MB BAR1 gets 48 MB of surfaces, not 192', rows[64][0] == 48, f'{rows[64][0]} MB')
-check('a 64 MB BAR1 keeps the tested 32 MB park ceiling', rows[64][1] == 32, f'{rows[64][1]} MB')
-check('a 128 MB BAR1 gets 96 MB and a 64 MB park ceiling', rows[128] == (96, 64), str(rows[128]))
+check('a 64 MB BAR1 parks at most 16 MB', rows[64][1] == 16, f'{rows[64][1]} MB')
+check('a 128 MB BAR1 gets 96 MB and parks at most 32 MB', rows[128] == (96, 32), str(rows[128]))
 check('the 256 MB firmware window keeps 192 MB and a 32 MB ceiling', rows[256] == (192, 32), str(rows[256]))
-check('an unknown window refuses surface grants', rows[0][0] == 0, f'{rows[0][0]} MB')
+check('an unknown window keeps the 192 MB default', rows[0][0] == 192, f'{rows[0][0]} MB')
 check('an 8 GB resizable BAR1 keeps half for surfaces and a 64 MB ceiling', rows[8192] == (4096, 64), str(rows[8192]))
 disc = func('static void nvrmDiscoverBar1(')
-check('BAR1 discovery uses the live PCI BAR1 identity, with no 256 MB minimum',
-      'nvrmBar1Memory(provider)' in disc and 'getDeviceMemoryWithRegister(0x14)' in src and '0x10000000ull' not in disc)
+check('BAR1 discovery skips BAR0 and takes the largest range, with no 256 MB minimum',
+      'for (IOItemCount i = 1; i < count; i++)' in disc and '0x10000000ull' not in disc)
 sys.exit(1 if fails else 0)

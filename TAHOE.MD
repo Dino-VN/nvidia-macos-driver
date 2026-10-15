@@ -2,7 +2,7 @@
 
 This guide targets upstream **2.0.0 at `606c8b0`**, with this fork's retained Tahoe icon, System Settings glyph, and borrowed-framebuffer fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
 
-Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. The framebuffer combines the tested small-aperture discovery and scanout fallbacks with upstream's newer display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing.
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB now uses the unmodified upstream 2.0.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -13,9 +13,9 @@ Chromium, Edge, and Electron keep their GPU path enabled by default in this fork
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-The 2.0.0 merge updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime. The framebuffer changes require its rebuilt binary as well as its plist. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the main RM binary, framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
+The 2.0.0 merge updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime. Use the official 2.0.0 package as the staging base: its RM, framebuffer and NVK match this tree's corresponding sources. Stage the fork's plugin, translator and Tahoe accelerator into that package. The commands below cover those three builds; they do not build the main RM binary, framebuffer binary or NVK. An older 1.14.7 or 1.15 package is not a matching base for this workflow. A framebuffer rebuild, if needed, must include its matching plist. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
-PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. PR #131 preserves the modern framebuffer's `NVRMBootFB` personality; its test compares the NVIDIA claim in both plist copies without requiring the entire files to be identical.
+PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
@@ -210,7 +210,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Stage the Tahoe PR outputs in an upstream package
 
-Extract an upstream prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
+Extract the official 2.0.0 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
 
 ```bash
 cd "$HOME/nvmtl-build/LIVE"

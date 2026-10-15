@@ -15,7 +15,6 @@
 #include <kern/thread_call.h>
 #include <mach/mach_time.h>
 #include <IOKit/IODeviceMemory.h>
-#include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IOSubMemoryDescriptor.h>
 #include <IOKit/graphics/IOFramebuffer.h>
@@ -52,11 +51,16 @@ extern "C" {
 #include <libkern/OSAtomic.h>
 #include "nvrm_vram_abi.h"
 
-// Do not assign the old 192 MiB minimum to a smaller or unknown aperture.
+// Surfaces may use half of a resizable BAR1 (>= 4 GB) and three quarters of a smaller one. WAS: a fixed 192 MB below
+// 4 GB, which is 3/4 of the 256 MB firmware window but left a 512 MB or 1 GB BAR1 no better off (issue #27).
+// A BAR1 under 256 MB (64 MB on some RTX 2060 boards) gets three quarters of itself too: the 192 MB floor promised
+// three times the window, so allocations failed inside mapMemory instead of being budgeted. Unknown (0) keeps 192 MB.
 static inline uint64_t nvrmVramBudget(uint64_t barLen)
 {
     if (barLen >= (4ull << 30)) return barLen / 2;
-    return barLen / 4 * 3;
+    uint64_t b = barLen / 4 * 3;
+    if (barLen && barLen < (256ull << 20)) return b;
+    return b > NVRM_VRAM_BAR1_BUDGET ? b : NVRM_VRAM_BAR1_BUDGET;
 }
 
 // The framebuffer's own scanout and cursor sit in BAR1 (useVideoMemory), yet the accel budget above never counted them,
@@ -71,46 +75,13 @@ static volatile SInt64 gVramDisplayBytes = 0;
 static int gVramDisplayAware = 1;
 static inline uint64_t nvrmSurfaceBudget(uint64_t barLen, SInt64 displayBytes)
 {
-    if (!barLen) return 0;
     if (barLen >= (4ull << 30)) return barLen / 2;        // resizable BAR: half, the display is a rounding error
     if (!gVramDisplayAware || displayBytes <= 0)
         return nvrmVramBudget(barLen);                     // display not measured yet -- keep the conservative policy
-    const uint64_t margin = barLen < (256ull << 20) ? 2ull << 20 : 16ull << 20;
+    const uint64_t margin = 16ull << 20;                   // RM's own BAR1 mappings are not tracked in gVramMappedBytes
     const uint64_t reserve = (uint64_t)displayBytes + margin;
-    if (reserve >= barLen) return 0;
-    const uint64_t available = barLen - reserve;
-    // Preserve the tested conservative policy on tiny apertures; larger ones use upstream display-aware accounting.
-    const uint64_t policy = nvrmVramBudget(barLen);
-    return barLen < (256ull << 20) && policy < available ? policy : available;
-}
-
-static volatile SInt64 gBar1Bytes = 0;
-static volatile SInt64 gScanoutBootSized, gScanoutMapFallbacks;
-static constexpr NvU64 kSmallBarThreshold = 256ull << 20;
-
-static IOMemoryDescriptor *nvrmBar1Memory(IOService *provider)
-{
-    for (IOService *nub = provider; nub; nub = nub->getProvider()) {
-        IOPCIDevice *pci = OSDynamicCast(IOPCIDevice, nub);
-        if (!pci) continue;
-        const UInt32 low = pci->configRead32(0x14);
-        if (!low || low == 0xffffffffu || (low & 1)) return nullptr;
-        NvU64 base = (NvU64)(low & ~0xfu);
-        if (((low >> 1) & 3) == 2) base |= (NvU64)pci->configRead32(0x18) << 32;
-        if (!base) return nullptr;
-        IOMemoryDescriptor *memory = pci->getDeviceMemoryWithRegister(0x14);
-        if (memory && memory->getLength() &&
-            memory->getPhysicalSegment(0, 0, kIOMemoryMapperNone) == base) return memory;
-        // NVRM can replace the PCI aperture list with untagged descriptors after moving BAR1.
-        // Match the live BAR1 address, rather than guessing its identity from its size.
-        for (IOItemCount i = 0; i < pci->getDeviceMemoryCount(); i++) {
-            memory = pci->getDeviceMemoryWithIndex(i);
-            if (memory && memory->getLength() &&
-                memory->getPhysicalSegment(0, 0, kIOMemoryMapperNone) == base) return memory;
-        }
-        return nullptr;
-    }
-    return nullptr;
+    if (reserve >= barLen) return nvrmVramBudget(barLen);  // pathological (display fills the window) -- fall back
+    return barLen - reserve;
 }
 
 // EDID base block bytes 21 and 22 hold the panel's physical size in centimetres. macOS wants it in
@@ -630,9 +601,14 @@ void NVRMNVDAFramebuffer::surveyBar1()
 {
     IOService *nub = pciNub();
     if (!nub) { FBLOG("BAR survey: no IOPCIDevice ancestor"); return; }
-    IOMemoryDescriptor *bar = nvrmBar1Memory(nub);
-    if (!bar) { FBLOG("BAR survey: no descriptor for PCI BAR1"); return; }
-    const addr64_t barPa = bar->getPhysicalSegment(0, 0, kIOMemoryMapperNone);
+    IOMemoryDescriptor *bar = NULL; addr64_t barPa = 0;
+    IOItemCount n = nub->getDeviceMemoryCount();
+    for (IOItemCount i = 0; i < n; i++) {
+        IOMemoryDescriptor *m = nub->getDeviceMemoryWithIndex(i);
+        if (!m) continue;
+        if (m->getLength() >= 0x10000000ull) { bar = m; barPa = m->getPhysicalSegment(0, 0, kIOMemoryMapperNone); break; }
+    }
+    if (!bar) { FBLOG("BAR survey: no BAR >= 256 MB"); return; }
     fBarLen = bar->getLength(); fBar1Base = (NvU64)barPa;
     FBLOG("BAR survey: mapping ALL of BAR1 pa 0x%llx len %llu MB", fBar1Base, fBarLen >> 20);
     fBarMem = IOSubMemoryDescriptor::withSubRange(bar, 0, (IOByteCount)fBarLen, kIODirectionNone);
@@ -880,12 +856,6 @@ bool NVRMNVDAFramebuffer::kapiInit()
     {
         fBootMode = fMode; fBootW = fW; fBootH = fH; fBootPitch = fPitch; fRasterW = fW; fRasterH = fH; fPitchAlign = pitchAlign;
         computeScanoutCaps(pitchAlign);
-        if (fBarLen && fBarLen < kSmallBarThreshold) {
-            fAllocSize = fSize; fScalerMaxW = fW; fScalerMaxH = fH; fRasterMaxW = fW;
-            OSAddAtomic64(1, &gScanoutBootSized);
-            FBLOG("small-BAR test v2: %llu MiB BAR1; scanout restricted to current mode %ux%u (%llu bytes)",
-                  (unsigned long long)(fBarLen >> 20), fW, fH, (unsigned long long)fSize);
-        }
         FBLOG("fbmodes: boot raster %ux%u pitch %u; scanout allocation sized for %ux%u (%llu KB, boot needs %llu KB)",
               fW, fH, fPitch, fScalerMaxW, fScalerMaxH, fAllocSize / 1024, fSize / 1024);
     }
@@ -940,14 +910,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
         fKva = nullptr; fUserPhys = nullptr;
         if (!fKms->mapMemory(fDev, fMem, NVKMS_KAPI_MAPPING_TYPE_KERNEL, &fKva) || !fKva) {
             FBLOG("%s: mapMemory(KERNEL) failed", what);
-            fKms->freeMemory(fDev, fMem); fMem = nullptr; fKva = nullptr; fMemBytes = 0;
-            if (mp.size > fSize) {
-                fAllocSize = fSize; fScalerMaxW = fW; fScalerMaxH = fH; fRasterMaxW = fW;
-                OSAddAtomic64(1, &gScanoutMapFallbacks);
-                FBLOG("small-BAR test v2: %s scaled scanout mapping failed; retrying current mode (%llu bytes)",
-                      what, (unsigned long long)fSize);
-            }
-            continue;
+            fKms->freeMemory(fDev, fMem); fMem = nullptr; continue;
         }
         NvBool contig = fKms->isContiguous ? fKms->isContiguous(fMem) : NV_FALSE;
         NvU64 kernelPhys = fPhysForVa ? fPhysForVa(fKva) : 0;
@@ -1003,6 +966,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
         fKms->freeMemory(fDev, parked[i].m);
     }
     fParkedCount = (unsigned)nParked;
+    cursorInit();
     if (nParked) FBLOG("released %d parked console-overlapping allocation(s)", nParked);
     if (!haveAperture) {
         FBLOG("NEITHER vidmem NOR sysmem gave a CPU-writable scanout aperture -- refusing to "
@@ -1010,26 +974,17 @@ bool NVRMNVDAFramebuffer::kapiInit()
         if (consoleSilenced && getPlatform()) getPlatform()->setConsoleInfo(0, kPEEnableScreen);
         return false;
     }
+    publishTimingCaps();
     struct NvKmsKapiCreateSurfaceParams sp = {};
     sp.planes[0].memory = fMem; sp.planes[0].offset = 0; sp.planes[0].pitch = fPitch;
     sp.width = fW; sp.height = fH; sp.format = NvKmsSurfaceMemoryFormatX8R8G8B8;
     fSurf = fKms->createSurface(fDev, &sp);
     if (!fSurf) {
         FBLOG("createSurface failed");
-        if (fKva) fKms->unmapMemory(fDev, fMem, NVKMS_KAPI_MAPPING_TYPE_KERNEL, fKva);
-        if (fUserPhys) fKms->unmapMemory(fDev, fMem, NVKMS_KAPI_MAPPING_TYPE_USER, fUserPhys);
-        fKms->freeMemory(fDev, fMem); fMem = nullptr; fKva = nullptr; fUserPhys = nullptr;
-        if (fScanoutBarBytes) OSAddAtomic64(-(SInt64)fScanoutBarBytes, &gVramDisplayBytes);
-        fScanoutBarBytes = 0; fMemBytes = 0; fPhys = 0;
+        if (fScanoutBarBytes) { OSAddAtomic64(-(SInt64)fScanoutBarBytes, &gVramDisplayBytes); fScanoutBarBytes = 0; }
         if (consoleSilenced && getPlatform()) getPlatform()->setConsoleInfo(0, kPEEnableScreen);
         return false;
     }
-    cursorInit();
-    publishTimingCaps();
-    FBLOG("small-BAR test v2: framebuffer mappings %lld bytes; surface budget %llu / BAR1 %llu bytes",
-          (long long)OSAddAtomic64(0, &gVramDisplayBytes),
-          (unsigned long long)nvrmSurfaceBudget(fBarLen, OSAddAtomic64(0, &gVramDisplayBytes)),
-          (unsigned long long)fBarLen);
     {
         PE_Video cons; nvu_zero(&cons, sizeof cons);
         if (getPlatform() && getPlatform()->getConsoleInfo(&cons) == kIOReturnSuccess
@@ -1057,6 +1012,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
             addr64_t pa = m->getPhysicalSegment(0, 0, kIOMemoryMapperNone);
             FBLOG("BAR%u: pa 0x%llx len %llu", (unsigned)i, (unsigned long long)pa,
                   (unsigned long long)m->getLength());
+            if (m->getLength() >= 0x10000000ull && !fBar1Base) fBar1Base = (NvU64)pa;
         }
     }
     if (fConsoleAperture && fBar1Base) {
@@ -1898,9 +1854,21 @@ static IOPMPowerState kFBPowerStates[2] = {
 static void nvrmDiscoverBar1(IOService *provider, NvU64 *length, NvU64 *base)
 {
     *length = 0; *base = 0;
-    if (IOMemoryDescriptor *memory = nvrmBar1Memory(provider)) {
-        *length = memory->getLength();
-        *base = memory->getPhysicalSegment(0, 0, kIOMemoryMapperNone);
+    for (IOService *nub = provider; nub; nub = nub->getProvider()) {
+        if (!nub->metaCast("IOPCIDevice")) continue;
+        // BAR1 is the largest range after BAR0 (the registers). WAS: the first range of at least 256 MB, so a 64 or
+        // 128 MB BAR1 read as 0 and got the budget and park ceiling of an unknown window.
+        const IOItemCount count = nub->getDeviceMemoryCount();
+        IOMemoryDescriptor *best = nullptr;
+        for (IOItemCount i = 1; i < count; i++) {
+            IOMemoryDescriptor *memory = nub->getDeviceMemoryWithIndex(i);
+            if (memory && memory->getLength() >= (32ull << 20) && (!best || memory->getLength() > best->getLength())) best = memory;
+        }
+        if (best) {
+            *length = best->getLength();
+            *base = best->getPhysicalSegment(0, 0, kIOMemoryMapperNone);
+        }
+        return;
     }
 }
 bool NVRMNVDAFramebuffer::start(IOService *provider)
@@ -1919,9 +1887,6 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
     fGpuId = (NvU32)propU64(provider, "gpu-id");
     fIndex = (unsigned)propU64(provider, "fb-index");
     nvrmDiscoverBar1(provider, &fBarLen, &fBar1Base);
-    gBar1Bytes = (SInt64)fBarLen;
-    setProperty("NVRMBar1Bytes", (unsigned long long)fBarLen, 64);
-    setProperty("NVRMFramebufferExperiment", 2, 32);
     FBLOG("BAR1 metadata: %llu MB at 0x%llx; normal surface budget %llu MB",
           (unsigned long long)(fBarLen >> 20), (unsigned long long)fBar1Base,
           (unsigned long long)(nvrmVramBudget(fBarLen) >> 20));
@@ -2586,15 +2551,13 @@ static volatile SInt64 gVramMappedBytes = 0;
 // 32 MB still covers a 2560x1440 console (25 MB, issue #28). Larger BAR1s keep 64 MB, enough for a 5K console.
 static inline SInt64 nvrmParkCeiling(NvU64 barLen)
 {
-    if (barLen && barLen < (256ull << 20)) return (SInt64)(barLen / 2);
+    if (barLen && barLen < (256ull << 20)) return (SInt64)(barLen / 4);   // 64 MB BAR1: 16 MB, not half the window
     return (SInt64)(barLen && barLen < (1ull << 30) ? 32ull * 1024ull * 1024ull : NVRM_VRAM_PARK_CEILING);
 }
 static struct { struct NvKmsKapiMemory *m; void *k; NvU64 n; } gParkedForever[64];
 static int      gNParkedForever   = 0;
 static volatile SInt64 gVramParkedBytes = 0;
 static volatile SInt64 gCntGrant, gCntGrantBytes, gCntRelease, gCntReleaseBytes;
-static volatile SInt64 gCntRejectedAllocations, gCntParkLimitHits, gCntBudgetRefusals;
-static int gRejectMappingTest = 1, gSmallBarTest = 2;
 SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_grants,        CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntGrant,        "vramGrant successes");
 SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_grant_bytes,   CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntGrantBytes,   "bytes granted");
 SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_releases,      CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntRelease,      "vramRelease calls");
@@ -2604,17 +2567,6 @@ SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_budget_bytes, CTLFLAG_RD | CTLFLAG_LOC
 SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_mapped_bytes,  CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gVramMappedBytes,  "the BAR1 budget counter, live");
 SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_display_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gVramDisplayBytes, "scanout+cursor the framebuffer itself maps into BAR1");
 SYSCTL_INT(_debug, OID_AUTO, nvrmfb_vram_display_aware, CTLFLAG_RW | CTLFLAG_LOCKED, &gVramDisplayAware, 0, "1 = the accel budget reserves the BAR1 the display holds; 0 = the old fixed fraction");
-SYSCTL_INT(_debug, OID_AUTO, nvrmfb_reject_mapping_test, CTLFLAG_RD | CTLFLAG_LOCKED, &gRejectMappingTest, 0, "1 = experimental retention of rejected BAR1 mappings");
-SYSCTL_INT(_debug, OID_AUTO, nvrmfb_smallbar_test, CTLFLAG_RD | CTLFLAG_LOCKED, &gSmallBarTest, 0, "2 = small-BAR discovery, scanout sizing and mapping-budget experiment");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_bar1_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gBar1Bytes, "actual PCI BAR1 descriptor size");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_display_mapped_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gVramDisplayBytes, "framebuffer scanout and cursor BAR1 mappings held");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scanout_boot_sized, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScanoutBootSized, "small-BAR scanouts restricted to the boot mode size");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_scanout_map_fallbacks, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gScanoutMapFallbacks, "failed larger scanout mappings retried at boot mode size");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_vram_parked_bytes, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gVramParkedBytes, "rejected allocations retained with their BAR1 mappings");
-SYSCTL_INT(_debug, OID_AUTO, nvrmfb_vram_parked_count, CTLFLAG_RD | CTLFLAG_LOCKED, &gNParkedForever, 0, "retained rejected allocations");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_rejected_allocations, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntRejectedAllocations, "allocations rejected for missing or protected physical addresses");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_park_limit_hits, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntParkLimitHits, "rejects released because retaining the mapping would exceed a limit");
-SYSCTL_QUAD(_debug, OID_AUTO, nvrmfb_budget_refusals, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&gCntBudgetRefusals, "surface requests refused by the mapped BAR1 budget");
 static struct NVRMVramRequest gVramTest[256]; static int gVramTestN; static int gVramTestMode;
 static int nvrmfb_vramtest_sysctl SYSCTL_HANDLER_ARGS
 {
@@ -2660,20 +2612,12 @@ static void nvrmfbInstallSysctl(void)
     sysctl_register_oid(&sysctl__debug_nvrmfb_vram_releases); sysctl_register_oid(&sysctl__debug_nvrmfb_vram_release_bytes);
     sysctl_register_oid(&sysctl__debug_nvrmfb_vram_mapped_bytes); sysctl_register_oid(&sysctl__debug_nvrmfb_vram_budget_bytes);
     sysctl_register_oid(&sysctl__debug_nvrmfb_vram_display_bytes); sysctl_register_oid(&sysctl__debug_nvrmfb_vram_display_aware);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_reject_mapping_test); sysctl_register_oid(&sysctl__debug_nvrmfb_smallbar_test);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_bar1_bytes); sysctl_register_oid(&sysctl__debug_nvrmfb_display_mapped_bytes);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_scanout_boot_sized); sysctl_register_oid(&sysctl__debug_nvrmfb_scanout_map_fallbacks);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_vram_parked_bytes); sysctl_register_oid(&sysctl__debug_nvrmfb_vram_parked_count);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_rejected_allocations); sysctl_register_oid(&sysctl__debug_nvrmfb_park_limit_hits);
-    sysctl_register_oid(&sysctl__debug_nvrmfb_budget_refusals);
     sysctl_register_oid(&sysctl__debug_nvrmfb_vramtest); sysctl_register_oid(&sysctl__debug_nvrmfb_vramtest_mode);
     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_interval); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_us_sum);
     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_n); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_us_max);
     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_lean);
     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_waits);
     sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_timeouts); sysctl_register_oid(&sysctl__debug_nvrmfb_flip_latch_max_us);
-    IOLog("NVRM-fb: mapped-reject test v2: small-BAR discovery and scanout-aware budgets enabled\n");
-    kprintf("NVRM-fb: mapped-reject test v2: small-BAR discovery and scanout-aware budgets enabled\n");
 }
 
 bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
@@ -2685,14 +2629,13 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
     NvU64 want = (r->size + 0xFFFFull) & ~0xFFFFull;
     if (!want) return false;
 
-    const SInt64 budget = (SInt64)nvrmSurfaceBudget(fBarLen, OSAddAtomic64(0, &gVramDisplayBytes));
+    const SInt64 budget = (SInt64)nvrmSurfaceBudget(fBarLen, gVramDisplayBytes);
     gVramBudgetBytes = budget;
-    // Accepted/requested mappings and retained rejects have separate counters. Add them once;
-    // every park/guard below must also leave this request's reservation inside the effective budget.
+    // Parked blocks keep their BAR1 mapping (see below), so they count against the budget. On a 256 MB BAR1 (every
+    // GTX 16, boards without Resizable BAR) the park ceiling is the smaller one, so surfaces keep most of the budget.
     SInt64 before = OSAddAtomic64((SInt64)want, &gVramMappedBytes) + gVramParkedBytes;
     if (before + (SInt64)want > budget) {
         OSAddAtomic64(-(SInt64)want, &gVramMappedBytes);
-        OSAddAtomic64(1, &gCntBudgetRefusals);
         FBLOG("nvAllocVram(%llu): REFUSED — BAR1 budget spent (%lld of %llu bytes). "
               "This is the resizable-BAR ceiling, not a VRAM shortage.",
               (unsigned long long)want, (long long)before, (unsigned long long)budget);
@@ -2726,7 +2669,6 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
         bool onScanout = p && fPhys  && fSize     && p < (fPhys + fSize)         && (p + want) > fPhys;
         bool onConsole = p && fConsPhys && fConsSize && p < (fConsPhys + fConsSize) && (p + want) > fConsPhys;
         if (!p) {
-            OSAddAtomic64(1, &gCntRejectedAllocations);
             // No physical address means RM's mapping table could not record this mapping. Parking it would hold one
             // more mapping per attempt and the next attempt fails the same way: release it and refuse this request.
             FBLOG("nvAllocVram(%llu): attempt %d has no physical address — released, request refused (RM mapping table full?)",
@@ -2735,13 +2677,11 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
             break;
         }
         if (onScanout || onConsole) {
-            OSAddAtomic64(1, &gCntRejectedAllocations);
             FBLOG("nvAllocVram: attempt %d phys 0x%llx %s — parking it and rolling again",
                   attempt, (unsigned long long)p,
                   !p ? "has no physical address" : onScanout ? "OVERLAPS THE SCANOUT" : "OVERLAPS THE CONSOLE");
             if (gNParkedForever < (int)(sizeof gParkedForever / sizeof gParkedForever[0]) &&
-                gVramParkedBytes + (SInt64)want <= nvrmParkCeiling(fBarLen) &&
-                OSAddAtomic64(0, &gVramMappedBytes) + gVramParkedBytes + (SInt64)want <= budget) {
+                gVramParkedBytes + (SInt64)want <= nvrmParkCeiling(fBarLen)) {
                 // kept allocated AND mapped: the overlap is judged by the BAR1 address of this mapping, so unmapping
                 // it hands that address straight back and the next allocation lands on the console again (one machine
                 // logged the same address 600 times, every attempt refused: black screen with a cursor)
@@ -2750,11 +2690,7 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
                 gParkedForever[gNParkedForever].n = want;
                 gNParkedForever++;
                 OSAddAtomic64((SInt64)want, &gVramParkedBytes);
-                FBLOG("mapped-reject test v2: retained phys 0x%llx (%lld parked; %lld / %lld surface-pool bytes)",
-                      (unsigned long long)p, (long long)gVramParkedBytes,
-                      (long long)(OSAddAtomic64(0, &gVramMappedBytes) + gVramParkedBytes), (long long)budget);
             } else {
-                OSAddAtomic64(1, &gCntParkLimitHits);
                 fKms->unmapMemory(fDev, m, NVKMS_KAPI_MAPPING_TYPE_KERNEL, k); fKms->freeMemory(fDev, m);
                 // A surface larger than the park ceiling (a 3840x2560 desktop is 37.5 MB, the ceiling on a 256 MB BAR1
                 // is 32 MB) was never parked, so the same address came back on every attempt. Hold only the part of
@@ -2764,8 +2700,7 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
                 const NvU64 g = (p && rEnd > p) ? ((rEnd - p) + 0x1FFFFFull) & ~0x1FFFFFull : 0;
                 bool guarded = false;
                 if (g && g < want && gNParkedForever < (int)(sizeof gParkedForever / sizeof gParkedForever[0]) &&
-                    gVramParkedBytes + (SInt64)g <= nvrmParkCeiling(fBarLen) &&
-                    OSAddAtomic64(0, &gVramMappedBytes) + gVramParkedBytes + (SInt64)g <= budget) {
+                    gVramParkedBytes + (SInt64)g <= nvrmParkCeiling(fBarLen)) {
                     struct NvKmsKapiAllocateMemoryParams gp; nvu_zero(&gp, sizeof gp);
                     NvU8 gc = 0;
                     gp.layout = NvKmsSurfaceMemoryLayoutPitch; gp.type = NVKMS_KAPI_ALLOCATION_TYPE_SCANOUT;
@@ -2823,7 +2758,7 @@ bool NVRMNVDAFramebuffer::vramGrant(struct NVRMVramRequest *r)
     advanceFlipEpoch();   // before the caller can see this memory, so it can never match an entry made for a freed one
     r->handle = mem; r->kva = kva; r->phys = (unsigned long long)phys;
     r->actualSize = (unsigned long long)want;
-    r->mappedTotal = (unsigned long long)(OSAddAtomic64(0, &gVramMappedBytes) + gVramParkedBytes);
+    r->mappedTotal = (unsigned long long)(before + (SInt64)want);
     fVramGrants++;
     OSAddAtomic64(1, &gCntGrant); OSAddAtomic64((SInt64)want, &gCntGrantBytes);
     if (fVramGrantLogged < 16) { fVramGrantLogged++;

@@ -3,7 +3,8 @@
 ## Fork additions to 2.0.0
 
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
-- Retain borrowed-framebuffer GPU mappings and the tested small-BAR discovery and scanout fallbacks, combined with the newer upstream display and allocation fixes.
+- Use the unmodified upstream 2.0.0 framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
+- Retain NVAccel's borrowed-framebuffer GPU mappings separately from the framebuffer implementation.
 
 The release entries below describe upstream releases. This merged source tree needs a fresh build and hardware validation.
 
