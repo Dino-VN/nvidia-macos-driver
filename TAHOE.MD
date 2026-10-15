@@ -4,6 +4,8 @@ This guide targets upstream **2.0.0 at `606c8b0`**, with this fork's retained Ta
 
 Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB now uses the unmodified upstream 2.0.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
 
+The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
+
 | Component | Purpose | Build output |
 |---|---|---|
 | `NVMTLDriver` | Retained icon rendering, PR #171 Vulkan features, PR #136 MSAA sample positions, and optional PR #147 surface scheduling | `out/plugin-<commit>-release/NVMTLDriver` |

@@ -5,6 +5,7 @@
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the unmodified upstream 2.0.0 framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
 - Retain NVAccel's borrowed-framebuffer GPU mappings separately from the framebuffer implementation.
+- Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
 The release entries below describe upstream releases. This merged source tree needs a fresh build and hardware validation.
 

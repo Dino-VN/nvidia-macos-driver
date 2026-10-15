@@ -5,9 +5,10 @@ N=$HOME/nvmtl-build; S=$N/LIVE/plugin; L=$N/build.lock
 cd $S || exit 2
 [ -z "$(git status --porcelain)" ] || { echo "STOP: LIVE/plugin has uncommitted edits — commit them first:"; git status --short | head; exit 3; }
 C=$(git rev-parse --short HEAD); O=$N/LIVE/out/plugin-$C${RELEASE:+-release}; mkdir -p $O
-RDEF=""; [ -n "${RELEASE:-}" ] && RDEF="-DNVMTL_RELEASE=1"
+RDEF=""; OPT=-O1
+[ -n "${RELEASE:-}" ] && { RDEF="-DNVMTL_RELEASE=1"; OPT=-O2; }
 until mkdir $L 2>/dev/null; do sleep 5; done; echo "build_plugin $C $$" > $L/owner; trap 'rm -rf "$L"' EXIT
-xcrun clang -arch x86_64 -bundle -fobjc-arc -O1 $RDEF -Wno-protocol -Wno-incomplete-implementation \
+xcrun clang -arch x86_64 -bundle -fobjc-arc $OPT $RDEF -Wno-protocol -Wno-incomplete-implementation \
   -I"$HOME/Vulkan-Headers/include" -o $O/NVMTLDriver NVMTLDevice.m \
   -framework Foundation -framework Metal -framework IOSurface -framework IOKit 2>$O/NVMTLDriver.err \
   || { echo "STOP: compile failed"; grep -A2 ': error:' $O/NVMTLDriver.err | head -30; exit 5; }
