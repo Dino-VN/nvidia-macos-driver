@@ -148,6 +148,10 @@ void nvmtl_vendor_attach_sass(id device, id pipelineState, id function);
 int  nvmtl_vendor_dispatch_sass(id pipelineState, nvk_cmdbuf *c,
                                 const uint32_t threads[3], const uint32_t tg[3]);
 id   nvmtl_vendor_apple_pipeline(id device, id function);
+id   nvmtl_sass_kernel_for_function(id function);
+id   nvmtl_sass_kernel_for_linked(id function, NSDictionary *mods, NSDictionary *fc);
+BOOL nvmtl_sass_tables_wanted(void);
+int  nvmtl_sass_dispatch(id encoder, MTLSize grid, MTLSize group, uint32_t kind, BOOL hasFallback);
 NSDictionary<NSString *, NSData *> *nvmtl_translate_metallib(NSData *lib, NSDictionary **stages, NSDictionary **airs);
 void nvmtl_vendor_compile_airs(NSDictionary<NSString *, NSString *> *airs,
                                NSDictionary<NSString *, NSString *> *stages);
@@ -294,9 +298,9 @@ static void nvmtl_nvenc_hevc_register(void)
     });
 }
 // ANGLE refuses Metal on NVIDIA (disableMetalOnNvidia), and Chromium on macOS has no other GL backend, so without this
-// the GPU process exits at start-up and Chrome, Edge and Electron apps draw everything on the CPU. 1.14.6 made this
-// opt-in after partial-redraw corruption on Ampere and Blackwell; that corruption was stale surface content, fixed in
-// 1.15. NVMTL_ANGLE_METAL=0 turns it off. An existing override is kept; no sandbox setting is changed.
+// the GPU process exits at start-up and Chrome, Edge and Electron apps draw everything on the CPU.
+// This fork keeps the working GPU path enabled by default. NVMTL_ANGLE_METAL=0 disables it
+// for applications that need the fallback. Existing overrides and sandbox settings are preserved.
 __attribute__((constructor)) static void nvmtl_angle_allow_nvidia(void)
 {
     const char *opt = getenv("NVMTL_ANGLE_METAL");
@@ -746,6 +750,17 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
         }
     }
     g_surf_private++;
+    // A private image stands for the whole surface: wrappers that read it and wrappers that write it must share ONE image
+    // (nvmtlNewSurfaceTexture caches it), or what one writes the other never sees. So it is made writable whenever the
+    // format can be, whatever the first wrapper asked for.
+    if (!stex && nvmtl_vk_format_is_storage(vkf)) stex = 1;
+    if (surf) {
+        const size_t prow = IOSurfaceGetBytesPerRow(surf), pplanes = IOSurfaceGetPlaneCount(surf);
+        nvlog("item 7: surface %u %ux%u plane %lu -> a private image, copied in and out (%s; row %zu bytes, %zu plane(s))",
+              (unsigned)IOSurfaceGetID(surf), w, h, (unsigned long)plane,
+              (plane != 0 || pplanes > 1) ? "more than one plane" : ((size_t)w * (bpp ? bpp : 4) > prow || h > IOSurfaceGetHeight(surf)) ? "image larger than the surface"
+              : (prow % 32) ? "the row is not a multiple of 32 bytes" : "the family VRAM could not be used", prow, pplanes);
+    }
     return nvmtl_vk_image_create_typed(w, h, vkf, bpp, a8, 1, stex, 2u, 1u, &t->_i);
 }
 
@@ -770,10 +785,11 @@ static char nvmtl_surface_cache_key;
     uint32_t vkf = 0, bpp = 0; int a8 = 0;
     if (nvmtl_pixfmt(d.pixelFormat, &vkf, &bpp, &a8)) return nil;
     int wantStex = (d.usage & MTLTextureUsageShaderWrite) != 0;
-    NSArray *key = surf ? @[@(IOSurfaceGetID(surf)), @(plane), @(w), @(h), @(d.pixelFormat), @(wantStex), @(t->_ropt), @(t->_fbo)] : nil;
+    NSArray *key = surf ? @[@(IOSurfaceGetID(surf)), @(plane), @(w), @(h), @(d.pixelFormat), @(t->_ropt), @(t->_fbo)] : nil;
     NVMTLTexture *backing = key ? [cache objectForKey:key] : nil;
     // Failed BAR imports use a private image. Repeated wrappers of the same
-    // surface must share that image, just as successful family imports do.
+    // surface must share that image, just as successful family imports do,
+    // whether a wrapper reads it or writes it (the image is made writable).
     // Weak entries do not pin the image after the application's last wrapper.
     if (backing && !backing->_vramOn) {
         NVMTLTexture *alias = (NVMTLTexture *)[backing newTextureViewWithPixelFormat:d.pixelFormat];
@@ -1360,26 +1376,53 @@ void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
     if (r && *r) nvmtl_gl_tag_reflection(*r, d);
     return ps;
 }
-static dispatch_queue_t nvmtl_pipeline_compile_queue(void) {
-    static dispatch_queue_t queue; static dispatch_once_t once;
-    dispatch_once(&once, ^{ queue = dispatch_queue_create("nvmtl.pipeline.compile", DISPATCH_QUEUE_SERIAL); });
+// Asynchronous pipeline builds share a bounded pool. A serial queue made an app that creates its pipelines up front
+// (games, a browser's GPU process) wait for them one after another on one core.
+// Width: one less than the physical cores (the performance cores on a CPU with two kinds), 1 to 8, and at most half
+// the memory in GB: translating a large kernel alone peaks near 300 MB. NVMTL_PIPELINE_THREADS sets it; 1 is the old
+// serial behaviour.
+static int nvmtl_sysctl_int(const char *name) {
+    int value = 0; size_t size = sizeof value;
+    return sysctlbyname(name, &value, &size, NULL, 0) == 0 && size == sizeof value ? value : 0;
+}
+static NSInteger nvmtl_pipeline_compile_width(void) {
+    const char *e = getenv("NVMTL_PIPELINE_THREADS");
+    if (e && *e) { const long v = strtol(e, NULL, 10); if (v >= 1 && v <= 64) return v; }
+    int cores = nvmtl_sysctl_int("hw.nperflevels") > 1 ? nvmtl_sysctl_int("hw.perflevel0.physicalcpu") : 0;
+    if (cores <= 0) cores = nvmtl_sysctl_int("hw.physicalcpu");
+    if (cores <= 0) cores = (int)NSProcessInfo.processInfo.activeProcessorCount;
+    NSInteger width = cores > 1 ? cores - 1 : 1;
+    if (width > 8) width = 8;
+    const NSInteger byMemory = (NSInteger)(NSProcessInfo.processInfo.physicalMemory >> 31);
+    if (byMemory >= 1 && width > byMemory) width = byMemory;
+    return width;
+}
+static NSOperationQueue *nvmtl_pipeline_compile_queue(void) {
+    static NSOperationQueue *queue; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = [NSOperationQueue new];
+        queue.name = @"nvmtl.pipeline.compile";
+        queue.qualityOfService = NSQualityOfServiceUserInitiated;   // what the completion handlers run at
+        queue.maxConcurrentOperationCount = nvmtl_pipeline_compile_width();
+        nvlog("pipeline compile: %ld asynchronous builds at a time", (long)queue.maxConcurrentOperationCount);
+    });
     return queue;
 }
 - (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d completionHandler:(MTLNewRenderPipelineStateCompletionHandler)h {
     MTLRenderPipelineDescriptor *snapshot = [d copy];
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; id<MTLRenderPipelineState> ps = [self newRenderPipelineStateWithDescriptor:snapshot error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, e); });
-    }});
+    }}];
 }
 - (void)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d options:(MTLPipelineOption)o
                            completionHandler:(MTLNewRenderPipelineStateWithReflectionCompletionHandler)h {
     MTLRenderPipelineDescriptor *snapshot = [d copy];
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; MTLRenderPipelineReflection *reflection = nil;
         id<MTLRenderPipelineState> ps = [self newRenderPipelineStateWithDescriptor:snapshot options:o reflection:&reflection error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, reflection, e); });
-    }});
+    }}];
 }
 - (id<MTLComputePipelineState>)newComputePipelineStateWithFunction:(id<MTLFunction>)fn options:(MTLPipelineOption)o
                                                         reflection:(MTLAutoreleasedComputePipelineReflection *)r error:(NSError **)err {
@@ -1388,18 +1431,18 @@ static dispatch_queue_t nvmtl_pipeline_compile_queue(void) {
     return ps;
 }
 - (void)newComputePipelineStateWithFunction:(id<MTLFunction>)fn completionHandler:(MTLNewComputePipelineStateCompletionHandler)h {
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; id<MTLComputePipelineState> ps = [self newComputePipelineStateWithFunction:fn error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, e); });
-    }});
+    }}];
 }
 - (void)newComputePipelineStateWithFunction:(id<MTLFunction>)fn options:(MTLPipelineOption)o
                           completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)h {
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; MTLComputePipelineReflection *reflection = nil;
         id<MTLComputePipelineState> ps = [self newComputePipelineStateWithFunction:fn options:o reflection:&reflection error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, reflection, e); });
-    }});
+    }}];
 }
 
 static NSString *nvmtl_tg_mismatch(id fn, NSUInteger ask, const char *who) {
@@ -1446,11 +1489,11 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
 - (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d options:(MTLPipelineOption)o
                             completionHandler:(MTLNewComputePipelineStateWithReflectionCompletionHandler)h {
     MTLComputePipelineDescriptor *snapshot = [d copy];
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; MTLComputePipelineReflection *reflection = nil;
         id<MTLComputePipelineState> ps = [self newComputePipelineStateWithDescriptor:snapshot options:o reflection:&reflection error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, reflection, e); });
-    }});
+    }}];
 }
 - (id<MTLComputePipelineState>)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d error:(NSError **)err {
     nvlog("cpdesc: withDescriptor:error: -> options route");
@@ -1459,10 +1502,10 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
 - (void)newComputePipelineStateWithDescriptor:(MTLComputePipelineDescriptor *)d
                             completionHandler:(MTLNewComputePipelineStateCompletionHandler)h {
     MTLComputePipelineDescriptor *snapshot = [d copy];
-    dispatch_async(nvmtl_pipeline_compile_queue(), ^{ @autoreleasepool {
+    [nvmtl_pipeline_compile_queue() addOperationWithBlock:^{ @autoreleasepool {
         NSError *e = nil; id<MTLComputePipelineState> ps = [self newComputePipelineStateWithDescriptor:snapshot options:MTLPipelineOptionNone reflection:nil error:&e];
         if (h) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ h(ps, e); });
-    }});
+    }}];
 }
 - (BOOL)supportsFunctionPointers { return YES; }
 - (BOOL)supportsFunctionPointersFromRender { return YES; }
@@ -1573,6 +1616,16 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
             @"newComputePipelineState: REFUSED - this function is not ours: %s", object_getClassName(fn)]);
     NVMTLFunction *f = (NVMTLFunction *)fn;
     if (f && f->_needsLink) { NSError *le = nil; id<MTLFunction> lk = nvmtl_link_stage(fn, nil, nil, &le); if (!lk) { if (err) *err = le; return nil; } f = (NVMTLFunction *)lk; fn = lk; }
+    // Machine code compiled ahead of time (NVMTLSass.m), from the linker or looked up for this function, runs
+    // instead of a Vulkan pipeline, which is then never built for it.
+    id sass = f ? (f->_sassKernel ?: nvmtl_sass_kernel_for_function(f)) : nil;
+    if (sass && f.functionType == MTLFunctionTypeKernel) {
+        NVMTLComputePipelineState *ps = [NVMTLComputePipelineState new];
+        ps->_function = f; ps->_attrT = nvmtl_air_max_tg(f); ps->_sassKernel = sass; ps->_sassOnly = YES;
+        nvlog("newComputePipelineStateWithFunction: %s -> %p from compiled machine code",
+              f->_fname.UTF8String, (__bridge void *)ps);
+        return ps;
+    }
     if (!f || !f->_spirv) return nvmtl_fail(err, @"newComputePipelineState: function has no SPIR-V");
     if (f.functionType != MTLFunctionTypeKernel) {
         nvlog("newComputePipelineState: \"%s\" is a %s, not a kernel — REFUSED",
@@ -1856,3 +1909,4 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
 #import "NVMTLEmbedded.m"
 #import "NVMTLVendorCompiler.m"
 #include "nvmtl_vk.c"
+#import "NVMTLSass.m"

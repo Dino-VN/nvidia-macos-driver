@@ -23,6 +23,7 @@
 extern "C" {
 #include <mach/mach_types.h>
 #include <sys/proc.h>
+#include <sys/kauth.h>
 
 #include "nvrm_gpuva_abi.h"
 #define NVRM_SS_KERNEL_ABI 1
@@ -245,7 +246,7 @@ extern "C" nv_alloc_mapping_context_t *nv_xnu_mmap_context(void *priv)
     return c ? c->mmapContext() : NULL;
 }
 extern "C" IOMemoryDescriptor *nv_xnu_alloc_md(void *priv, NvU64 *bytes, NvU32 *cache);
-extern "C" { IOMemoryDescriptor *nv_pm_ram_submd(NvU64, NvU64); bool nv_pm_is_gpu(NvU64, NvU64); void nv_pm_dev_refused(NvU64, NvU64); bool nv_xnu_chat(void); }
+extern "C" { IOMemoryDescriptor *nv_pm_ram_submd(NvU64, NvU64, int); bool nv_pm_is_gpu(NvU64, NvU64); void nv_pm_dev_refused(NvU64, NvU64); bool nv_xnu_chat(void); }
 
 #define super IOService
 OSDefineMetaClassAndStructors(NVRM, IOService)
@@ -761,7 +762,7 @@ bool NVRM::placeLargeBar1()
 {
     static const UInt64 kBigBase = 0x10000000000ULL;
     static const UInt64 kHostWindowEnd = 0x3ffbfffffffULL;
-    // -nvrmsmallbar: leave BAR1 where the firmware put it, as on a card without Resizable BAR (every GTX 16). Lets a
+    // -nvrmsmallbar: leave BAR1 where the firmware put it, as on a card without Resizable BAR (most GTX 16). Lets a
     // ReBAR card run the small-BAR paths (surface budget, copy path, private surface images) for testing and diagnosis.
     { char nb[8] = { 0 };
       if (PE_parse_boot_argn("-nvrmsmallbar", nb, sizeof nb)) { LOG("bar1: -nvrmsmallbar set — BAR1 left as IOPCIFamily placed it"); return false; } }
@@ -792,7 +793,14 @@ bool NVRM::placeLargeBar1()
     UInt64 newSize = 0;
     if (bar1Size < (4ULL << 30)) {
         for (int k = 13; k >= 12; k--) if (rbCtlOff && (rbSupported >> k) & 1) { newSize = 1ULL << (20 + k); break; }
-        if (!newSize) { LOG("bar1: BAR1 is %llu MB and the card offers no 4-8 GB size — not placing", bar1Size >> 20); return false; }
+        // Turing cards offer 64-256 MB only (sizes mask 0x1c0), and some firmware leaves them at 64 MB: a GTX 1630, a
+        // GTX 1660 SUPER and an RTX 2060 in user logs, against 66 Turing boots at 256 MB. 64 MB holds four 1440p
+        // surfaces, and the GTX 1630 at 64 MB parked console-overlapping VRAM until the park ceiling and then failed
+        // mapMemory. Take the largest size the card offers that is bigger than the current one; the placement below is
+        // the same path that moves 64 MB cards to 8 GB.
+        for (int k = 11; !newSize && k >= 0; k--)
+            if (rbCtlOff && ((rbSupported >> k) & 1) && (1ULL << (20 + k)) > bar1Size) newSize = 1ULL << (20 + k);
+        if (!newSize) { LOG("bar1: BAR1 is %llu MB and the card offers no larger size — not placing", bar1Size >> 20); return false; }
         LOG("bar1: BAR1 is %llu MB; will resize it to %llu MB", bar1Size >> 20, newSize >> 20);
         bar1Size = newSize;
     }
@@ -970,6 +978,15 @@ void NVRM::readBARs()
 
 IOReturn NVRM::go(uint32_t pass)
 {
+    // Bringing up the GPU and the RM for the first time is an administrator
+    // operation. Was: any process that could open the user client could call
+    // sGo with any pass number. Repeating a pass that is already done is a
+    // no-op, and the userland driver runs as the logged-in user, so that path
+    // stays open deliberately.
+    if (pass > fPassDone && kauth_getuid() != 0) {
+        kprintf("NVRM-xnu: go(%u) refused: caller is not an administrator (fPassDone %d)\n", pass, fPassDone);
+        return kIOReturnNotPermitted;
+    }
     static bool gGoBusy;
     { IOLockLock(gNvClientsLock); bool busy = gGoBusy; if (!busy) gGoBusy = true; IOLockUnlock(gNvClientsLock); if (busy) { kprintf("NVRM-xnu: go(%u) refused: another go is running\n", pass); return kIOReturnBusy; } }
     struct Unbusy { ~Unbusy() { IOLockLock(gNvClientsLock); gGoBusy = false; IOLockUnlock(gNvClientsLock); } } unbusy;
@@ -1159,13 +1176,43 @@ bool NVRMUserClient::start(IOService *provider)
 bool NVRMUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties)
 {
     if (!super::initWithTask(owningTask, securityID, type, properties)) return false;
+    // The user-client type came from user space and anything non-zero silently became a device
+    // client, so a bogus type (0x4841, etc.) opened a working device client. Only two types exist:
+    // 0 = ctl (escalated RM state), 1 = device. Refuse anything else rather than treating it as a
+    // device client. The ctl client stays open to unprivileged callers on purpose -- the Vulkan
+    // userland opens it as the logged-in user -- and the escalated operations behind it are gated
+    // by the real-privilege check in _os_is_administrator and the root requirement on first init.
+    if (type > 1) return false;
     fIsCtl = (type == 0);
     nvu_memset(&fNvfp, 0, sizeof fNvfp);
     fNvfp.ctl_nvfp_priv = this;
     if (!gNvClientsLock) gNvClientsLock = IOLockAlloc();
+    // One table serves every process, so one process (or one user's processes) could fill it and leave WindowServer
+    // unable to open a client. Two limits: a process holds at most kNvClientsPerPid (the busiest process measured on
+    // a desktop held 154: Maps; Firefox's GPU process 96, WindowServer 78), and the last kNvClientsReserved slots
+    // are kept for system accounts (uid < 500: root and _windowserver), so the desktop can always open one.
+    static const int kNvClientsPerPid = 4096, kNvClientsReserved = 4096;
+    const int pid = proc_selfpid();
+    const bool systemCaller = kauth_getuid() < 500;
+    int used = 0, mine = 0, slot = -1;
     IOLockLock(gNvClientsLock);
-    for (int i = 0; i < NV_XNU_MAX_CLIENTS; i++) if (!gNvClients[i]) { gNvClients[i] = this; fFd = i; break; }
+    for (int i = 0; i < NV_XNU_MAX_CLIENTS; i++) {
+        NVRMUserClient *k = gNvClients[i];
+        if (!k) { if (slot < 0) slot = i; continue; }
+        used++;
+        if (k->fPid == pid) mine++;
+    }
+    const bool overPid = mine >= kNvClientsPerPid;
+    const bool overShared = !systemCaller && used >= NV_XNU_MAX_CLIENTS - kNvClientsReserved;
+    if (slot >= 0 && !overPid && !overShared) { gNvClients[slot] = this; fFd = slot; }
     IOLockUnlock(gNvClientsLock);
+    if (overPid || overShared) {
+        static unsigned quotaLogged;
+        if (quotaLogged < 8) { quotaLogged++;
+            kprintf("NVRM-xnu: client refused for pid %d: %s (%d held by this process, %d of %d in use)\n", pid,
+                    overPid ? "per-process limit" : "slots reserved for system accounts", mine, used, NV_XNU_MAX_CLIENTS); }
+        return false;
+    }
     if (fFd < 0) {
         static unsigned tableFullLogged;
         if (tableFullLogged < 8) { tableFullLogged++;
@@ -1214,7 +1261,7 @@ IOReturn NVRMUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
     } else {
         NvU64 n = c->memArea.numRanges;
         if (n == 1 && !nv_pm_is_gpu(c->memArea.pRanges[0].start, c->memArea.pRanges[0].size)) {
-            md = nv_pm_ram_submd(c->memArea.pRanges[0].start, c->memArea.pRanges[0].size);
+            md = nv_pm_ram_submd(c->memArea.pRanges[0].start, c->memArea.pRanges[0].size, fPid);
             if (!md) return kIOReturnNotPermitted;
         } else if (n == 1) {
             md = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress)c->memArea.pRanges[0].start, (IOByteCount)c->memArea.pRanges[0].size, kIODirectionInOut);
@@ -1259,6 +1306,11 @@ IOReturn NVRMUserClient::sKms(OSObject *target, void *reference, IOExternalMetho
 {
     NVRMUserClient *me = OSDynamicCast(NVRMUserClient, target);
     if (!me || !me->fOwner) return kIOReturnNotAttached;
+    // The session this opens is an NVKMS kernel-space client, and NVKMS trusts a kernel client's embedded pointers
+    // (flip heads, LUT ramps, clip lists) as kernel addresses. Nothing the driver ships calls this: the display path
+    // reaches NVKMS through its in-kernel API and the Vulkan driver never uses this selector. So it is root-only;
+    // an unprivileged caller would otherwise hand NVKMS pointers it dereferences in the kernel.
+    if (kauth_getuid() != 0) return kIOReturnNotPrivileged;
     uint32_t cmd = (uint32_t)args->scalarInput[0];
     uint32_t size = args->structureInputDescriptor ? (uint32_t)args->structureInputDescriptor->getLength() : args->structureInputSize;
     if (size == 0 || size > (1u << 20)) return kIOReturnBadArgument;
@@ -1288,6 +1340,7 @@ IOReturn NVRMUserClient::sKmsEvents(OSObject *target, void *reference, IOExterna
 {
     NVRMUserClient *me = OSDynamicCast(NVRMUserClient, target);
     if (!me) return kIOReturnNotAttached;
+    if (kauth_getuid() != 0) return kIOReturnNotPrivileged;   // the NVKMS session sKms opens is root-only
     args->scalarOutput[0] = nvkms_xnu_events_available(me->fKms);
     return kIOReturnSuccess;
 }
@@ -1308,6 +1361,12 @@ NVRMUserClient *NVRMUserClient::fromNvfp(nv_file_private_t *p)
 }
 #pragma clang diagnostic pop
 static volatile SInt64 gNvEvtPosts = 0, gNvEvtMatched = 0, gNvEvtWaits = 0, gNvEvtSlept = 0;
+// Live count of callers parked in sWaitEvent, and the ceiling. Was: no cap,
+// so N processes parked N kernel threads. 256 is far above what the driver
+// itself uses (one waiter per active client) and far below a thread count
+// that matters to the system.
+static volatile SInt32 gNvEvtSleepers = 0;
+static const SInt32 kNvEvtMaxSleepers = 256;
 extern "C" void NV_API_CALL nv_post_event(nv_event_t *event, NvHandle hEvent, NvU32 index, NvU32 info32, NvU16 info16, NvBool data_valid)
 {
     const SInt64 k = OSIncrementAtomic64(&gNvEvtPosts);
@@ -1329,10 +1388,19 @@ IOReturn NVRMUserClient::sWaitEvent(OSObject *target, void *reference, IOExterna
     uint64_t us = args->scalarInput[1]; if (us > 100000) us = 100000;
     OSIncrementAtomic64(&gNvEvtWaits);
     if (us && me->fEvtSeq == seen) {
-        assert_wait_timeout((event_t)&me->fEvtSeq, THREAD_ABORTSAFE, (uint32_t)us, NSEC_PER_USEC);
-        if (me->fEvtSeq != seen) thread_wakeup((event_t)&me->fEvtSeq);
-        OSIncrementAtomic64(&gNvEvtSlept);
-        (void)thread_block(THREAD_CONTINUE_NULL);
+        // OSIncrementAtomic returns the value before the increment.
+        if (OSIncrementAtomic(&gNvEvtSleepers) >= kNvEvtMaxSleepers) {
+            // At the ceiling: return the current sequence without parking. This
+            // is the same answer a timeout gives, so no caller can observe a
+            // result it could not already have seen.
+            OSDecrementAtomic(&gNvEvtSleepers);
+        } else {
+            assert_wait_timeout((event_t)&me->fEvtSeq, THREAD_ABORTSAFE, (uint32_t)us, NSEC_PER_USEC);
+            if (me->fEvtSeq != seen) thread_wakeup((event_t)&me->fEvtSeq);
+            OSIncrementAtomic64(&gNvEvtSlept);
+            (void)thread_block(THREAD_CONTINUE_NULL);
+            OSDecrementAtomic(&gNvEvtSleepers);
+        }
     }
     args->scalarOutput[0] = me->fEvtSeq;
     return kIOReturnSuccess;
@@ -1341,8 +1409,19 @@ IOReturn NVRMUserClient::sBindFd(OSObject *target, void *reference, IOExternalMe
 {
     NVRMUserClient *me = OSDynamicCast(NVRMUserClient, target);
     if (!me) return kIOReturnNotAttached;
-    me->fBound = (int)args->scalarInput[0];
+    // The value is a file descriptor number, or a negative number meaning "detached": the userland driver
+    // detaches a connection it is about to pool or keep alive by binding it to -2, sign-extended to 64 bits.
+    // Anything else outside the 32-bit signed range is a caller error, not something to store and look up
+    // later. Refusing the detach value left the connection bound to an fd number the process then reused, so
+    // two connections answered for one fd and the Vulkan device in WindowServer could not be created.
+    const int64_t v = (int64_t)args->scalarInput[0];
+    if (v > 0x7FFFFFFFLL || v < -0x80000000LL) return kIOReturnBadArgument;
+    me->fBound = (int)v;
     me->fEverBound = true;
+    // A stale mapping context is cleared when the connection is bound to a real fd, the only point where it
+    // could be used for a new mapping. Not on detach (a negative value): the userland driver detaches a
+    // connection it keeps alive for mappings that are still live, and clearing the context there left those
+    // mappings unreleasable, so VRAM filled up and stayed full after the process exited.
     if (me->fBound >= 0 && me->fMmap.valid) {
         kprintf("NVRM-xnu: client %d re-bound to fd %d with a stale mapping context - cleared\n", me->fFd, me->fBound);
         nvMmapContextClear(&me->fMmap);

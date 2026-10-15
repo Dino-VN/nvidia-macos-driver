@@ -1,5 +1,9 @@
 #!/bin/bash
 set -u
+# This script runs as root and calls cp, rm, mv and kmutil by name. Without a
+# fixed PATH those resolve through whatever the caller exported, and kmutil
+# rebuilds the auxiliary kernel collection.
+PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH
 # NMXGPU, NMXAccel and NMXNPU: the opt-in AMD/Intel GPU driver, its Metal accelerator and the NPU driver, when turned on
 KEXTS="NVRM NVAccel NVRMFB NVRMAGDC NMXGPU NMXAccel NMXNPU"; EXT=/Library/Extensions; GB=/Library/GPUBundles
 KC=/Library/KernelCollections/AuxiliaryKernelExtensions.kc
@@ -34,6 +38,13 @@ trap 'die "uninstaller interrupted (signal HUP)"' HUP
 trap 'die "uninstaller interrupted (signal INT)"' INT
 trap 'die "uninstaller interrupted (signal TERM)"' TERM
 [ "$(id -u)" -eq 0 ] || die "run with sudo"
+# SIP's filesystem protection makes the driver's files and the kernel collection read-only even for root: removal then
+# failed half-way ("Operation not permitted" on every bundle, then kmutil). The driver cannot load in that state either,
+# so stop before anything is touched and say how to get out of it.
+SIPS=$(csrutil status 2>/dev/null)
+if printf '%s\n' "$SIPS" | grep -q 'status: enabled\.' || printf '%s\n' "$SIPS" | grep -q 'Filesystem Protections: enabled'; then
+  die "System Integrity Protection is on, so macOS will not let the driver be removed (and the driver cannot load while it is on). Restart once so OpenCore applies its SIP setting again, then remove the driver again. Nothing was changed."
+fi
 BK=${1:-}
 [ -z "$BK" ] || [ -d "$BK" ] || die "no backup at $BK"
 BUILD=$(sw_vers -buildVersion)
@@ -59,6 +70,9 @@ else
   [ -s "$NEWKC" ] || die "kmutil produced no removal collection"
   INS=$(kmutil inspect -a x86_64 -A "$NEWKC" 2>/dev/null) || die "cannot inspect the removal collection"
   printf '%s\n' "$INS" | grep -q com.nullmoth && die "the removal collection still lists the NVIDIA driver"
+  # Other processes can move or delete files in /Library/KernelCollections between this check and the publish below.
+  # A private copy of the verified collection lets the publish go ahead when the candidate there is gone.
+  cp -p "$NEWKC" "$RB/removal-candidate.kc" || die "cannot keep a copy of the removal collection"
   CANDIDATE=$NEWKC
 fi
 # Finish all collection checks before changing installed files.
@@ -76,6 +90,7 @@ rm -rf /Library/NullMoth/kexts /Library/NullMoth/firmware /Library/NullMoth/gpu-
 if [ "$REMOVE_KC" = 1 ]; then
   rm -f "$KC" "$KC.nullmoth-install-new" "$KC.nullmoth-update-new" "$KC.nullmoth-remove-new" || die "cannot remove the auxiliary collection"
 elif [ "$CANDIDATE" = "$NEWKC" ]; then
+  [ -s "$NEWKC" ] || cp -p "$RB/removal-candidate.kc" "$NEWKC" || die "cannot restore the removal collection from its copy"
   mv -f "$NEWKC" "$KC" || die "cannot publish the removal collection"
 else
   cp -p "$CANDIDATE" "$KC" || die "cannot publish the verified backup collection"

@@ -37,10 +37,8 @@ class FBClaim(unittest.TestCase):
     def setUp(self):
         self.claim = plistlib.loads(FB[0].read_bytes())["IOKitPersonalities"]["NVRMFBClaim"]
 
-    def test_both_fb_claims_identical(self):
-        # The modern framebuffer also has NVRMBootFB; only the PCI claim must match.
-        legacy = plistlib.loads(FB[1].read_bytes())["IOKitPersonalities"]["NVRMFBClaim"]
-        self.assertEqual(self.claim, legacy)
+    def test_both_fb_plists_identical(self):
+        self.assertEqual(FB[0].read_bytes(), FB[1].read_bytes())
 
     def test_same_vendor_and_class_match_as_nvrm(self):
         nvrm = plistlib.loads((ROOT / "kexts/NVRM/Info.plist").read_bytes())["IOKitPersonalities"]["NVRM"]
@@ -65,6 +63,13 @@ class FBClaim(unittest.TestCase):
         for name, vendor, device, cls, sub, want in cases:
             with self.subTest(name):
                 self.assertEqual(claims(self.claim, vendor, device, cls, sub), want)
+
+    def test_boot_fb_is_nvidia_primary_only(self):
+        # driver-off firmware framebuffer: the same rule, an Intel GPU with an NVIDIA subsystem id is not ours
+        boot = plistlib.loads(FB[0].read_bytes())["IOKitPersonalities"]["NVRMBootFB"]
+        self.assertNotIn("IOPCIMatch", boot)
+        self.assertTrue(claims(boot, 0x10DE, 0x2D05, 0x030000))
+        self.assertFalse(claims(boot, 0x8086, 0x9A49, 0x030000, 0x10DE))
 
     def test_controls(self):
         # the personality before this fix (IONameMatch only) took the Intel GPU (#119) ...

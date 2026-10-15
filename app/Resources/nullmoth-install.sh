@@ -252,18 +252,20 @@ for target in 15 26; do
   (cd "$dir" && find NVAccel.kext -type f -exec shasum -a 256 '{}' \;) > "$dir/SHA256SUMS" || die "cache manifest for macOS $target"
 done
 chown -R root:wheel /Library/NullMoth/kexts && chmod -R go-w /Library/NullMoth/kexts || die "cached accelerator permissions"
-# the AMD/Intel GPU driver (opt-in, setup --gpu-test): when it is on, an update brings its new build along
-if [ -d "$EXT/NMXGPU.kext" ] && [ -d /Library/NullMoth/kexts/15/NMXGPU.kext ]; then
-  rm -rf "$EXT/NMXGPU.kext" && ditto /Library/NullMoth/kexts/15/NMXGPU.kext "$EXT/NMXGPU.kext" && chown -R root:wheel "$EXT/NMXGPU.kext" \
+# the AMD/Intel GPU driver (opt-in, setup --gpu-test): when it is on, an update brings its new build along. The cached
+# copy is under the running macOS: NMXGPU and NMXNPU are the same binaries on 15 and 26 (like NVRM), but NMXAccel is
+# built per-OS (it inherits IOAcceleratorFamily2, which Tahoe privatised - see kexts/NVRM/accel/gen_tahoe_fwd.py).
+if [ -d "$EXT/NMXGPU.kext" ] && [ -d /Library/NullMoth/kexts/$MAJ/NMXGPU.kext ]; then
+  rm -rf "$EXT/NMXGPU.kext" && ditto /Library/NullMoth/kexts/$MAJ/NMXGPU.kext "$EXT/NMXGPU.kext" && chown -R root:wheel "$EXT/NMXGPU.kext" \
     && chmod -R 755 "$EXT/NMXGPU.kext" || die "refresh the AMD/Intel GPU driver (restore from $BK)"
   # and its Metal accelerator
-  if [ -d /Library/NullMoth/kexts/15/NMXAccel.kext ]; then
-    rm -rf "$EXT/NMXAccel.kext" && ditto /Library/NullMoth/kexts/15/NMXAccel.kext "$EXT/NMXAccel.kext" && chown -R root:wheel "$EXT/NMXAccel.kext" \
+  if [ -d /Library/NullMoth/kexts/$MAJ/NMXAccel.kext ]; then
+    rm -rf "$EXT/NMXAccel.kext" && ditto /Library/NullMoth/kexts/$MAJ/NMXAccel.kext "$EXT/NMXAccel.kext" && chown -R root:wheel "$EXT/NMXAccel.kext" \
       && chmod -R 755 "$EXT/NMXAccel.kext" || die "refresh the AMD/Intel Metal accelerator (restore from $BK)"
   fi
   # and the NPU driver, where it was turned on
-  if [ -d "$EXT/NMXNPU.kext" ] && [ -d /Library/NullMoth/kexts/15/NMXNPU.kext ]; then
-    rm -rf "$EXT/NMXNPU.kext" && ditto /Library/NullMoth/kexts/15/NMXNPU.kext "$EXT/NMXNPU.kext" && chown -R root:wheel "$EXT/NMXNPU.kext" \
+  if [ -d "$EXT/NMXNPU.kext" ] && [ -d /Library/NullMoth/kexts/$MAJ/NMXNPU.kext ]; then
+    rm -rf "$EXT/NMXNPU.kext" && ditto /Library/NullMoth/kexts/$MAJ/NMXNPU.kext "$EXT/NMXNPU.kext" && chown -R root:wheel "$EXT/NMXNPU.kext" \
       && chmod -R 755 "$EXT/NMXNPU.kext" || die "refresh the NPU driver (restore from $BK)"
   fi
 fi
@@ -329,7 +331,7 @@ step "6. boot-args"
 # again means the driver is wanted, so the flag goes; the boot picker sets it again when it is chosen.
 nvram -d 7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove 2>/dev/null || true
 ba=$(nvram boot-args 2>/dev/null | cut -f2-)
-for a in nvfb=1 nvaccel=1; do case " $ba " in *" $a "*) ;; *) echo "   NOTE: boot-args lack '$a' — add it in your OpenCore config.plist (see README)";; esac; done
+for a in nvfb=1 nvaccel=1; do case " $ba " in *" $a "*) ;; *) echo "   NOTE: boot-args lack '$a' — add it in your OpenCore config.plist (README: Install — by hand), or let the 1401 Mac app set OpenCore up";; esac; done
 
 echo; echo "Done. Reboot now: sudo shutdown -r now"
 echo "If macOS asks, allow the extensions in System Settings > Privacy & Security, then reboot once more."

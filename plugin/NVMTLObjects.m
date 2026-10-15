@@ -171,11 +171,28 @@ static inline void nvmtl_resref(id o, int d) {
     os_unfair_lock_unlock(&_lk); if (!had) nvmtl_resref(o, 1); }
 - (void)removeObject:(id)o { if (!o) return; os_unfair_lock_lock(&_lk); BOOL had = [_s member:o] != nil; if (had) [_s removeObject:o];
     os_unfair_lock_unlock(&_lk); if (had) nvmtl_resref(o, -1); }
-- (void)removeAllObjects { os_unfair_lock_lock(&_lk); NSArray *a = _s.allObjects; [_s removeAllObjects]; os_unfair_lock_unlock(&_lk);
-    for (id o in a) nvmtl_resref(o, -1); }
+// Clearing, copying and sealing never go through -allObjects. That array is autoreleased into the CALLER's pool, and
+// these run on the app's own commit thread: Geekbench 7 never drains that pool, so every resource a command buffer had
+// ever touched stayed alive, and Super Resolution filled VRAM with 9 MB MPS buffers until allocations were refused.
+// The sets below are owned (+1) and released at the end of scope.
+- (void)removeAllObjects { NSMutableSet *fresh = [NSMutableSet new], *old;
+    os_unfair_lock_lock(&_lk); old = _s; _s = fresh; os_unfair_lock_unlock(&_lk);
+    for (id o in old) nvmtl_resref(o, -1); }
 - (id)copyWithZone:(NSZone *)z { atomic_fetch_add(&gRes2Tick, 1);
-    NSArray *a = [self nvmtlSnapshot]; NVMTLResSet *c = [[NVMTLResSet alloc] initWithCapacity:a.count]; for (id o in a) [c addObject:o]; return c; }
+    NVMTLResSet *c = [NVMTLResSet new];
+    os_unfair_lock_lock(&_lk); NSMutableSet *m = [_s mutableCopy]; os_unfair_lock_unlock(&_lk);
+    c->_s = m;
+    for (id o in m) nvmtl_resref(o, 1);
+    return c; }
 - (id)mutableCopyWithZone:(NSZone *)z { return [self copyWithZone:z]; }
+// Moves every member into a new set and empties this one in a single locked step. Sealing a submission part used to
+// copy and then clear in two steps, so a resource another thread bound in between was released by the clear without
+// being in the part: the command buffer stopped holding it while the GPU work still used it. Membership moves to one
+// new owner, so each resource's residency count is unchanged; the new set's -dealloc gives it back.
+- (NVMTLResSet *)nvmtlTakeAll { atomic_fetch_add(&gRes2Tick, 1);
+    NVMTLResSet *taken = [NVMTLResSet new]; NSMutableSet *empty = taken->_s;
+    os_unfair_lock_lock(&_lk); taken->_s = _s; _s = empty; os_unfair_lock_unlock(&_lk);
+    return taken; }
 - (void)dealloc { for (id o in _s) nvmtl_resref(o, -1); }
 @end
 
@@ -1141,9 +1158,23 @@ void nvmtl_texture_desc_swizzle(NVMTLTexture *t, MTLTextureDescriptor *d) {
     size_t rowBytes = (size_t)_i.w * _i.bpp;
     size_t surfaceBytes = IOSurfaceGetWidthOfPlane(_surf, (uint32_t)_plane)
                         * IOSurfaceGetBytesPerElementOfPlane(_surf, (uint32_t)_plane);
+    // The copy must also end inside the surface's allocation. Two Tahoe machines crashed in the row copy at a page
+    // boundary while width, height and bytes per row all passed; the plane's rows can describe more memory than the
+    // surface owns.
+    const size_t bpr = IOSurfaceGetBytesPerRowOfPlane(_surf, (uint32_t)_plane);
+    const uintptr_t b0 = (uintptr_t)IOSurfaceGetBaseAddress(_surf), bp = (uintptr_t)IOSurfaceGetBaseAddressOfPlane(_surf, (uint32_t)_plane);
+    const size_t alloc = IOSurfaceGetAllocSize(_surf);
+    const BOOL inAlloc = b0 && bp >= b0 && _i.h && bp - b0 <= alloc
+        && (size_t)(_i.h - 1) <= (alloc - (bp - b0) - MIN(rowBytes, alloc - (bp - b0))) / (bpr ? bpr : 1)
+        && rowBytes <= alloc - (bp - b0);
     if (_i.bpp && rowBytes <= surfaceBytes
         && IOSurfaceGetHeightOfPlane(_surf, (uint32_t)_plane) >= _i.h
-        && IOSurfaceGetBytesPerRowOfPlane(_surf, (uint32_t)_plane) >= rowBytes) return YES;
+        && bpr >= rowBytes && inAlloc) return YES;
+    if (_i.bpp && !inAlloc) {
+        static int saidAlloc; if (saidAlloc++ < 4) nvlog("G13 surface %p plane %lu NOT synced: %u rows of %zu B from plane offset %zu pass the surface's %zu-byte allocation",
+            (void *)_surf, (unsigned long)_plane, _i.h, bpr, (size_t)(bp - b0), alloc);
+        return NO;
+    }
     static int said; if (said++ < 4) nvlog("G13 surface %p plane %lu NOT synced: image %ux%u bpp %u, surface bytesPerElement %zu — its pixels stay on one side",
         (void *)_surf, (unsigned long)_plane, _i.w, _i.h, _i.bpp, IOSurfaceGetBytesPerElementOfPlane(_surf, (uint32_t)_plane));
     return NO;
@@ -4088,6 +4119,7 @@ static int nvmtl_zprobe_on(void);
 - (void)setBuffer:(id<MTLBuffer>)b offset:(NSUInteger)off atIndex:(NSUInteger)i {
     NVMTLBuffer *nb = (NVMTLBuffer *)b;
     if (!nb) {
+        [_bufAt removeObjectForKey:@(i)];   // the binding table must not keep the previous resource
         size_t zoff = 0;
         NVMTLBuffer *zb = nvmtl_bytes_ring(_cb, 16, &zoff);
         const BOOL zring = zb != nil;
@@ -4136,6 +4168,10 @@ static int nvmtl_zprobe_on(void);
     const BOOL dupable = _cb && bytes && len && len <= NVMTL_G79_DUPMAX && i < NVMTL_G79_DUPIDX && nvmtl_g79_on(NVMTL_G79_DUP);
     if (dupable && _cb->_g79BRing[i] && _cb->_g79BLen[i] == len && !memcmp(_cb->_g79B[i], bytes, len)) {
         if (nvmtl_vk_bind_buffer(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, &_cb->_g79BRing[i]->_b, _cb->_g79BOff[i])) nvlog("compute setBytes: bind FAILED");
+        // The binding table follows the binding: kernels run from compiled machine code read their buffer
+        // addresses from it, and a stale entry hands the GPU an address that belongs to nothing.
+        if (!_bufAt) _bufAt = [NSMutableDictionary new];
+        _bufAt[@(i)] = @[_cb->_g79BRing[i], @(_cb->_g79BOff[i]), @(len), @(_cb->_g79BOff[i])];
         nvmtl_g79_count(G79C_BYTESDUP);
         return;
     }
@@ -4151,6 +4187,8 @@ static int nvmtl_zprobe_on(void);
         _cb->_g79BRing[i] = ring && nb->_b.map ? nb : nil; _cb->_g79BOff[i] = roff; _cb->_g79BLen[i] = (uint32_t)len;
         memcpy(_cb->_g79B[i], bytes, len);
     }
+    if (!_bufAt) _bufAt = [NSMutableDictionary new];
+    _bufAt[@(i)] = @[nb, @(roff), @(len), @(roff)];   // buffer, offset, inline length, base
     if (nvmtl_vk_bind_buffer(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, &nb->_b, roff)) nvlog("compute setBytes: bind FAILED");
     if (nvmtl_zprobe_on()) {
         const uint32_t *zw = (const uint32_t *)bytes; char zb[220]; int zo = 0;
@@ -4212,6 +4250,10 @@ static void nvmtl_zprobe_drain(void) {
 }
 - (void)setTexture:(id<MTLTexture>)t atIndex:(NSUInteger)i {
     NVMTLTexture *nt = (NVMTLTexture *)t;
+    if (nvmtl_sass_tables_wanted()) {
+        if (!_sassTextures) _sassTextures = [NSMutableDictionary new];
+        if (nt) _sassTextures[@(i)] = nt; else [_sassTextures removeObjectForKey:@(i)];
+    }
     if (!nt) { nvlog("compute setTexture: nil at %lu", (unsigned long)i); return; }
     nvmtl_zprobe_record(nt, _ps && _ps->_function ? _ps->_function->_fname.UTF8String : NULL, (unsigned)i, nt->_stex ? 1u : 0u);
     nvmtl_retain_resource(_cb, nt);
@@ -4245,6 +4287,10 @@ static void nvmtl_zprobe_drain(void) {
     if (_e78Concurrent) nvmtl_enc78_count(E78C_CONC, 1);
 }
 - (void)dispatchThreadgroups:(MTLSize)grid threadsPerThreadgroup:(MTLSize)tg {
+    if (_ps && _ps->_sassKernel) {
+        int ran = nvmtl_sass_dispatch(self, grid, tg, 0, !_ps->_sassOnly);
+        if (ran) { if (ran > 0 && _cb->_stTwins.count) nvmtl_storage_twins_out(_cb); return; }
+    }
     if (!_nvcIn && nvmtl_nvconv_try(self, grid, tg)) return;
     NVMTLComputePipelineState *selected = [self nvmtlSamplerPipeline];
     if (!selected) { nvlog("dispatch with no valid compute sampler pipeline"); return; }
@@ -4260,6 +4306,10 @@ static void nvmtl_zprobe_drain(void) {
     if (_cb->_stTwins.count) nvmtl_storage_twins_out(_cb);
 }
 - (void)dispatchThreads:(MTLSize)threads threadsPerThreadgroup:(MTLSize)tg {
+    if (_ps && _ps->_sassKernel) {
+        int ran = nvmtl_sass_dispatch(self, threads, tg, 1, !_ps->_sassOnly);
+        if (ran) { if (ran > 0 && _cb->_stTwins.count) nvmtl_storage_twins_out(_cb); return; }
+    }
     NVMTLComputePipelineState *selected = [self nvmtlSamplerPipeline];
     if (!selected) { nvlog("dispatch with no valid compute sampler pipeline"); return; }
     uint32_t l[3] = { (uint32_t)tg.width, (uint32_t)tg.height, (uint32_t)tg.depth };
@@ -4302,6 +4352,10 @@ static void nvmtl_zprobe_drain(void) {
 }
 - (void)setSamplerState:(id<MTLSamplerState>)ss atIndex:(NSUInteger)i {
     NVMTLSamplerState *ns = (NVMTLSamplerState *)ss;
+    if (nvmtl_sass_tables_wanted()) {
+        if (!_sassSamplers) _sassSamplers = [NSMutableDictionary new];
+        if (ns) _sassSamplers[@(i)] = ns; else [_sassSamplers removeObjectForKey:@(i)];
+    }
     if (!_samplers) _samplers = [NSMutableDictionary new];
     NSString *key = [NSString stringWithFormat:@"%lu", (unsigned long)i];
     id was = _samplers[key], now = ns ? ns->_pixelState : nil;
@@ -4328,6 +4382,12 @@ static void nvmtl_zprobe_drain(void) {
     NVMTLBuffer *nb = (NVMTLBuffer *)buf;
     if (!nb) { nvlog("dispatchThreadgroupsWithIndirectBuffer: nil"); return; }
     nvmtl_retain_resource(_cb, nb);
+    // a pipeline with only compiled machine code has no Vulkan pipeline to run an indirect dispatch on
+    if (_ps && _ps->_sassOnly) {
+        [_cb nvmtlRecordEncodingError:[NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorInternal
+            userInfo:@{ NSLocalizedDescriptionKey: @"Indirect dispatch is not available for this kernel" }]];
+        return;
+    }
     NVMTLComputePipelineState *selected = [self nvmtlSamplerPipeline];
     if (!selected) { nvlog("indirect dispatch with no valid compute sampler pipeline"); return; }
     uint32_t l[3] = { (uint32_t)tg.width, (uint32_t)tg.height, (uint32_t)tg.depth };
@@ -4586,7 +4646,10 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
     }
 }
 - (void)synchronizeTexture:(id<MTLTexture>)t slice:(NSUInteger)s level:(NSUInteger)l { [self synchronizeResource:t]; }
-- (void)endEncoding { _cb->_nEnd++; }
+// The encoder lets go of its command buffer when encoding ends, as Metal's own encoders do. An app's autorelease pool
+// can keep an ended encoder alive for a long time (a benchmark loop that never drains), and a strong reference here kept
+// every such command buffer, and every buffer it used, alive with it: VRAM filled until allocations were refused.
+- (void)endEncoding { if (_cb) { _cb->_nEnd++; _cb = nil; } }
 - (void)setLabel:(NSString *)l { _label = [l copy]; }
 - (NSString *)label { return _label; }
 - (id<MTLDevice>)device { id<MTLDevice> d = _cb ? [_cb device] : nil; return d ? d : (id<MTLDevice>)gNVMTLMainDevice; }
@@ -4611,6 +4674,10 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
 - (instancetype)init {
     if ((self = [super init])) {
         _completionCondition = [NSCondition new];
+        // Made here, never lazily: two threads encoding into one command buffer could each find it nil and store
+        // their own set, and the set that lost was freed with the resources only it held (and under the other
+        // thread's addObject:).
+        _resources = [NVMTLResSet new];
         _callbackGroup = dispatch_group_create(); _scheduledGroup = dispatch_group_create();
     }
     return self;
@@ -5249,7 +5316,7 @@ uint32_t nvmtl_geoms_from_descriptor(id desc, nvmtl_geom *out, uint32_t max, int
 - (id<MTLDevice>)device { return _cb->_queue->_dev; }
 - (NSString *)label { return _label; }
 - (void)setLabel:(NSString *)l { _label = [l copy]; }
-- (void)endEncoding { _cb->_nEnd++; }
+- (void)endEncoding { if (_cb) { _cb->_nEnd++; _cb = nil; } }   // lets go of the command buffer, as the blit encoder does
 - (void)nvmtlTrack:(id)r { if (!r) return; if (!_cb->_resources) _cb->_resources = [NVMTLResSet new]; [_cb->_resources addObject:r]; }
 - (void)buildAccelerationStructure:(id<MTLAccelerationStructure>)as descriptor:(MTLAccelerationStructureDescriptor *)desc
                      scratchBuffer:(id<MTLBuffer>)scratch scratchBufferOffset:(NSUInteger)soff {

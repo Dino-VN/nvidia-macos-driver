@@ -12,6 +12,7 @@ name=Path(sys.argv[0]).name;a=sys.argv[1:];r=Path(os.environ['FIXTURE_ROOT'])
 with (r/'calls.jsonl').open('a') as f:f.write(json.dumps([name]+a)+'\n')
 if name=='id':print(0)
 elif name=='sw_vers':print('25G241')
+elif name=='csrutil':print('System Integrity Protection status: unknown (Custom Configuration).\n\nConfiguration:\n\tFilesystem Protections: disabled')
 elif name=='kmutil':
  path=Path(a[a.index('-A')+1])
  if a[0]=='create':
@@ -28,6 +29,8 @@ elif name=='kmutil':
   else:print('org.example.Other')
 elif name=='rm':
  if os.environ.get('FAKE_REMOVE_TREE_FAIL') and str(r/'Library/Extensions/NVAccel.kext') in a:sys.exit(9)
+ if os.environ.get('FAKE_CANDIDATE_VANISH') and str(r/'Library/Extensions/NVRM.kext') in a:
+  Path(str(r/'Library/KernelCollections/AuxiliaryKernelExtensions.kc')+'.nullmoth-remove-new').unlink()
  if os.environ.get('FAKE_TERM_AFTER_NVRM') and str(r/'Library/Extensions/NVRM.kext') in a:
   import signal,subprocess;subprocess.run(['/bin/rm']+a);os.kill(os.getppid(),signal.SIGTERM);sys.exit(0)
  os.execv('/bin/rm',['rm']+a)
@@ -44,7 +47,7 @@ else:sys.exit(99)
 class Recovery(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name);self.bin=self.root/'bin';self.bin.mkdir()
-        for name in ['id','sw_vers','kmutil','nvram','sleep','shutdown','rm']:
+        for name in ['id','sw_vers','csrutil','kmutil','nvram','sleep','shutdown','rm']:
             p=self.bin/name;p.write_text('#!'+sys.executable+'\n'+MOCK);p.chmod(0o755)
         self.env=dict(os.environ,PATH=str(self.bin)+':/usr/bin:/bin:/usr/sbin:/sbin',FIXTURE_ROOT=str(self.root))
         self.ext=self.root/'Library/Extensions';self.ext.mkdir(parents=True)
@@ -54,7 +57,9 @@ class Recovery(unittest.TestCase):
         self.version=self.root/'Library/NullMoth/driver-version';self.version.parent.mkdir(parents=True);self.version.write_text('1.0.7')
         self.backup=self.root/'backup';self.backup.mkdir();(self.backup/'AuxiliaryKernelExtensions.kc').write_bytes(b'PREVIOUS_SAFE')
         (self.backup/'macos-build').write_text('24H32')
-        source=(ROOT/'package/uninstall.sh').read_text()
+        # the script fixes PATH for root; the stand-in commands here only take effect without that line
+        source=(ROOT/'package/uninstall.sh').read_text();assert source.count('PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH')==1
+        source=source.replace('PATH=/usr/bin:/bin:/usr/sbin:/sbin; export PATH','')
         for prefix in ['/Library/','/System/']:source=source.replace(prefix,str(self.root)+prefix)
         self.script=self.root/'uninstall.sh';self.script.write_text(source)
     def tearDown(self):self.temp.cleanup()
@@ -98,6 +103,9 @@ class Recovery(unittest.TestCase):
         r=self.run_remove(FAKE_TERM_AFTER_NVRM='1');self.assertNotEqual(r.returncode,0);self.assertIn('signal TERM',r.stderr)
         self.assertTrue((self.ext/'NVRM.kext/Contents/MacOS/NVRM').exists());self.assertEqual(self.kc.read_bytes(),b'LIVE_WITH_NV')
         self.assertEqual(self.version.read_text(),'1.0.7');self.assertFalse(Path(str(self.kc)+'.nullmoth-remove-new').exists())
+    def test_candidate_that_vanishes_before_publish_is_published_from_its_copy(self):
+        r=self.run_remove(FAKE_CANDIDATE_VANISH='1');self.assert_new_collection(r)
+        self.assertFalse((self.ext/'NVRM.kext').exists());self.assertNotIn('cannot publish',r.stderr)
     def test_final_inspection_failure_is_not_reported_as_success(self):
         r=self.run_remove(FAKE_FINAL_INSPECT_FAIL='1');self.assertNotEqual(r.returncode,0)
         self.assertIn('cannot verify',r.stderr)

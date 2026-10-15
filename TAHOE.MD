@@ -1,6 +1,8 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide targets upstream **1.15.0 at `56bc4f9`**, plus PRs **#171, #136, #147 and #131**. Our working PR #79 Dock icon fixes and PR #112 System Settings glyph fix are preserved. Upstream 1.15.0 already contains equivalent implementations of both icon fixes, so the merge keeps one implementation of each. Their implementation code was compared with the previously tested fork and remains unchanged.
+This guide targets upstream **2.0.0 at `606c8b0`**, with this fork's retained Tahoe icon, System Settings glyph, and borrowed-framebuffer fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
+
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. The framebuffer combines the tested small-aperture discovery and scanout fallbacks with upstream's newer display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing.
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -11,13 +13,13 @@ This guide targets upstream **1.15.0 at `56bc4f9`**, plus PRs **#171, #136, #147
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-The upstream merge itself also updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime after 1.14.7. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the main RM binary, framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
+The 2.0.0 merge updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime. The framebuffer changes require its rebuilt binary as well as its plist. A complete build of this merged tree needs those components from the same source snapshot. The commands below cover the plugin, translator and accelerator; they do not build the main RM binary, framebuffer binary or NVK. Replacing only those outputs and the framebuffer plist in the official 1.14.7 package is a partial rebuild and does not include every upstream change. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. PR #131 preserves the modern framebuffer's `NVRMBootFB` personality; its test compares the NVIDIA claim in both plist copies without requiring the entire files to be identical.
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
-Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 1.15.0 tree still needs fresh package builds and hardware validation.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 2.0.0 tree still needs fresh package builds and hardware validation. The earlier successful experimental builds do not validate this combined tree.
 
 Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That result applies to the previously tested build; the new merged build still needs macOS and GPU validation.
 
