@@ -4855,16 +4855,15 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
 - (void)popDebugGroup {}
 - (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordSignal:e value:v]; }
 - (void)encodeWaitForEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordWait:e value:v]; }
-// The display-pipe swap follows this call immediately in WindowServer. NVAccel
-// cannot order that swap after an NVK fence, so wait for the pixels to finish
-// before allowing the surface to become scanout. Other applications keep the
-// normal submission-only contract.
+// WindowServer also uses this call before handing off offscreen snapshots.
+// NVAccel's swap wait orders scanout, but snapshot consumers have no such wait
+// and can read unfinished pixels. Keep the completion wait here until those
+// consumers can share the producer's GPU fence.
 - (BOOL)commitAndWaitUntilSubmitted {
     static int ws = -1;
     if (ws < 0) ws = (getprogname() && !strcmp(getprogname(), "WindowServer")) ? 1 : 0;
     [self commit];
-    // nvmtl_ws_kernel_waits: the swap waits for this composite in NVAccel instead (nvmtl_ws_mark_pending at commit)
-    if (ws && !nvmtl_ws_kernel_waits()) [self waitUntilCompleted]; else [self waitUntilScheduled];
+    if (ws) [self waitUntilCompleted]; else [self waitUntilScheduled];
     return self.status != MTLCommandBufferStatusError;
 }
 - (void)commit {

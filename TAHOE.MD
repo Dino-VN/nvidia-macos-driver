@@ -1,6 +1,6 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide targets upstream **2.1.0 at `277a29b`**, with this fork's retained Tahoe icon, System Settings glyph, borrowed-framebuffer, parked-VRAM restoration, and Terminal redraw fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
+This guide targets upstream **2.1.0 at `277a29b`**, with this fork's retained Tahoe icon, System Settings glyph, borrowed-framebuffer, parked-VRAM restoration, Terminal redraw, and Dock snapshot completion fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
 
 Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.1.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
 
@@ -18,9 +18,33 @@ For the stock driver, launch a separate Terminal instance with the workaround:
 open -n -a /System/Applications/Utilities/Terminal.app --env NVMTL_NO_FBFETCH=1
 ```
 
-On RTX 2060 Super / macOS Tahoe 26.7.1, this restored normal text updates without resizing. Disabling the new WindowServer completion-wait path did not clear the symptom; its setting was restored. This hardware result validates the process-local fetch workaround. The rebuilt fork still needs hardware validation.
+On RTX 2060 Super / macOS Tahoe 26.7.1, this restored normal text updates without resizing. Disabling the new WindowServer completion-wait path did not clear the symptom; its setting was restored. This hardware result validates the process-local fetch workaround. The combined fork has since booted on this setup; other GPU and OS combinations still need validation.
 
 The permanent workaround is in `NVMTLDriver`; rebuild the plugin and restart Terminal after installing it. `NVMTL_NO_FBFETCH` is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
+
+## Stencil detection in 2.1.0
+
+The new stencil-export emulation originally treated any shader structure member at byte offset 160 as its marker. Cached shaders from the running Tahoe desktop confirmed false matches in two WindowServer glass shaders and four Chromium shaders; none had a push-constant block. This could reset normal stencil references and replay draws that did not export stencil.
+
+The plugin now follows the actual push-constant variable to its block and checks the translator's dedicated layout: one unsigned 32-bit member at offset 160. Ordinary uniform fields no longer activate emulation. The translator's stencil-export path remains supported. Hardware testing on RTX 2060 Super / Tahoe 26.7.1 confirmed that this change alone did not restore the missing Dock window previews.
+
+## Dock window previews in 2.1.0
+
+The 2.1.0 plugin changed WindowServer's `commitAndWaitUntilSubmitted` to return after scheduling when NVAccel accepted GPU completion marks. NVAccel waits for those marks before display flips, but that does not order offscreen snapshot consumers. Minimized windows could therefore animate correctly and then show an empty thumbnail with only the app badge.
+
+On RTX 2060 Super / Tahoe 26.7.1, a live A/B check restored the previews with `debug.nvaccel_surface_gpu_on=0`, which makes the plugin wait for completion again. Restoring the value to `1` made a fresh window's preview invisible again. The same plugin stayed loaded throughout; no reboot or cache clearing separated these observations.
+
+The plugin now waits for GPU completion in WindowServer's submit-and-wait call. Other asynchronous submissions retain the existing kernel swap marks. This can reduce CPU/GPU overlap in that WindowServer path. Submission copy caching, release `-O2`, and parked-VRAM restoration remain enabled.
+
+After installing and rebooting with the rebuilt plugin, fresh minimized-window previews worked with `debug.nvaccel_surface_gpu_on=1`. The user reported little perceived performance loss. A 20-second counter check recorded no additional completion timeouts (the count stayed at four from earlier in the boot). Comparative frame delivery has not been measured; this result covers RTX 2060 Super / Tahoe 26.7.1.
+
+A temporary workaround on the stock 2.1.0 driver is:
+
+```bash
+sudo sysctl debug.nvaccel_surface_gpu_on=0
+```
+
+Restore and minimize the affected window to regenerate its thumbnail. This setting lasts for the current boot. Setting it back to `1` restores the upstream completion behavior.
 
 ## Components and package base
 
@@ -39,9 +63,9 @@ PR #136 was adapted to preserve upstream's standard sample-position fallback whe
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
-Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 2.1.0 tree still needs fresh package builds and hardware validation. The earlier successful experimental builds do not validate this combined tree.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The combined 2.1.0 package has been built, staged and booted on RTX 2060 Super / Tahoe 26.7.1. Other GPUs and the Sequoia variant still need hardware validation.
 
-Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That result applies to the previously tested build; the new merged build still needs macOS and GPU validation.
+Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That icon result applies to the earlier tested build; the combined 2.1.0 boot and Dock snapshot results are described above.
 
 The merge keeps specialized-name linking, linked stages for pixel-sampler variants, swizzled sampled views and the buffer-offset repair for CoreImage resize helpers. It also keeps upstream's HDR storage-texture handling and newer stage-output repair. The fallback for missing NVIDIA Darwin build metadata remains in `build/accel_build.sh`.
 

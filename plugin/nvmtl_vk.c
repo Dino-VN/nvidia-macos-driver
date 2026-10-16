@@ -2963,16 +2963,46 @@ static int nvmtl_fbfetch_on(void)
     return on;
 }
 #define NVMTL_STENCIL_EMU_OFFSET 160u   /* the translator's native::stencil_export::STENCIL_EXPORT_PUSH_OFFSET */
-/* the translator's stencil-export lowering: a push-constant block member at offset 160 (stencil emulation, see NVMTL_SEMU_DRAW) */
+/* Match the dedicated uint32 PushConstant block emitted by native::stencil_export.
+ * Ordinary uniform blocks also have members at offset 160; treating those as stencil
+ * exports changes their stencil references and replays normal draws (NVMTL_SEMU_DRAW).
+ */
 uint32_t nvmtl_spirv_stencil_emu(const void *code, size_t bytes)
 {
     const uint32_t *w = (const uint32_t *)code; const size_t nw = bytes / 4;
-    if (nw < 5 || w[0] != 0x07230203u) return 0;
+    if (!w || bytes % 4 || nw < 5 || w[0] != 0x07230203u) return 0;
+    uint32_t ptr = 0, block = 0, member = 0;
+    /* Validate instruction boundaries and find the lowering's sole PushConstant variable. */
     for (size_t i = 5; i < nw; ) {
         uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
-        if (!wc || i + wc > nw) break;
-        if (op == 72 && wc == 5 && w[i + 3] == 35 && w[i + 4] == 160u) return 1;   // OpMemberDecorate .. Offset 160
+        if (!wc || wc > nw - i) return 0;
+        if (op == 59 && wc >= 4 && w[i + 3] == 9) {   // OpVariable .. PushConstant
+            if (ptr) return 0;   // the lowering skips modules that already have push constants
+            ptr = w[i + 1];
+        }
         i += wc;
+    }
+    if (!ptr) return 0;
+    for (size_t i = 5; i < nw; i += w[i] >> 16) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+        if (op == 32 && wc == 4 && w[i + 1] == ptr && w[i + 2] == 9) {   // OpTypePointer .. PushConstant
+            block = w[i + 3];
+            break;
+        }
+    }
+    if (!block) return 0;
+    int is_block = 0, at_offset = 0;
+    for (size_t i = 5; i < nw; i += w[i] >> 16) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+        if (op == 30 && wc == 3 && w[i + 1] == block) member = w[i + 2];   // OpTypeStruct with one member
+        if (op == 71 && wc == 3 && w[i + 1] == block && w[i + 2] == 2) is_block = 1;   // OpDecorate .. Block
+        if (op == 72 && wc == 5 && w[i + 1] == block && w[i + 2] == 0 && w[i + 3] == 35 &&
+            w[i + 4] == NVMTL_STENCIL_EMU_OFFSET) at_offset = 1;   // OpMemberDecorate block 0 Offset 160
+    }
+    if (!is_block || !at_offset || !member) return 0;
+    for (size_t i = 5; i < nw; i += w[i] >> 16) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+        if (op == 21 && wc == 4 && w[i + 1] == member) return w[i + 2] == 32 && w[i + 3] == 0;   // OpTypeInt 32 unsigned
     }
     return 0;
 }

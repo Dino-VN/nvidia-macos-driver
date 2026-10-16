@@ -2,13 +2,15 @@
 
 ## Fork additions to 2.1.0
 
-- Keep framebuffer fetch off in Apple's Terminal to prevent stale text and skipped redraws in 2.1.0. Confirmed on RTX 2060 Super / Tahoe 26.7.1: disabling fetch in a fresh Terminal process restored normal updates without resizing. This compatibility workaround is specific to Terminal; the rebuilt fork still needs hardware validation.
+- Restore GPU completion waiting in WindowServer's submit-and-wait path for Dock snapshots. A live A/B check on RTX 2060 Super / Tahoe 26.7.1 restored previews with completion waiting and reproduced invisible fresh previews after returning to 2.1.0's scheduling-only behavior. Fresh previews also worked after installing and rebooting with the rebuilt plugin while kernel GPU marks stayed enabled. The user reported little perceived performance loss; comparative frame delivery has not been measured.
+- Validate the dedicated push-constant block before enabling stencil-export emulation. Ordinary uniform fields at offset 160 falsely activated it in cached WindowServer and Chromium shaders. Hardware testing confirmed that this change alone did not restore Dock previews.
+- Keep framebuffer fetch off in Apple's Terminal to prevent stale text and skipped redraws in 2.1.0. Confirmed on RTX 2060 Super / Tahoe 26.7.1: disabling fetch in a fresh Terminal process restored normal updates without resizing. This compatibility workaround is specific to Terminal; other hardware still needs validation.
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
 - Retain NVAccel's borrowed-framebuffer GPU mappings separately from the framebuffer implementation.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. This merged source tree needs a fresh build and hardware validation.
+The release entries below describe upstream releases. The combined fork has booted on RTX 2060 Super / Tahoe 26.7.1; other hardware and comparative performance still need validation.
 
 ## 2.1.0
 
