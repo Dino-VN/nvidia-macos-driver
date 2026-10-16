@@ -9,10 +9,10 @@ import WebKit
 import UniformTypeIdentifiers
 
 struct Package {
-    static let version = "2.0.1"
-    static let name = "nullmoth-nvidia-2.0.1.tar.gz"
-    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v2.0.1/nullmoth-nvidia-2.0.1.tar.gz")!
-    static let sha256 = "62cf19381ab34f0ef9198560c2dcf86de9142a02b3eddbc6de9e64572ce85049"
+    static let version = "2.0.3"
+    static let name = "nullmoth-nvidia-2.0.3.tar.gz"
+    static let url = URL(string: "https://github.com/nullmoth/nvidia-macos-driver/releases/download/v2.0.3/nullmoth-nvidia-2.0.3.tar.gz")!
+    static let sha256 = "9868142c88941985b7105d8ac48539774533cd8babd56d74ad3b03a7c04c5721"
 }
 let uploadPage = URL(string: "https://nullmothsystems.com/#send")!
 let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("NullMoth")
@@ -437,10 +437,17 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "logo": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto",
                          extra: ["--set-logo", (b["on"] as? Bool ?? true) ? "on" : "off",
                                  "--tool", Bundle.main.resourceURL!.appendingPathComponent("NullMothSafe.efi").path])
+        case "backlight": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto",
+                              extra: ["--backlight", (b["on"] as? Bool ?? false) ? "on" : "off"])
         // the opt-in AMD/Intel GPU driver (setup --gpu-test); --tool tells setup where the firmware list sits
-        case "gputest": run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto",
-                            extra: ["--gpu-test", (b["on"] as? Bool ?? false) ? "on" : "off",
-                                    "--tool", Bundle.main.resourceURL!.appendingPathComponent("NullMothSafe.efi").path])
+        // a Mac with no NVIDIA card has no driver install behind it: the checked package rides along so setup can take
+        // the AMD/Intel test driver from it (setup verifies the SHA-256 again on a root-owned copy)
+        case "gputest":
+            let pk = (b["pkg"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            run(mode: "verbose", pkg: "", efi: b["efi"] as? String ?? "auto",
+                extra: ["--gpu-test", (b["on"] as? Bool ?? false) ? "on" : "off",
+                        "--tool", Bundle.main.resourceURL!.appendingPathComponent("NullMothSafe.efi").path]
+                    + (pk.map { ["--pkg", $0, "--sha", Package.sha256] } ?? []))
         default: break
         }
     }
@@ -472,11 +479,23 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         #endif
         let safe = sh("/usr/sbin/nvram", ["boot-args"]).split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).contains("-nvoff")
         let metal = metalDevices()
+        // Why no NVIDIA card shows up, when that is the case. Users on hybrid laptops copy -wegnoegpu / -wegonogpu from
+        // laptop guides (it hides every discrete GPU, NVIDIA included), and a disable-gpu property or a dGPU-off SSDT
+        // does the same: the card is then on the bus with another class code, or not on the bus at all.
+        let hiding = sysctl("kern.bootargs").split(separator: " ").map(String.init)
+            .filter { ["-wegnoegpu", "-wegonogpu", "-nvoff"].contains($0) }
+        let hiddenNvidia = services("IOPCIDevice").compactMap { s -> String? in
+            defer { IOObjectRelease(s) }
+            guard u32(s, "vendor-id").map({ $0 & 0xffff }) == 0x10DE, let cls = u32(s, "class-code"), cls >> 16 != 0x03,
+                  cls >> 16 != 0x04, let d = u32(s, "device-id") else { return nil }
+            return String(format: "10DE:%04X", d & 0xffff)
+        }
         return ["macos": "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", "major": os.majorVersion, "arch": arch,
                 "gpus": gpus, "opencore": oc, "kexts": kexts, "files": files, "metal": metal.names, "metalSource": metal.source,
                 "packages": findPackages(), "version": Package.version, "installedDriverVersion": recordedDriverVersion(), "safemode": safe,
                 "record": fm.fileExists(atPath: "/Library/NullMoth/state"), "crashes": driverCrashes().map(\.lastPathComponent),
-                "translated": sysctl("sysctl.proc_translated") == "1",
+                "translated": sysctl("sysctl.proc_translated") == "1", "gpuHiding": hiding, "hiddenNvidia": hiddenNvidia,
+                "hwModel": sysctl("hw.model"),
                 "profile": { var p = machineProfile(gpus); p["rules"] = Profile.select(rules(), p).ids; return p }()]
     }
 

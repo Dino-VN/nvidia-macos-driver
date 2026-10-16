@@ -12,6 +12,7 @@
 #include <kern/thread.h>
 #include <kern/thread_call.h>
 #include <kern/clock.h>
+#include <sys/kauth.h>
 #include <kern/task.h>
 #include <sys/vnode.h>
 #include <sys/fcntl.h>
@@ -321,8 +322,19 @@ static void nv_q_init(void)
     kprintf("NVRM-xnu: QUARANTINE armed, selftest %s\n", nv_q_selftest);
 }
 
+// The panic-hunt diagnostics below print physical addresses of RM allocations and, for nvrm_winraw, the bytes of a
+// physical memory window. Up to 2.0.2 they were registered on every machine and readable by any user. They now exist
+// only with boot-arg nvrmdiag=1, and even then only root may read them.
+static bool nv_diag_on(void)
+{
+    static int on = -1;
+    if (on < 0) { int v = 0; on = (PE_parse_boot_argn("nvrmdiag", &v, sizeof(v)) && v) ? 1 : 0; }
+    return on == 1;
+}
+#define NV_DIAG_ROOT_ONLY() do { if (!kauth_cred_issuser(kauth_cred_get())) return EPERM; } while (0)
 static int nv_watch_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     char *buf = (char *)IOMalloc(sizeof nv_watch_text + 512);
     if (!buf) return ENOMEM;
     IOSimpleLockLock(nv_watch_lock);
@@ -350,7 +362,7 @@ static void nv_watch_init(void)
     bool neg = nv_watch_hit(0x4132a000ULL, 0x1000ULL) == 0;
     bool two = nv_watch_hit(0x0132b000ULL + PAGE_SIZE, kNvWatchSlot) == 0x4132b000ULL;
     nv_watch_selftest = (pos && neg && two) ? "ok (hit/miss/next-slot)" : "FAILED — events below are not trustworthy";
-    sysctl_register_oid(&sysctl__debug_nvrm_watchpage);
+    if (nv_diag_on()) sysctl_register_oid(&sysctl__debug_nvrm_watchpage);
     kprintf("NVRM-xnu: WATCHPAGE armed, selftest %s\n", nv_watch_selftest);
 }
 extern "C" void nv_xnu_dump_live_allocs(void)
@@ -528,6 +540,7 @@ extern "C" bool nv_xnu_chat(void)
 }
 static int nv_pm_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     const size_t cap = 8192; char *buf = (char *)IOMalloc(cap); if (!buf) return ENOMEM;
     size_t h = 0; int w;
     w = snprintf(buf, cap, "selftest %s\nkernel-alias %lld (live %lld) | FOREIGN-KMAP %lld | FREE-DEFERRED %lld (released %lld) | "
@@ -560,10 +573,15 @@ static bool nv_pm_owner_enforce(void)
     if (on < 0) { int v = 1; PE_parse_boot_argn("nvrmmapowner", &v, sizeof(v)); on = v ? 1 : 0; }
     return on != 0;
 }
+// Kernel addresses of one macOS build (24G830), used only by the class-F panic hunt's page-table sentinel. Shipped
+// builds leave them out: on any other build they point at unrelated memory, and in the binary they are a ready-made
+// address book for anyone attacking the kernel (security report #214, finding 7).
+#if NVRM_PANIC_HUNT
 static const uint64_t kKdkKprintf = 0xffffff8000b94da0ULL, kKdkPvHead = 0xffffff80011bd8c8ULL, kKdkAttr = 0xffffff80012de470ULL,
                       kKdkLastManaged = 0xffffff80012de468ULL, kKdkPmapInit = 0xffffff80011bd358ULL,
                       kKdkKernelPmap = 0xffffff8000266460ULL, kKdkVerifyFree = 0xffffff8000512880ULL;
 static const uint8_t  kKdkVerifyBytes[16] = { 0x83,0x3d,0xd1,0xaa,0xca,0x00,0x00,0x0f,0x94,0xc0,0x83,0xff,0xfe,0x0f,0x94,0xc1 };
+#endif
 static const char *nv_pv_state = "not started";
 static volatile uint8_t *nv_pv_head = NULL, *nv_pv_attr = NULL;
 static uint32_t nv_pv_last = 0; static uint64_t nv_pv_kpmap = 0; static uint8_t *nv_pv_managed = NULL;
@@ -686,6 +704,7 @@ static void nv_pv_thread(void *, wait_result_t)
     }
 }
 
+#if NVRM_PANIC_HUNT
 static const char *nv_pv_arm(void)
 {
     const uint64_t slide = (uint64_t)(uintptr_t)&kprintf - kKdkKprintf;
@@ -757,9 +776,14 @@ static const char *nv_pv_arm(void)
     nv_wm_boot_taken = true;
     return NULL;
 }
+#else
+static const char *nv_pv_arm(void) { return "REFUSED: the page-table sentinel is only in NVRM_PANIC_HUNT=1 builds"; }
+#endif
+
 
 static int nv_pv_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     const size_t cap = 16384; char *buf = (char *)IOMalloc(cap); if (!buf) return ENOMEM;
     size_t h = 0; int w;
     w = snprintf(buf, cap, "state %s | pages 0x%x managed %llu | passes %llu (full every 5 s) | repair %s | slide 2MB-aligned %s\n",
@@ -830,6 +854,7 @@ static size_t nv_wm_unarmed(char *buf, size_t cap)
 
 static int nv_wm_why_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     const size_t cap = 160 * 1024;
     char *buf = (char *)IOMalloc(cap);
     if (!buf) return ENOMEM;
@@ -922,6 +947,7 @@ SYSCTL_PROC(_debug, OID_AUTO, nvrm_winwhy, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG
 static const NvU64 kPvcMaxPages = 262144;
 static int nv_pvchain_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     const size_t cap = 64 * 1024;
     char *buf = (char *)IOMalloc(cap);
     if (!buf) return ENOMEM;
@@ -994,6 +1020,7 @@ SYSCTL_PROC(_debug, OID_AUTO, nvrm_pvchain, CTLTYPE_STRING | CTLFLAG_RD | CTLFLA
 
 static int nv_wm_raw_sysctl SYSCTL_HANDLER_ARGS
 {
+    NV_DIAG_ROOT_ONLY();
     const size_t cap = 96 * 1024;
     char *buf = (char *)IOMalloc(cap);
     if (!buf) return ENOMEM;
@@ -1079,9 +1106,9 @@ NV_STATUS NV_API_CALL nv_alloc_pages(nv_state_t *nv, NvU32 page_count, NvU64 pag
     a->ptes = (NvU64 *)kern_os_malloc((size_t)n * sizeof(NvU64));
     if (a->ptes) { for (NvU32 i = 0; i < n; i++) a->ptes[i] = pte_array[i]; a->nptes = n; }
     nv_pm_init();
-    if (!nv_pm_registered && nv_pm_lock) { nv_pm_registered = true; sysctl_register_oid(&sysctl__debug_nvrm_physmap); }
+    if (!nv_pm_registered && nv_pm_lock && nv_diag_on()) { nv_pm_registered = true; sysctl_register_oid(&sysctl__debug_nvrm_physmap); }
     nv_pm_link(a);
-    nv_pv_start();
+    if (nv_diag_on()) nv_pv_start();   // detect-only page sentinel thread from the class-F panic hunt
     *priv_data = a;
     if (nv_xnu_live_n < 512) nv_xnu_live[nv_xnu_live_n++] = a;
     nv_watch_init(); nv_q_init(); OSIncrementAtomic64((volatile SInt64 *)&nv_watch_allocs); OSAddAtomic64((SInt64)bytes, (volatile SInt64 *)&nv_watch_bytes_seen);
@@ -1182,17 +1209,139 @@ void NV_API_CALL os_wait_uninterruptible(os_wait_queue *wq) { TRC; IOLockLock(wq
 void NV_API_CALL os_wait_interruptible(os_wait_queue *wq)   { TRC; IOLockLock(wq->lock); IOLockSleep(wq->lock, wq, THREAD_INTERRUPTIBLE); IOLockUnlock(wq->lock); }
 void NV_API_CALL os_wake_up(os_wait_queue *wq)              { TRC; IOLockLock(wq->lock); IOLockWakeup(wq->lock, wq, false); IOLockUnlock(wq->lock); }
 
+// Each work item runs on its own thread. rm_power_management() flushes the queue before suspend/resume
+// (nv_kthread_q_flush on Linux), so count the items still running and let os_flush_work_queue() wait for them.
+static IOLock *nv_xnu_work_lock;
+static int nv_xnu_work_running;
+static bool nv_xnu_work_flushing;
+static IOLock *nv_xnu_work_lock_get(void)
+{
+    if (!nv_xnu_work_lock) {
+        IOLock *l = IOLockAlloc();
+        if (l && !OSCompareAndSwapPtr(NULL, l, (void * volatile *)&nv_xnu_work_lock)) IOLockFree(l);
+    }
+    return nv_xnu_work_lock;
+}
 static void nv_xnu_work_thread(void *item, wait_result_t)
 {
     kprintf("NVRM-xnu: work item %p running\n", item);
     rm_execute_work_item(NULL, item);
+    IOLockLock(nv_xnu_work_lock);
+    if (--nv_xnu_work_running == 0) IOLockWakeup(nv_xnu_work_lock, &nv_xnu_work_running, false);
+    IOLockUnlock(nv_xnu_work_lock);
     thread_terminate(current_thread());
 }
 NV_STATUS NV_API_CALL os_queue_work_item(struct os_work_queue *queue, void *item)
 {
     TRC; thread_t t;
-    if (kernel_thread_start(nv_xnu_work_thread, item, &t) != KERN_SUCCESS) return NV_ERR_NO_MEMORY;
+    if (!nv_xnu_work_lock_get()) return NV_ERR_NO_MEMORY;
+    IOLockLock(nv_xnu_work_lock); nv_xnu_work_running++; IOLockUnlock(nv_xnu_work_lock);
+    if (kernel_thread_start(nv_xnu_work_thread, item, &t) != KERN_SUCCESS) {
+        IOLockLock(nv_xnu_work_lock); nv_xnu_work_running--; IOLockUnlock(nv_xnu_work_lock);
+        return NV_ERR_NO_MEMORY;
+    }
     thread_deallocate(t); return NV_OK;
+}
+NV_STATUS NV_API_CALL os_flush_work_queue(struct os_work_queue *queue, NvBool is_unload)
+{
+    TRC;
+    if (!nv_xnu_work_lock) return NV_OK;
+    IOLockLock(nv_xnu_work_lock);
+    nv_xnu_work_flushing = true;
+    while (nv_xnu_work_running > 0) IOLockSleep(nv_xnu_work_lock, &nv_xnu_work_running, THREAD_UNINT);
+    nv_xnu_work_flushing = false;
+    IOLockUnlock(nv_xnu_work_lock);
+    return NV_OK;
+}
+NvBool NV_API_CALL os_is_queue_flush_ongoing(struct os_work_queue *queue) { return nv_xnu_work_flushing ? NV_TRUE : NV_FALSE; }
+
+// RM's "temporary file" (FBSR_TYPE_FILE). With PreserveVideoMemoryAllocations, rm_power_management(STANDBY) copies every
+// VRAM allocation out through a small pinned buffer and os_write_file, and RESUME reads it back with os_read_file - on
+// Linux into a file under NVreg_TemporaryFilePath. Here the "file" is kernel memory in 4 MB chunks: pageable first, so
+// the VM can compress it on a machine short of RAM (the reason Linux uses a file rather than one wired buffer); wired
+// when the pageable maps are full. RAM keeps power in S3, and no disk is touched while the system goes to sleep.
+#define NV_XNU_TMPF_CHUNK (4ull << 20)
+struct nv_xnu_tmpfile { void **chunk; bool *pageable; NvU64 cap, used, bytes, wired; };
+NV_STATUS NV_API_CALL os_open_temporary_file(void **ppFile)
+{
+    TRC;
+    nv_xnu_tmpfile *f = (nv_xnu_tmpfile *)IOMallocZero(sizeof *f);
+    if (!f) return NV_ERR_NO_MEMORY;
+    *ppFile = f;
+    return NV_OK;
+}
+static NV_STATUS nv_xnu_tmpf_grow(nv_xnu_tmpfile *f, NvU64 need)
+{
+    if (need <= f->cap) return NV_OK;
+    NvU64 cap = f->cap ? f->cap : 64;
+    while (cap < need) cap *= 2;
+    void **chunk = (void **)IOMallocZero((vm_size_t)(cap * sizeof(void *)));
+    bool *pageable = (bool *)IOMallocZero((vm_size_t)(cap * sizeof(bool)));
+    if (!chunk || !pageable) {
+        if (chunk) IOFree(chunk, (vm_size_t)(cap * sizeof(void *)));
+        if (pageable) IOFree(pageable, (vm_size_t)(cap * sizeof(bool)));
+        return NV_ERR_NO_MEMORY;
+    }
+    for (NvU64 i = 0; i < f->cap; i++) { chunk[i] = f->chunk[i]; pageable[i] = f->pageable[i]; }
+    if (f->chunk) IOFree(f->chunk, (vm_size_t)(f->cap * sizeof(void *)));
+    if (f->pageable) IOFree(f->pageable, (vm_size_t)(f->cap * sizeof(bool)));
+    f->chunk = chunk; f->pageable = pageable; f->cap = cap;
+    return NV_OK;
+}
+NV_STATUS NV_API_CALL os_write_file(void *pFile, NvU8 *buf, NvU64 size, NvU64 offset)
+{
+    nv_xnu_tmpfile *f = (nv_xnu_tmpfile *)pFile;
+    if (!f || (!buf && size)) return NV_ERR_INVALID_ARGUMENT;
+    while (size) {
+        const NvU64 idx = offset / NV_XNU_TMPF_CHUNK, in = offset % NV_XNU_TMPF_CHUNK;
+        const NvU64 n = (size < NV_XNU_TMPF_CHUNK - in) ? size : NV_XNU_TMPF_CHUNK - in;
+        if (nv_xnu_tmpf_grow(f, idx + 1) != NV_OK) return NV_ERR_NO_MEMORY;
+        if (!f->chunk[idx]) {
+            void *c = IOMallocPageable((vm_size_t)NV_XNU_TMPF_CHUNK, PAGE_SIZE);
+            bool pg = c != NULL;
+            if (!c) { c = IOMallocAligned((vm_size_t)NV_XNU_TMPF_CHUNK, PAGE_SIZE); f->wired += c ? NV_XNU_TMPF_CHUNK : 0; }
+            if (!c) {
+                kprintf("NVRM-xnu: VRAM save file: no memory for chunk %llu (%llu MB stored)\n", idx, f->bytes >> 20);
+                return NV_ERR_NO_MEMORY;
+            }
+            f->chunk[idx] = c; f->pageable[idx] = pg;
+            if (idx + 1 > f->used) f->used = idx + 1;
+            f->bytes += NV_XNU_TMPF_CHUNK;
+        }
+        memcpy((NvU8 *)f->chunk[idx] + in, buf, (size_t)n);
+        buf += n; offset += n; size -= n;
+    }
+    return NV_OK;
+}
+NV_STATUS NV_API_CALL os_read_file(void *pFile, NvU8 *buf, NvU64 size, NvU64 offset)
+{
+    nv_xnu_tmpfile *f = (nv_xnu_tmpfile *)pFile;
+    if (!f || (!buf && size)) return NV_ERR_INVALID_ARGUMENT;
+    while (size) {
+        const NvU64 idx = offset / NV_XNU_TMPF_CHUNK, in = offset % NV_XNU_TMPF_CHUNK;
+        const NvU64 n = (size < NV_XNU_TMPF_CHUNK - in) ? size : NV_XNU_TMPF_CHUNK - in;
+        if (idx < f->cap && f->chunk[idx]) memcpy(buf, (const NvU8 *)f->chunk[idx] + in, (size_t)n);
+        else memset(buf, 0, (size_t)n);
+        buf += n; offset += n; size -= n;
+    }
+    return NV_OK;
+}
+void NV_API_CALL os_close_file(void *pFile)
+{
+    nv_xnu_tmpfile *f = (nv_xnu_tmpfile *)pFile;
+    if (!f) return;
+    kprintf("NVRM-xnu: VRAM save file closed: %llu MB held (%llu MB pageable, %llu MB wired)\n",
+            f->bytes >> 20, (f->bytes - f->wired) >> 20, f->wired >> 20);
+    IOLog("NVRM-xnu: VRAM save file closed: %llu MB held (%llu MB pageable, %llu MB wired)\n",
+          f->bytes >> 20, (f->bytes - f->wired) >> 20, f->wired >> 20);
+    for (NvU64 i = 0; i < f->used; i++) {
+        if (!f->chunk[i]) continue;
+        if (f->pageable[i]) IOFreePageable(f->chunk[i], (vm_size_t)NV_XNU_TMPF_CHUNK);
+        else IOFreeAligned(f->chunk[i], (vm_size_t)NV_XNU_TMPF_CHUNK);
+    }
+    if (f->chunk) IOFree(f->chunk, (vm_size_t)(f->cap * sizeof(void *)));
+    if (f->pageable) IOFree(f->pageable, (vm_size_t)(f->cap * sizeof(bool)));
+    IOFree(f, sizeof *f);
 }
 NV_STATUS NV_API_CALL os_schedule(void) { IOSleep(1); return NV_OK; }
 

@@ -1,13 +1,52 @@
 # Changelog
 
-## Fork additions to 2.0.0
+## Fork additions to 2.0.3
 
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
-- Use the unmodified upstream 2.0.0 framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
+- Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
 - Retain NVAccel's borrowed-framebuffer GPU mappings separately from the framebuffer implementation.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
 The release entries below describe upstream releases. This merged source tree needs a fresh build and hardware validation.
+
+## 2.0.3
+
+Driver
+- System sleep and wake (PR #182, thanks danlt150): the GPU's memory is kept across sleep, the PCI setup and
+  Resizable BAR are restored on wake, and the display driver does the wake steps macOS expects. Before, the GPU
+  lost its state in sleep and the desktop could freeze on wake
+- The Metal driver finds a submission's copy buffers once instead of on every check (PR #223, thanks HighDelay)
+- The display driver no longer fills the log with the same "hdcs" line many times a second (#216)
+- Security (#214): diagnostic sysctls that let any user read physical addresses and memory are gone from normal
+  builds (they exist only with the nvrmdiag=1 boot argument, and only root can read them); starting the GPU by
+  hand is root-only; the kernel addresses used for debugging are left out of shipped builds
+
+Mac app
+- AMD boards (AM4 and AM5) whose OpenCore config rewrites the firmware memory map get DisableVariableWrite, so
+  macOS cannot write NVRAM through that map (boards that stopped starting after an install)
+- When no NVIDIA card is visible, the app says why: -wegnoegpu or -wegonogpu in boot-args, a disable-gpu property,
+  or a laptop BIOS set to integrated graphics only
+- Macs with only an AMD or Intel GPU can turn on the experimental AMD / Intel GPU driver; it installs from the
+  downloaded driver package, without the NVIDIA driver
+- Laptops whose built-in screen is wired to the NVIDIA GPU get an opt-in switch for brightness control
+
+1401 for Windows
+- Intel PCs (12th gen and newer) that stop at EB.MM.AKM because no kernel slide fit: rebuilding with the stick
+  plugged in reads its startup log and turns on DevirtualiseMmio for the next start
+- AMD PCs get the same NVRAM write guard as the Mac app (DisableVariableWrite when the memory map is rewritten)
+- A stick whose disk number changes during the write is found again instead of stopping the build; a volume that
+  disappears is skipped
+- When Apple's download server resets the connection, the stop message says what to try on the network
+- When Windows cannot format the stick, its own error is now in the log before the fallback
+
+## 2.0.2
+
+1401 for Windows
+- A PC with no network adapter that works in the macOS installer gets its stick written, with a note to connect a
+  supported Ethernet or Wi-Fi adapter before installing
+- A stick that Windows gives a new disk number just before the erase is found again and written
+
+No changes to the driver or the Mac app since 2.0.0.
 
 ## 2.0.1
 
