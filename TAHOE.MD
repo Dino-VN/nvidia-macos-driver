@@ -1,10 +1,28 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide targets upstream **2.0.0 at `606c8b0`**, with this fork's retained Tahoe icon, System Settings glyph, and borrowed-framebuffer fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
+This guide targets upstream **2.1.0 at `277a29b`**, with this fork's retained Tahoe icon, System Settings glyph, borrowed-framebuffer, parked-VRAM restoration, and Terminal redraw fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
 
-Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB now uses the unmodified upstream 2.0.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.1.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
 
 The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
+
+## Terminal redraw regression in 2.1.0
+
+On stock 2.1.0, Terminal could keep displaying old text until its window was resized. Its logs reported `framebuffer fetch set could not be made (mask 0x7) - this draw is skipped`: the new fetch path requested colour input slots absent from the render pass and dropped the draw.
+
+The fork's plugin disables framebuffer fetch specifically in Apple's `Terminal` process. This is a compatibility workaround for that application. Other applications use upstream's fetch policy, including Blender's lighting support and WindowServer's existing opt-in. The general descriptor-reflection issue needs a separate repair.
+
+For the stock driver, launch a separate Terminal instance with the workaround:
+
+```bash
+open -n -a /System/Applications/Utilities/Terminal.app --env NVMTL_NO_FBFETCH=1
+```
+
+On RTX 2060 Super / macOS Tahoe 26.7.1, this restored normal text updates without resizing. Disabling the new WindowServer completion-wait path did not clear the symptom; its setting was restored. This hardware result validates the process-local fetch workaround. The rebuilt fork still needs hardware validation.
+
+The permanent workaround is in `NVMTLDriver`; rebuild the plugin and restart Terminal after installing it. `NVMTL_NO_FBFETCH` is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
+
+## Components and package base
 
 | Component | Purpose | Build output |
 |---|---|---|
@@ -15,13 +33,13 @@ The plugin caches upload-backing discovery for each sealed submission part and u
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-The 2.0.0 merge updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime. Use the official 2.0.0 package as the staging base: its RM, framebuffer and NVK match this tree's corresponding sources. Stage the fork's plugin, translator and Tahoe accelerator into that package. The commands below cover those three builds; they do not build the main RM binary, framebuffer binary or NVK. An older 1.14.7 or 1.15 package is not a matching base for this workflow. A framebuffer rebuild, if needed, must include its matching plist. The NVK build uses Mesa `17ca6174` with this checkout's `nvk/nvk-macos.patch`, as described in the [upstream build instructions](https://github.com/nullmoth/nvidia-macos-driver#build-from-source).
+The 2.1.0 merge updates `NVRM`, `NVRMFB`, `NVAccel`, and the NVK runtime. Use the official 2.1.0 package as the staging base to obtain its matching RM, framebuffer and NVK. Stage the fork's plugin, translator and Tahoe accelerator into that package. The commands below cover those three builds; they do not build the main RM binary, framebuffer binary or NVK. An older package is not a matching base for this workflow. A framebuffer rebuild, if needed, must include its matching plist. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
-Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 2.0.0 tree still needs fresh package builds and hardware validation. The earlier successful experimental builds do not validate this combined tree.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The newly merged 2.1.0 tree still needs fresh package builds and hardware validation. The earlier successful experimental builds do not validate this combined tree.
 
 Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That result applies to the previously tested build; the new merged build still needs macOS and GPU validation.
 
@@ -212,7 +230,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Stage the Tahoe PR outputs in an upstream package
 
-Extract the official 2.0.0 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
+Extract the official 2.1.0 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
 
 ```bash
 cd "$HOME/nvmtl-build/LIVE"

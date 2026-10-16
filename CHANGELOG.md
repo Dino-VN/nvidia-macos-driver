@@ -2,6 +2,7 @@
 
 ## Fork additions to 2.1.0
 
+- Keep framebuffer fetch off in Apple's Terminal to prevent stale text and skipped redraws in 2.1.0. Confirmed on RTX 2060 Super / Tahoe 26.7.1: disabling fetch in a fresh Terminal process restored normal updates without resizing. This compatibility workaround is specific to Terminal; the rebuilt fork still needs hardware validation.
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
 - Retain NVAccel's borrowed-framebuffer GPU mappings separately from the framebuffer implementation.

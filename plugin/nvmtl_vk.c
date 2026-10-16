@@ -2939,7 +2939,9 @@ static VkSampleLocationsInfoEXT nvmtl_sample_info(const nvmtl_sample_pattern *p,
  * other pipeline of the pass; a draw with such a pipeline binds set 3 to the open pass's colour views behind a by-region
  * barrier, so it reads what the earlier draws wrote. Blender's Eevee resolves its lighting that way on Apple GPUs (the
  * identity this driver answers with), and read nothing before: every lit surface came out black (#152). WindowServer keeps
- * its passes as they were (NVMTL_FBFETCH_WS=1 opts it in) until this is proven on the desktop; NVMTL_NO_FBFETCH=1 turns it off.
+ * its passes as they were (NVMTL_FBFETCH_WS=1 opts it in) until this is proven on the desktop. Terminal also keeps its
+ * previous path: its shaders declare colour inputs absent from the pass, and requiring them skips text draws.
+ * NVMTL_NO_FBFETCH=1 turns framebuffer fetch off for any application.
  */
 #define NVMTL_FETCH_SET 3
 #define NVMTL_FETCH_BINDING 192
@@ -2950,9 +2952,12 @@ static int nvmtl_fbfetch_on(void)
     static int on = -1;
     if (on < 0) {
         const char *off = getenv("NVMTL_NO_FBFETCH"), *ws = getenv("NVMTL_FBFETCH_WS");
-        const int is_ws = getprogname() && !strcmp(getprogname(), "WindowServer");
-        on = !(off && off[0] == '1') && (!is_ws || (ws && ws[0] == '1'));
+        const char *process = getprogname();
+        const int is_ws = process && !strcmp(process, "WindowServer");
+        const int is_terminal = process && !strcmp(process, "Terminal");
+        on = !(off && off[0] == '1') && !is_terminal && (!is_ws || (ws && ws[0] == '1'));
         nvlog("vk: framebuffer fetch %s", on ? "ON - render passes declare their colour attachments as input attachments"
+                                           : is_terminal ? "off in Terminal (text redraw compatibility)"
                                            : is_ws ? "off in WindowServer (NVMTL_FBFETCH_WS=1 opts in)" : "OFF (NVMTL_NO_FBFETCH=1)");
     }
     return on;
