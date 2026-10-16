@@ -1,6 +1,6 @@
 # Changelog
 
-## Fork additions to 2.0.3
+## Fork additions to 2.0.4
 
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
@@ -8,6 +8,20 @@
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
 The release entries below describe upstream releases. This merged source tree needs a fresh build and hardware validation.
+
+## 2.0.4
+
+Mac app
+- Prepare this Mac for Tahoe is back: on macOS 15 one button installs or updates the driver (it carries the Tahoe
+  driver too), parks it and sets the installer's GPU settings, then opens Software Update. After the update the
+  first start sets the driver up for Tahoe and restarts once by itself. Cancel puts everything back, also with a 1401
+  stick plugged in next to the internal disk (it changes back the config the preparation changed)
+- Intel and AMD laptops and PCs whose own GPU OpenCore switches off (disable-gpu, or -wegnoigpu on Intel) can try the
+  AMD / Intel test driver: the app no longer says "no GPU" and stops; turning the test driver on turns that GPU back
+  on (also on Core Ultra, where the NPU used to hide it), and turning it off switches it off again exactly as it was
+
+1401 for Windows
+- When the stick's disk number is gone at write time, the log now lists the USB disks Windows shows instead
 
 ## 2.0.3
 
