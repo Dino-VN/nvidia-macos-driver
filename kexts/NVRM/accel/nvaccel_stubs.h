@@ -70,11 +70,6 @@ public:
     unsigned long long fPhys     = 0;
     unsigned long long fBytes    = 0;
     bool fScanout = false;
-    // v3: borrowed framebuffer memory. Keep its provider alive; never release this memory through nvFreeVram.
-    IOService         *fScanoutFramebuffer = nullptr;
-    void              *fScanoutHandle = nullptr;
-    unsigned long long fScanoutPhys = 0;
-    bool refreshScanout();
     // VRAM kept across deallocPhysical/allocPhysical (debug.nvaccel_vm_sticky): see NVVidMemory::deallocPhysical
     void              *fParkHandle = nullptr;
     void              *fParkKva    = nullptr;

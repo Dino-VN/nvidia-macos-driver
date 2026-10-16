@@ -57,10 +57,6 @@ void proc_selfname(char *buf, int size);
 }
 static volatile SInt64 gCntVmAlloc, gCntVmAllocBytes, gCntVmDealloc, gCntVmDeallocBytes, gCntVmRefused,
                        gCntResNew, gCntResFree, gCntMapCommit, gCntMapRelease, gCntMapFree;
-static int gScanoutBorrowTest = 3;
-static volatile SInt64 gCntScanoutBorrowInit, gCntScanoutBorrowRewire, gCntScanoutBorrowUnwire,
-                      gCntScanoutBorrowRefreshFail, gCntScanoutBorrowMapOk, gCntScanoutBorrowMapFail,
-                      gCntScanoutBorrowRelease;
 static void nvaccelInstallSysctl(void);
 static int gNvAccelArmed = 0;
 // 1 once the headless check restored the plugin name without arming (no NVIDIA display head). The Metal plugin reads it:
@@ -701,13 +697,6 @@ IOAccelMemory *NVDisplayPipe::initFramebufferResource(unsigned int index, IOAcce
         return nullptr;
     }
 
-    // The GPU page-table commit needs the NVKMS handle, not only the BAR1 address.
-    // Refuse an incomplete description instead of silently replacing the framebuffer with unrelated VRAM.
-    if (!r.handle || !r.kva || fb->isInactive()) {
-        ALOG("scanout-borrow test v3: head %u has no live NVKMS backing -- framebuffer resource refused", head);
-        return nullptr;
-    }
-
     OSObject *o = a->createVidMemory(nullptr, res, r.actualSize, nullptr);
     NVVidMemory *m = OSDynamicCast(NVVidMemory, o);
     if (!m) {
@@ -716,14 +705,9 @@ IOAccelMemory *NVDisplayPipe::initFramebufferResource(unsigned int index, IOAcce
         return nullptr;
     }
     m->fScanout = true;
-    m->fScanoutFramebuffer = fb;
-    fb->retain();
-    m->fScanoutHandle = r.handle;
-    m->fScanoutPhys = r.phys;
-    if (!m->refreshScanout()) { m->release(); return nullptr; }
-    OSAddAtomic64(1, &gCntScanoutBorrowInit);
-    ALOG("scanout-borrow test v3: head %u borrowed framebuffer memory %p phys 0x%llx (%llu bytes)",
-         head, m->fRmHandle, m->fPhys, m->fBytes);
+    m->fPhys    = r.phys;
+    m->fBytes   = r.actualSize;
+    *(volatile unsigned long long *)((unsigned char *)m + 0xc8) = r.phys;
     ALOG("NVDisplayPipe::initFramebufferResource(head %u, index %u, res %p) -> vidmem %p over the LIVE SCANOUT "
          "phys 0x%llx %u x %u pitch %u (%llu bytes)",
          head, index, res, m, (unsigned long long)r.phys, r.width, r.height, r.pitch,
@@ -789,37 +773,13 @@ void NVResource::free()
 static int gVmSticky = 1;
 static SInt64 gCntVmParked, gCntVmUnparked, gCntVmParkReleased;
 
-bool NVVidMemory::refreshScanout()
-{
-    NVAccel *a = NVAccel::gAccel;
-    struct NVRMVramRequest r = {};
-    r.version = NVRM_VRAM_ABI_VERSION;
-    const unsigned long long want = *(const volatile unsigned long long *)((const unsigned char *)this + 0x40);
-    const IOReturn ret = (fScanout && a && fScanoutFramebuffer && !fScanoutFramebuffer->isInactive())
-        ? a->askFramebufferForScanout(&r, fScanoutFramebuffer) : kIOReturnNotAttached;
-    // Mode switches retain fMem in NVRMFB. Do not retarget an old memory object if that backing changes,
-    // or map beyond the currently described framebuffer. A fresh display resource must handle such a change.
-    if (ret != kIOReturnSuccess || !want || !r.handle || !r.kva || !r.phys || r.actualSize < want ||
-        r.handle != fScanoutHandle || r.phys != fScanoutPhys) {
-        fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0; fAllocationCookie = 0;
-        *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = 0;
-        if (OSAddAtomic64(1, &gCntScanoutBorrowRefreshFail) < 12)
-            ALOG("scanout-borrow test v3: backing unavailable/changed/too small (0x%x, want %llu, have %llu) -- no replacement allocation",
-                 (unsigned)ret, want, r.actualSize);
-        return false;
-    }
-    fRmHandle = r.handle; fKva = r.kva; fPhys = r.phys; fBytes = r.actualSize; fAllocationCookie = 0;
-    *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = fPhys;
-    return true;
-}
-
 bool NVVidMemory::allocPhysical()
 {
     if (fScanout) {
-        if (!refreshScanout()) return false;
-        if (OSAddAtomic64(1, &gCntScanoutBorrowRewire) < 16)
-            ALOG("scanout-borrow test v3: rewire framebuffer phys 0x%llx (%llu bytes), using existing memory %p",
-                 fPhys, fBytes, fRmHandle);
+        if (!fPhys || !fBytes) { ALOG("NVVidMemory::allocPhysical(%p): scanout with no address", this); return false; }
+        *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = fPhys;
+        ALOG("NVVidMemory::allocPhysical(%p): SCANOUT phys 0x%llx (%llu bytes) -- already backed, nothing allocated",
+             this, fPhys, fBytes);
         return true;
     }
     if (fRmHandle) {
@@ -863,11 +823,8 @@ bool NVVidMemory::allocPhysical()
 void NVVidMemory::deallocPhysical()
 {
     if (fScanout) {
-        // Clear the active wiring, but keep borrowed ownership and identity. The next allocPhysical reacquires
-        // the same framebuffer; it must not go through the ordinary owned-allocation or surface-parking paths.
-        if (OSAddAtomic64(1, &gCntScanoutBorrowUnwire) < 16)
-            ALOG("scanout-borrow test v3: unwire framebuffer phys 0x%llx -- backing remains owned by NVRMFB", fPhys);
-        fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0; fAllocationCookie = 0;
+        ALOG("NVVidMemory::deallocPhysical(%p): SCANOUT -- not ours to free, only forgetting it", this);
+        fPhys = 0; fBytes = 0; fScanout = false;
         *(volatile unsigned long long *)((unsigned char *)this + 0xc8) = 0;
         return;
     }
@@ -908,22 +865,12 @@ void NVVidMemory::releaseParked()
 
 void NVVidMemory::free()
 {
-    IOService *borrowedFramebuffer = fScanoutFramebuffer;
-    fScanoutFramebuffer = nullptr;
-    if (fScanout) {
-        // No nvFreeVram/freeMemory for borrowed memory, including partially initialized objects.
-        fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0; fAllocationCookie = 0;
-        fScanoutHandle = nullptr; fScanoutPhys = 0;
-        OSAddAtomic64(1, &gCntScanoutBorrowRelease);
-    }
     if (fRmHandle && !fScanout) {
         releaseVram(fRmHandle, fKva, fBytes, fAllocationCookie);
         fRmHandle = nullptr; fKva = nullptr; fPhys = 0; fBytes = 0; fAllocationCookie = 0;
     }
     releaseParked();
     IOAccelVidMemory::free();
-    // Keep the provider alive through the family's teardown; do not touch this after the base free.
-    if (borrowedFramebuffer) borrowedFramebuffer->release();
 }
 
 class IOSurface {
@@ -1139,15 +1086,6 @@ NVACCEL_CNT(nvaccel_vm_alloc_bytes,   gCntVmAllocBytes,   "bytes of VRAM granted
 NVACCEL_CNT(nvaccel_vm_dealloc,       gCntVmDealloc,      "NVVidMemory::deallocPhysical calls with a handle");
 NVACCEL_CNT(nvaccel_vm_dealloc_bytes, gCntVmDeallocBytes, "bytes of VRAM given back by NVVidMemory");
 NVACCEL_CNT(nvaccel_vm_refused,       gCntVmRefused,      "allocPhysical refused by the framebuffer");
-SYSCTL_INT(_debug, OID_AUTO, nvaccel_scanout_borrow_test, CTLFLAG_RD | CTLFLAG_LOCKED,
-           &gScanoutBorrowTest, 0, "3 = experimental reuse of framebuffer-owned NVKMS backing");
-NVACCEL_CNT(nvaccel_scanout_borrow_init,         gCntScanoutBorrowInit,        "framebuffer resources initialized with borrowed memory");
-NVACCEL_CNT(nvaccel_scanout_borrow_rewire,       gCntScanoutBorrowRewire,      "allocPhysical calls answered with existing framebuffer memory");
-NVACCEL_CNT(nvaccel_scanout_borrow_unwire,       gCntScanoutBorrowUnwire,      "unwire calls preserving framebuffer ownership");
-NVACCEL_CNT(nvaccel_scanout_borrow_refresh_fail, gCntScanoutBorrowRefreshFail, "borrowed backing unavailable, changed or too small");
-NVACCEL_CNT(nvaccel_scanout_borrow_map_ok,       gCntScanoutBorrowMapOk,       "borrowed framebuffer GPU page-table mappings accepted");
-NVACCEL_CNT(nvaccel_scanout_borrow_map_fail,     gCntScanoutBorrowMapFail,     "borrowed framebuffer GPU page-table mappings refused");
-NVACCEL_CNT(nvaccel_scanout_borrow_release,      gCntScanoutBorrowRelease,     "borrowed resources destroyed without freeing framebuffer memory");
 SYSCTL_INT(_debug, OID_AUTO, nvaccel_vm_sticky, CTLFLAG_RW | CTLFLAG_LOCKED, &gVmSticky, 0, "1 = a surface keeps its VRAM across the family's dealloc/alloc (the memory the plugin draws into)");
 NVACCEL_CNT(nvaccel_vm_parked,        gCntVmParked,       "VRAM kept when the family freed a surface's VRAM");
 NVACCEL_CNT(nvaccel_vm_unparked,      gCntVmUnparked,     "allocations answered with the surface's kept VRAM");
@@ -1288,14 +1226,6 @@ static void nvaccelInstallSysctl(void)
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_alloc);       sysctl_register_oid(&sysctl__debug_nvaccel_vm_alloc_bytes);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_dealloc);     sysctl_register_oid(&sysctl__debug_nvaccel_vm_dealloc_bytes);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_refused);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_test);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_init);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_rewire);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_unwire);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_refresh_fail);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_map_ok);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_map_fail);
-    sysctl_register_oid(&sysctl__debug_nvaccel_scanout_borrow_release);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_sticky);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_parked);      sysctl_register_oid(&sysctl__debug_nvaccel_vm_unparked);
     sysctl_register_oid(&sysctl__debug_nvaccel_vm_park_released);
@@ -1324,7 +1254,6 @@ static void nvaccelInstallSysctl(void)
     sysctl_register_oid(&sysctl__debug_nvaccel_heads_published); sysctl_register_oid(&sysctl__debug_nvaccel_heads_registered);
     sysctl_register_oid(&sysctl__debug_nvaccel_heads_piped);
     gSysctlInstalled = true;
-    ALOG("scanout-borrow test v3: framebuffer NVKMS handles reused for GPU mapping; borrowed backing never freed by NVAccel");
     ALOG("sysctl debug.nvaccelfb installed -- `sudo sysctl -w debug.nvaccelfb=1` registers the framebuffer");
 #endif
 }
@@ -1987,25 +1916,18 @@ static void nvAccelGpuVaFree(IOAccelMemoryMap *map)
 
 bool NVMemoryMap::commitIntoGPUPageTable()
 {
-    NVVidMemory *vm = OSDynamicCast(NVVidMemory, fMem);
-    unsigned long long len = fVaLen ? fVaLen : getLength();
-    const bool borrowed = vm && vm->fScanout;
-    if (borrowed && (!vm->refreshScanout() || !len || len > vm->fBytes)) {
-        if (OSAddAtomic64(1, &gCntScanoutBorrowMapFail) < 12)
-            ALOG("scanout-borrow test v3: GPU mapping refused for unavailable/undersized framebuffer backing");
-        return false;
-    }
     if (fMapped) return true;
+    NVVidMemory *vm = OSDynamicCast(NVVidMemory, fMem);
     void *kapiMem = vm ? vm->fRmHandle : nullptr;
+    unsigned long long len = fVaLen ? fVaLen : getLength();
     if (!fHVirt || !kapiMem || !len) {
-        if (borrowed) OSAddAtomic64(1, &gCntScanoutBorrowMapFail);
         if (fCommits < 8) { fCommits++;
             ALOG("MM commit: NOT MAPPED -- hVirt 0x%x kapiMem %p len %llu (mem %p%s)",
                  fHVirt, kapiMem, len, fMem, vm ? "" : ", not an NVVidMemory"); }
         return false;
     }
     struct NVRMRmHandles h;
-    if (!nvAccelRmHandles(&h)) { if (borrowed) OSAddAtomic64(1, &gCntScanoutBorrowMapFail); return false; }
+    if (!nvAccelRmHandles(&h)) return false;
     struct NVRMGpuVaRequest g;
     nvAccelZero(&g, sizeof g);
     g.version = NVRM_GPUVA_ABI_VERSION;
@@ -2013,7 +1935,6 @@ bool NVMemoryMap::commitIntoGPUPageTable()
     g.hVirt = fHVirt; g.size = len;
     g.isVidmem = 1;
     if (nvAccelGpuVaCall(NVRM_GPUVA_FN_MAP, &g) != kIOReturnSuccess) {
-        if (borrowed) OSAddAtomic64(1, &gCntScanoutBorrowMapFail);
         if (fCommits < 8) { fCommits++;
             ALOG("MM commit: MAP_MEMORY_DMA refused gpuVA 0x%llx len %llu -> status 0x%x",
                  fGpuVa, len, g.status); }
@@ -2021,9 +1942,6 @@ bool NVMemoryMap::commitIntoGPUPageTable()
     }
     fHRmMemory = g.hMemory; fMapped = true;
     OSAddAtomic64(1, &gCntMapCommit);
-    if (borrowed && OSAddAtomic64(1, &gCntScanoutBorrowMapOk) < 16)
-        ALOG("scanout-borrow test v3: GPU mapping accepted for framebuffer phys 0x%llx (%llu bytes), memory %p",
-             vm->fPhys, len, kapiMem);
     if (g.gpuva) fGpuVa = g.gpuva;
     if (fCommits < 8) { fCommits++;
         ALOG("MM commit: MAPPED gpuVA 0x%llx len %llu <- hMem 0x%x  *** the GPU can reach these bytes ***",

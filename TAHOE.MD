@@ -1,10 +1,16 @@
 # Building the Tahoe driver with the retained icon fixes
 
-This guide targets upstream **2.1.0 at `277a29b`**, with this fork's retained Tahoe icon, System Settings glyph, borrowed-framebuffer, parked-VRAM restoration, Terminal redraw, and Dock snapshot completion fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
+This guide targets upstream **2.1.0 at `277a29b`**, with this fork's retained Tahoe icon, System Settings glyph, parked-VRAM restoration, Terminal redraw, and Dock snapshot completion fixes. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. They are merged once; the historical references below identify their origins.
 
-Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.1.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. The fork's experimental small-BAR policies and scanout allocation fallbacks are retired from the default framebuffer. NVAccel's borrowed-scanout implementation is a separate change and remains enabled.
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.1.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and refresh pacing. NVAccel now also uses upstream's framebuffer-resource creation, scanout lifetime, and GPU mapping paths. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
 
 The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
+
+## Upstream framebuffer-resource handling
+
+NVRMFB was already upstream's framebuffer, but the fork's NVAccel still changed how framebuffer-owned memory was borrowed, retained and mapped into the GPU. That extension, including its extra class fields and `nvaccel_scanout_borrow_*` diagnostics, has now been removed. NVAccel's remaining source difference from upstream 2.1.0 is the parked-backing repair before ordinary surface dirty updates. Retained VRAM parking itself is already present upstream and stays enabled.
+
+This restoration follows a report that a 2070 Super, believed to have a 256 MB BAR1, boots official 2.1.0 but stays at verbose output with the fork. It isolates the custom framebuffer-resource handling; the cause is not confirmed until the affected machine tests the rebuilt Tahoe accelerator. Earlier successful boots described below predate this restoration. The plugin and translator retain the icon, Terminal, Dock snapshot and submission-copy fixes.
 
 ## Terminal redraw regression in 2.1.0
 
@@ -63,7 +69,7 @@ PR #136 was adapted to preserve upstream's standard sample-position fallback whe
 
 PR #147 remains **off by default**. To test it in a particular application, launch that application's executable with `NVMTL_SCHEDULE_AFTER_SURFACE_WRITES=1` in its environment. It delays the scheduled notification for command buffers that write shared surfaces until completion. This is a process environment variable, not a boot argument or an `nvrm610.conf` setting.
 
-Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The combined 2.1.0 package has been built, staged and booted on RTX 2060 Super / Tahoe 26.7.1. Other GPUs and the Sequoia variant still need hardware validation.
+Run the build commands in **macOS Terminal**. The plugin and translator can be built on a working Sequoia installation for use on Tahoe. The translator command below explicitly targets Intel macOS, including when the build machine uses Apple silicon. The earlier combined 2.1.0 package booted on RTX 2060 Super / Tahoe 26.7.1. The restored upstream framebuffer-resource handling needs a fresh hardware test; those earlier results do not validate this new accelerator.
 
 Safari and Messages Dock icons were reported missing their foregrounds with the official 1.14.0 package even after clearing the rendered-icon caches. The user confirmed that this fork's retained fixes resolve that issue on their RTX 2060 Super Hackintosh. That icon result applies to the earlier tested build; the combined 2.1.0 boot and Dock snapshot results are described above.
 
