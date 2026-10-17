@@ -81,6 +81,9 @@ typedef struct { void *cb; void *fb; void *pool; void *dset[2]; void *depth_view
                  unsigned restart_off;  /* GL turned primitive restart off (setPrimitiveRestartEnabled:NO) */
                  uint32_t dyn_out[2];   /* address-table dynamic offset of the set the last snapshot returned, per stage */
                  void *tab_out[2];      /* the table page buffer that set's descriptor names */
+                 /* Vulkan graphics bindings persist until changed; compute has its own bind point. */
+                 void *graphics_pipeline, *graphics_layout, *graphics_sets[3];
+                 uint32_t graphics_set_count, graphics_offset_count, graphics_offsets[2];
                } nvk_cmdbuf;
 int  nvmtl_vk_init(void);
 int nvmtl_vk_sample_positions_backend(void);

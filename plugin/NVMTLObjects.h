@@ -195,6 +195,8 @@ uint32_t nvmtl_geoms_from_descriptor(id desc, nvmtl_geom *out, uint32_t max, int
   int _cull; uint32_t _passFmt; int _passDepth;
   uint32_t _load; BOOL _hasVP, _hasSC; float _vp[6]; uint32_t _sc[4];
   NSMutableDictionary *_vertexSamplers, *_fragmentSamplers;
+  NSData *_pixelSamplerKey; // sampler specialization depends on values, not the draw or pipeline
+  NSMutableArray *_pixelSamplerKeys; // at most eight recent value snapshots, owned by this encoder
   // the buffer and offset bound at each vertex/fragment index, read by embedded argument binding; plain arrays because
   // Apple's GL rebinds buffers for every draw, and a dictionary of (buffer, offset) arrays allocated on each one
   NVMTLBuffer *_vbufAt[NVMTL_NBUFAT], *_fbufAt[NVMTL_NBUFAT]; NSUInteger _vbufOff[NVMTL_NBUFAT], _fbufOff[NVMTL_NBUFAT];

@@ -2611,18 +2611,39 @@ static NSDictionary *nvmtl_pixel_sampler_norm(NSDictionary *m) {
     for (NSString *k in m) { NSMutableDictionary *st = [m[k] mutableCopy]; st[@"lod_max_clamp"] = @65504.0f; o[k] = st; }
     return o;
 }
-- (BOOL)nvmtlBindSamplerPipeline {
-    if (!_ps) return NO;
+static BOOL nvmtl_pixel_sampler_update(NSMutableDictionary *states, NSString *index, NSDictionary *state) {
+    NSDictionary *old = states[index];
+    if (old == state || [old isEqual:state]) return NO;
+    if (state) states[index] = state; else [states removeObjectForKey:index];
+    return YES;
+}
+- (NVMTLRenderPipelineState *)nvmtlSamplerPipeline {
     NVMTLRenderPipelineState *selected=_ps;
-    if(_vertexSamplers.count || _fragmentSamplers.count) {
-        NSDictionary *vS=nvmtl_pixel_sampler_norm(_vertexSamplers),*fS=nvmtl_pixel_sampler_norm(_fragmentSamplers);
-        NSData *key=[NSJSONSerialization dataWithJSONObject:@[vS,fS] options:NSJSONWritingSortedKeys error:NULL];
+    {
+        NSDictionary *vS=nil,*fS=nil;
+        if (!_pixelSamplerKey) {
+            NSDictionary *vertex=_vertexSamplers ?: @{}, *fragment=_fragmentSamplers ?: @{};
+            for (NSArray *entry in _pixelSamplerKeys) {
+                if ([entry[0] isEqual:vertex] && [entry[1] isEqual:fragment]) { _pixelSamplerKey=entry[2]; break; }
+            }
+            if (!_pixelSamplerKey) {
+                vS=nvmtl_pixel_sampler_norm(vertex); fS=nvmtl_pixel_sampler_norm(fragment);
+                _pixelSamplerKey=[NSJSONSerialization dataWithJSONObject:@[vS,fS] options:NSJSONWritingSortedKeys error:NULL];
+                if (!_pixelSamplerKeys) _pixelSamplerKeys=[NSMutableArray new];
+                if (_pixelSamplerKeys.count == 8) [_pixelSamplerKeys removeObjectAtIndex:0];
+                [_pixelSamplerKeys addObject:@[[vertex copy],[fragment copy],_pixelSamplerKey]];
+            }
+        }
+        NSData *key=_pixelSamplerKey;
         @synchronized(_ps) {
             if(!_ps->_samplerVariants) _ps->_samplerVariants=[NSMutableDictionary new];
             id cached=_ps->_samplerVariants[key];
-            if(cached==[NSNull null]) return NO;
+            if(cached==[NSNull null]) return nil;
             selected=cached;
             if(!selected) {
+                // Reusing the key across pipelines still performs each pipeline's own variant lookup.
+                if (!vS) vS=nvmtl_pixel_sampler_norm(_vertexSamplers);
+                if (!fS) fS=nvmtl_pixel_sampler_norm(_fragmentSamplers);
                 NVMTLFunction *vf=_ps->_linkedVert?:(id)_ps->_descriptor.vertexFunction,*ff=_ps->_linkedFrag?:(id)_ps->_descriptor.fragmentFunction;
                 NSString *why=nil;
                 NSString *gk=nvmtl_sampvar_key(_ps->_descriptor,vf,ff,key); selected=nvmtl_sampvar_get(gk);
@@ -2636,11 +2657,20 @@ static NSDictionary *nvmtl_pixel_sampler_norm(NSDictionary *m) {
                     if(!selected)why=error.description;
                     else nvmtl_sampvar_put(gk,selected,vf,ff);
                 }
-                if(!selected){nvlog("pixel sampler specialization REFUSED %s: %s",_ps->_fname.UTF8String,why.UTF8String);_ps->_samplerVariants[key]=[NSNull null];return NO;}
+                if(!selected){nvlog("pixel sampler specialization REFUSED %s: %s",_ps->_fname.UTF8String,why.UTF8String);_ps->_samplerVariants[key]=[NSNull null];return nil;}
                 _ps->_samplerVariants[key]=selected;
                 nvlog("pixel sampler variant built: %s / %s",_ps->_vname.UTF8String,_ps->_fname.UTF8String);
             }
         }
+    }
+    return selected;
+}
+- (BOOL)nvmtlBindSamplerPipeline {
+    if (!_ps) return NO;
+    NVMTLRenderPipelineState *selected=_ps;
+    if (_vertexSamplers.count || _fragmentSamplers.count) {
+        selected=[self nvmtlSamplerPipeline];
+        if (!selected) return NO;
     }
     if(!_cb->_resources)_cb->_resources=[NVMTLResSet new];[_cb->_resources addObject:selected];
     nvmtl_vk_cmd_bind_pipeline(&_cb->_c,&selected->_p);
@@ -2944,7 +2974,7 @@ static NVMTLBuffer *nvmtl_bytes_ring(NVMTLCommandBuffer *cb, NSUInteger len, siz
     }
     if (!_fragmentSamplers) _fragmentSamplers=[NSMutableDictionary new];
     NSString *key=[@(i) stringValue];
-    if(ns && ns->_pixelState) _fragmentSamplers[key]=ns->_pixelState;else [_fragmentSamplers removeObjectForKey:key];
+    if (nvmtl_pixel_sampler_update(_fragmentSamplers,key,ns ? ns->_pixelState : nil)) _pixelSamplerKey=nil;
     nvtrace("FRAGMENT SAMPLER[%lu] pixel=%d bound=%d",(unsigned long)i,ns && ns->_pixelState!=nil,ns!=nil);
     if(ns) { if (!_cb->_resources) _cb->_resources=[NVMTLResSet new];[_cb->_resources addObject:ns]; }
 }
@@ -2955,7 +2985,7 @@ static NVMTLBuffer *nvmtl_bytes_ring(NVMTLCommandBuffer *cb, NSUInteger len, siz
     }
     if (!_vertexSamplers) _vertexSamplers=[NSMutableDictionary new];
     NSString *key=[@(i) stringValue];
-    if(ns && ns->_pixelState) _vertexSamplers[key]=ns->_pixelState;else [_vertexSamplers removeObjectForKey:key];
+    if (nvmtl_pixel_sampler_update(_vertexSamplers,key,ns ? ns->_pixelState : nil)) _pixelSamplerKey=nil;
     nvtrace("VERTEX SAMPLER[%lu] pixel=%d bound=%d",(unsigned long)i,ns && ns->_pixelState!=nil,ns!=nil);
     if(ns) { if (!_cb->_resources) _cb->_resources=[NVMTLResSet new];[_cb->_resources addObject:ns]; }
 }
@@ -3320,7 +3350,8 @@ static NVMTLBuffer *nvmtl_bytes_ring(NVMTLCommandBuffer *cb, NSUInteger len, siz
     NSString *key=[@(i) stringValue];
     if(_fragmentSamplers[key]) {
         NSMutableDictionary *state=[_fragmentSamplers[key] mutableCopy];
-        state[@"lod_min_clamp"]=@(lo);state[@"lod_max_clamp"]=@(hi);_fragmentSamplers[key]=state;
+        state[@"lod_min_clamp"]=@(lo);state[@"lod_max_clamp"]=@(hi);
+        if (nvmtl_pixel_sampler_update(_fragmentSamplers,key,state)) _pixelSamplerKey=nil;
     }
 }
 - (void)setVertexSamplerState:(id<MTLSamplerState>)ss lodMinClamp:(float)lo lodMaxClamp:(float)hi atIndex:(NSUInteger)i {
@@ -3328,7 +3359,8 @@ static NVMTLBuffer *nvmtl_bytes_ring(NVMTLCommandBuffer *cb, NSUInteger len, siz
     NSString *key=[@(i) stringValue];
     if(_vertexSamplers[key]) {
         NSMutableDictionary *state=[_vertexSamplers[key] mutableCopy];
-        state[@"lod_min_clamp"]=@(lo);state[@"lod_max_clamp"]=@(hi);_vertexSamplers[key]=state;
+        state[@"lod_min_clamp"]=@(lo);state[@"lod_max_clamp"]=@(hi);
+        if (nvmtl_pixel_sampler_update(_vertexSamplers,key,state)) _pixelSamplerKey=nil;
     }
 }
 - (void)setFragmentSamplerStates:(const id<MTLSamplerState> __unsafe_unretained [])ss lodMinClamps:(const float *)lo lodMaxClamps:(const float *)hi withRange:(NSRange)r {
