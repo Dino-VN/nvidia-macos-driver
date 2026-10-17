@@ -205,7 +205,7 @@ void nvmtl_vk_counts(uint64_t *bm, uint64_t *bg, uint64_t *im, uint64_t *ig, siz
     X(vkQueueSubmit) X(vkQueueBindSparse) X(vkCreateFence) X(vkWaitForFences) X(vkResetFences) X(vkDestroyFence) X(vkCmdCopyImageToBuffer) X(vkCmdCopyBufferToImage) X(vkCmdCopyBuffer) \
     X(vkCmdPipelineBarrier) X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkDeviceWaitIdle) X(vkFreeCommandBuffers) X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetPrimitiveTopology) X(vkCmdSetPrimitiveRestartEnable) X(vkCmdBindVertexBuffers) X(vkCreateDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkDestroyDescriptorSetLayout) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindDescriptorSets) X(vkCreateSampler) X(vkDestroySampler) X(vkFreeDescriptorSets) X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference) X(vkCmdSetDepthBias) X(vkCmdFillBuffer) X(vkCmdBindIndexBuffer) X(vkCmdDrawIndexed) X(vkCmdCopyImage) X(vkCmdBlitImage) X(vkGetBufferDeviceAddress) X(vkCmdWriteTimestamp) X(vkCreateQueryPool) X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdCopyQueryPoolResults) X(vkGetQueryPoolResults) X(vkDestroyQueryPool) X(vkResetQueryPool) X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDispatchIndirect) X(vkCmdSetCullMode) X(vkCmdSetFrontFace) X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
     X(vkDestroyBuffer) X(vkFreeMemory) X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroyFramebuffer) X(vkDestroyCommandPool) \
-    X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask)
+    X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetDepthBiasEnable)
 static int g_dyn3;
 static int g_provoking;   /* provoking vertex is per-draw dynamic state, and the last vertex can provoke */
 static int g_divisor;     /* per-instance step rates (VK_KHR_vertex_attribute_divisor), up to g_max_divisor */
@@ -4061,46 +4061,27 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
         td ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE };
     VkPipelineTessellationStateCreateInfo tss = { VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO, NULL, 0, 1 };
     VkPipelineViewportStateCreateInfo vps = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL };
-    VkDynamicState dyn[16] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
+    // At most 23 states with stencil, dynamic vertex stride, line width, sample locations and dynamic-state3.
+    VkDynamicState dyn[24] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_CULL_MODE,
         VK_DYNAMIC_STATE_BLEND_CONSTANTS, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_DEPTH_BIAS,
         VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY, VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_FRONT_FACE,
         VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
         VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK };
-    VkPipelineDynamicStateCreateInfo dsci = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0,
-        hasDepth ? (out->has_stencil ? 16u : 12u) : 9u, dyn };
-    VkDynamicState dyn3s[20];
+    uint32_t ndyn = hasDepth ? (out->has_stencil ? 16u : 12u) : 9u;
+    dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE; // core Vulkan 1.3, like primitive-restart enable
     if (g_dyn3) {
-        uint32_t n3 = 0;
-        for (uint32_t i = 0; i < (hasDepth ? (out->has_stencil ? 16u : 12u) : 9u); i++) dyn3s[n3++] = dyn[i];
-        dyn3s[n3++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
-        if (g_provoking) dyn3s[n3++] = VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT;
-        if (g_clip) dyn3s[n3++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
-        dsci.pDynamicStates = dyn3s; dsci.dynamicStateCount = n3;
+        dyn[ndyn++] = VK_DYNAMIC_STATE_POLYGON_MODE_EXT;
+        if (g_provoking) dyn[ndyn++] = VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT;
+        if (g_clip) dyn[ndyn++] = VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT;
     }
-    VkDynamicState dynv[22];
-    if (out->vin_dyn) {
-        uint32_t nv = 0;
-        for (uint32_t i = 0; i < dsci.dynamicStateCount; i++) dynv[nv++] = dsci.pDynamicStates[i];
-        dynv[nv++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
-        dsci.pDynamicStates = dynv; dsci.dynamicStateCount = nv;
-    }
-    VkDynamicState dynl[21];
-    if (g_wide) {
-        uint32_t nl = 0;
-        for (uint32_t i = 0; i < dsci.dynamicStateCount; i++) dynl[nl++] = dsci.pDynamicStates[i];
-        dynl[nl++] = VK_DYNAMIC_STATE_LINE_WIDTH;
-        dsci.pDynamicStates = dynl; dsci.dynamicStateCount = nl;
-    }
-    VkDynamicState dynsample[22];
-    if (g_sample_locations && samples > 1) {
-        for (uint32_t i = 0; i < dsci.dynamicStateCount; ++i) dynsample[i] = dsci.pDynamicStates[i];
-        dynsample[dsci.dynamicStateCount++] = VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
-        dsci.pDynamicStates = dynsample;
-    }
-    // Metal has no depth bias switch: setDepthBias always applies (and its zero default adds nothing), so the bias is
-    // enabled in every pipeline and its dynamic values decide.
+    if (out->vin_dyn) dyn[ndyn++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
+    if (g_wide) dyn[ndyn++] = VK_DYNAMIC_STATE_LINE_WIDTH;
+    if (g_sample_locations && samples > 1) dyn[ndyn++] = VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
+    VkPipelineDynamicStateCreateInfo dsci = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, ndyn, dyn };
+    // Metal has no depth-bias enable switch. Enable it dynamically for nonzero bias, keeping the ordinary zero-bias
+    // path disabled rather than making every pipeline use depth bias, and reset it for every new Metal encoder.
     VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, NULL, 0,
-        VK_FALSE, rt->discard ? VK_TRUE : VK_FALSE, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_TRUE, 0, 0, 0, 1.0f };
+        VK_FALSE, rt->discard ? VK_TRUE : VK_FALSE, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE, 0, 0, 0, 1.0f };
     if (rt->a2one && !g_a2one) { nvlog("pipeline REFUSED: alphaToOneEnabled and this device has no alphaToOne feature"); goto pipeline_failed; }
     VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0,
         (VkSampleCountFlagBits)(samples > 1 ? samples : 1), VK_FALSE, 0, NULL,
@@ -5427,7 +5408,10 @@ void nvmtl_vk_cmd_set_stencil(nvk_cmdbuf *c, int enable, const uint32_t *f, cons
     }
 }
 void nvmtl_vk_cmd_set_depth_bias(nvk_cmdbuf *c, float constant, float slope, float clamp)
-{ pvkCmdSetDepthBias(c->cb, constant, clamp, slope); }
+{
+    pvkCmdSetDepthBiasEnable(c->cb, constant != 0.0f || slope != 0.0f);
+    pvkCmdSetDepthBias(c->cb, constant, clamp, slope);
+}
 void nvmtl_vk_cmd_set_line_width(nvk_cmdbuf *c, float w)
 {
     if (!g_wide) return;

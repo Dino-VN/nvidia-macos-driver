@@ -532,6 +532,31 @@ mod g2_inline;
 mod linearize;
 
 #[cfg(test)]
+mod gl_translation_tests {
+    use super::*;
+    use spirv_tools::val::Validator;
+
+    #[test]
+    fn minecraft_uniform_and_sampler_shaders_validate_through_address_lowering() {
+        for ll in [
+            include_str!("../../translator/tests/fixtures/gl/ivec3_uniform_through_float_gep.ll"),
+            include_str!("../../translator/tests/fixtures/gl/sampler2d_param_chosen_by_constant.ll"),
+        ] {
+            let spv = translate_one(ll, Stage::Vertex).expect("GL vertex shader translates");
+            let lowered = buffer_addresses::lower(&spv).expect("buffer-address lowering");
+            let uniform = table_ubo::convert(&lowered).expect("dynamic uniform address table");
+            for bytes in [&spv, &lowered, &uniform] {
+                let words: Vec<u32> = bytes.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
+                let mut options = spirv_tools::val::ValidatorOptions::default();
+                options.scalar_block_layout = true;
+                spirv_tools::val::create(Some(spirv_tools::TargetEnv::Vulkan_1_2))
+                    .validate(&words, Some(options)).expect("GL shader remains valid Vulkan 1.2 SPIR-V");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod storage_caps_tests {
     use super::*;
     use spirv_tools::val::Validator;

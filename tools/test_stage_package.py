@@ -89,7 +89,8 @@ class StagePackage(unittest.TestCase):
         if tool == "git":
             stdout = "feed123\n"
         elif tool == "lipo":
-            status = int(Path(args[-1]).read_bytes().startswith(b"ARM64"))
+            self.assertEqual(args[2:], ("-verify_arch", "x86_64"))
+            status = int(Path(args[1]).read_bytes().startswith(b"ARM64"))
         else:
             self.fail("unexpected command: " + repr(args))
         result = subprocess.CompletedProcess(args, status, stdout, "simulated failure" if status else "")
@@ -165,17 +166,15 @@ class StagePackage(unittest.TestCase):
         except OSError as error:
             self.skipTest("symlinks unavailable: " + str(error))
 
-    def test_translator_symlink_keeps_pointing_at_the_updated_canonical_library(self):
+    def test_parent_traversing_translator_symlink_is_rejected_without_publishing(self):
         link = self.base / STAGE.BUNDLED_TRANSLATOR
         link.unlink()
         self.symlink(link, "../../../nvmtl/libnvmtl_translate.dylib")
         self.seal_base()
-        self.stage()
-        result = self.output / STAGE.BUNDLED_TRANSLATOR
-        self.assertTrue(result.is_symlink())
-        self.assertEqual(result.read_bytes(), (self.output / STAGE.TRANSLATOR).read_bytes())
+        with self.assertRaisesRegex(ValueError, "symlink contains parent traversal"):
+            self.stage()
+        self.assertFalse(self.output.exists())
         self.assert_unchanged()
-        self.assert_manifest(self.output)
 
     def test_missing_prebuilt_accelerator_is_rejected(self):
         (self.base / STAGE.ACCEL["15"] / "Contents/MacOS/NVAccel").unlink()
@@ -242,7 +241,7 @@ class StagePackage(unittest.TestCase):
         external = self.put(self.root / "external.dylib", b"must not change")
         self.symlink(self.base / "external.dylib", "../external.dylib")
         self.seal_base()
-        with self.assertRaisesRegex(ValueError, "symlink escapes"):
+        with self.assertRaisesRegex(ValueError, "symlink (escapes|contains parent traversal)"):
             self.stage()
         self.assertEqual(external.read_bytes(), b"must not change")
         self.assertFalse(self.output.exists())

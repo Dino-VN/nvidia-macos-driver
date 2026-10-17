@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 static double now_s(void) {
 	static mach_timebase_info_data_t tb;
@@ -28,7 +30,15 @@ static GLuint shader(GLenum type, const char *src) {
 }
 
 int main(int argc, char **argv) {
-	int draws = argc > 1 ? atoi(argv[1]) : 4000, frames = argc > 2 ? atoi(argv[2]) : 20;
+	int draws = 4000, frames = 20;
+	for (int i = 1; i < argc && i <= 2; i++) {
+		char *end; errno = 0; long value = strtol(argv[i], &end, 10);
+		if (errno || !argv[i][0] || *end || value < 1 || value > INT_MAX - 2) {
+			fprintf(stderr, "draw and frame counts must be positive integers\n"); return 1;
+		}
+		if (i == 1) draws = (int)value; else frames = (int)value;
+	}
+	if (argc > 4 || (argc == 4 && strcmp(argv[3], "flat"))) { fprintf(stderr, "usage: glbench [draws] [frames] [flat]\n"); return 1; }
 	CGLPixelFormatAttribute attrs[] = { kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core,
 		kCGLPFAAccelerated, kCGLPFAColorSize, 24, kCGLPFADepthSize, 24, 0 };
 	CGLPixelFormatObj pf; GLint npf; CGLContextObj ctx;
@@ -60,11 +70,14 @@ int main(int argc, char **argv) {
 	GLuint prog = glCreateProgram();
 	glAttachShader(prog, shader(GL_VERTEX_SHADER, vs)); glAttachShader(prog, shader(GL_FRAGMENT_SHADER, fs));
 	glLinkProgram(prog); glUseProgram(prog);
+	GLint linked = 0; glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+	if (!linked) { char log[2048]; glGetProgramInfoLog(prog, sizeof log, NULL, log); fprintf(stderr, "link: %s\n", log); return 1; }
 	GLint uOff = glGetUniformLocation(prog, "offset"), uMvp = glGetUniformLocation(prog, "mvp"), uFog = glGetUniformLocation(prog, "fog");
 
 	// one shared mesh of 64 quads (a "chunk section"), drawn with a different base vertex window per draw
 	enum { QUADS = 64 };
 	float *v = malloc(QUADS * 4 * 3 * sizeof(float) * 16); unsigned short *ix = malloc(QUADS * 6 * sizeof *ix);
+	if (!v || !ix) { fprintf(stderr, "mesh allocation failed\n"); return 1; }
 	for (int s = 0; s < 16; s++)
 		for (int q = 0; q < QUADS; q++) {
 			float x = (q % 8) * 0.01f, y = (q / 8) * 0.01f + s * 0.001f, *p = v + ((s * QUADS + q) * 4) * 3;
@@ -94,11 +107,18 @@ int main(int argc, char **argv) {
 	}
 	GLenum err = glGetError();
 	// image checksum (FNV-1a over RGBA8), to tell a faster driver build from one that draws something else
-	unsigned char *px = malloc(1920 * 1080 * 4); uint64_t h = 1469598103934665603ull;
+	unsigned char *px = malloc(1920 * 1080 * 4); uint64_t h = 14695981039346656037ull;
+	if (!px) { fprintf(stderr, "readback allocation failed\n"); return 1; }
 	glReadPixels(0, 0, 1920, 1080, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	GLenum readerr = glGetError();
 	for (size_t i = 0; i < 1920u * 1080u * 4u; i++) h = (h ^ px[i]) * 1099511628211ull;
 	double avg = total / frames;
 	printf("draws/frame %d  frames %d  avg %.1f ms (%.1f fps)  best %.1f ms  %.1f us/draw  glGetError 0x%x  image %016llx\n",
 	       draws, frames, avg * 1e3, 1 / avg, best * 1e3, avg * 1e6 / draws, err, (unsigned long long)h);
-	return 0;
+	free(px); free(v); free(ix);
+	glDeleteBuffers(1, &vbo); glDeleteBuffers(1, &ibo); glDeleteVertexArrays(1, &vao);
+	glDeleteProgram(prog); glDeleteRenderbuffers(2, rb); glDeleteFramebuffers(1, &fbo);
+	CGLSetCurrentContext(NULL); CGLDestroyContext(ctx); CGLDestroyPixelFormat(pf);
+	if (readerr) fprintf(stderr, "readback glGetError 0x%x\n", readerr);
+	return err != GL_NO_ERROR || readerr != GL_NO_ERROR;
 }

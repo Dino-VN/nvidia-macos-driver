@@ -2,6 +2,8 @@
 
 ## Fork additions to 2.3.0
 
+- Import the selected OpenGL/Minecraft shader, descriptor-reuse, provoking-vertex, texture-buffer, instancing and sampler fixes from pengubow's OpenGL branch. Harden constant resource selection and resource-cache lifetime, reset render state per encoder, and enable depth bias dynamically for nonzero bias. Include diagnostic benchmarks and regression checks; see [OpenGL performance](docs/OPENGL-PERFORMANCE.md). Hardware performance results for this candidate are pending.
+
 - Restore GPU completion waiting in WindowServer's submit-and-wait path for Dock snapshots. A live A/B check on RTX 2060 Super / Tahoe 26.7.1 restored previews with completion waiting and reproduced invisible fresh previews after returning to 2.1.0's scheduling-only behavior. Fresh previews also worked after installing and rebooting with the rebuilt plugin while kernel GPU marks stayed enabled. The user reported little perceived performance loss; comparative frame delivery has not been measured.
 - Validate the dedicated push-constant block before enabling stencil-export emulation. Ordinary uniform fields at offset 160 falsely activated it in cached WindowServer and Chromium shaders. Hardware testing confirmed that this change alone did not restore Dock previews.
 - Replace the previous Terminal-only framebuffer-fetch workaround with upstream 2.3.0's general missing-attachment and ordered-triangle repair. Terminal now uses framebuffer fetch by default; hardware validation of the merged build is pending.

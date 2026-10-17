@@ -317,7 +317,7 @@ void nvmtl_bind_embedded(NVMTLCommandBuffer *cb, uint32_t set, NVMTLFunction *fn
 // kernel that has embedded arguments
 void nvmtl_bind_embedded_dict(NVMTLCommandBuffer *cb, uint32_t set, NVMTLFunction *fn, NSDictionary *bufferAtIndex)
 {
-    NVMTLBuffer *bufs[NVMTL_NBUFAT]; NSUInteger offs[NVMTL_NBUFAT] = { 0 };
+    NVMTLBuffer *bufs[NVMTL_NBUFAT] = { nil }; NSUInteger offs[NVMTL_NBUFAT] = { 0 };
     if (fn && nvmtl_embedded_plan(fn).count)
         for (NSNumber *k in bufferAtIndex) {
             NSUInteger i = k.unsignedIntegerValue; NSArray *e = bufferAtIndex[k];

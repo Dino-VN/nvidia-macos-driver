@@ -8,6 +8,8 @@ The plugin caches upload-backing discovery for each sealed submission part and u
 
 ## Testing the upstream 2.3.0 repairs
 
+The locally committed OpenGL experiment builds on this 2.3.0 base. It adds pengubow's Minecraft shader and draw-path improvements, with additional control-flow, resource-cache and render-state checks. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the selected commits, test coverage and before/after procedure. Stage the rebuilt plugin and translator with the tested 2.3.0 kexts and NVK; the experiment does not require rebuilding those components. Hardware validation of this OpenGL candidate is pending.
+
 The merge retains the parked-VRAM repair, WindowServer's Dock snapshot completion wait, strict stencil marker detection, Chromium GPU default, and release `-O2`. The only textual merge conflict was in the changelog; the driver source merged automatically.
 
 Terminal's process-specific framebuffer-fetch disable has been removed. Upstream now supplies a dummy view for missing colour inputs and orders small framebuffer-fetch draws per triangle, preventing skipped text draws and stale overlapping pixels. Start a fresh Terminal with its default environment to test clearing, backspace, scrolling, and cursor redraw. `NVMTL_NO_FBFETCH=1` bypasses this path and must be absent during that test.

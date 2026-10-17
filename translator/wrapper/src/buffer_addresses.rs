@@ -39,6 +39,11 @@ fn existing_table(defs: &HashMap<u32, Instruction>, m: &rspirv::dr::Module, tv: 
     let ptr = defs.get(&var.result_type?).filter(|p| p.class.opcode == Op::TypePointer)?;
     let block = id(ptr.operands.get(1)?)?;
     let s = defs.get(&block).filter(|s| s.class.opcode == Op::TypeStruct && s.operands.len() == 1)?;
+    // An 8-byte array alone is not enough: address entry b must really be at byte 8*b in this block.
+    if !m.annotations.iter().any(|a| a.class.opcode == Op::Decorate && a.operands == [Operand::IdRef(block), Operand::Decoration(Decoration::Block)])
+        || !m.annotations.iter().any(|a| a.class.opcode == Op::MemberDecorate && a.operands == [Operand::IdRef(block), Operand::LiteralBit32(0), Operand::Decoration(Decoration::Offset), Operand::LiteralBit32(0)]) {
+        return None;
+    }
     let arr = id(&s.operands[0])?;
     let a = defs.get(&arr).filter(|a| matches!(a.class.opcode, Op::TypeRuntimeArray | Op::TypeArray))?;
     let stride = m.annotations.iter().find_map(|d| match d.operands.as_slice() {
@@ -332,6 +337,10 @@ OpFunctionEnd
         let w: Vec<u32>=ubo.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
         let mut o=spirv_tools::val::ValidatorOptions::default(); o.scalar_block_layout=true;
         spirv_tools::val::create(Some(spirv_tools::TargetEnv::Vulkan_1_2)).validate(&w, Some(o)).unwrap();
+    }
+    #[test] fn a_table_with_a_nonzero_block_offset_is_not_an_address_table() {
+        let input=source(&WITH_TABLE.replace("OpMemberDecorate %tblock 0 Offset 0", "OpMemberDecorate %tblock 0 Offset 16"));
+        assert_eq!(lower(&input).unwrap(), input, "a different table layout must keep the descriptor path");
     }
     #[test] #[ignore] fn corpus_lowered_shaders_still_validate() {
         use metal2vulkan::passes::Stage; use std::collections::BTreeMap;

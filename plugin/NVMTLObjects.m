@@ -175,11 +175,15 @@ static inline void nvmtl_resref(id o, int d) {
 // vertex, index and uniform buffers for every draw), and a hit skips the set's hash lookup.
 - (void)addObject:(id)o { if (!o) return; const void *p = (__bridge const void *)o; os_unfair_lock_lock(&_lk);
     for (unsigned k = 0; k < 8; k++) if (_mru[k] == p) { os_unfair_lock_unlock(&_lk); return; }
-    BOOL had = [_s member:o] != nil; if (!had) [_s addObject:o]; _mru[_mruNext++ & 7] = p;
+    id member = [_s member:o]; BOOL had = member != nil;
+    if (!had) { [_s addObject:o]; member = o; }
+    // An equal object need not be the object retained by NSMutableSet. Cache only the retained member's address.
+    _mru[_mruNext++ & 7] = (__bridge const void *)member;
     os_unfair_lock_unlock(&_lk); if (!had) nvmtl_resref(o, 1); }
-- (void)removeObject:(id)o { if (!o) return; os_unfair_lock_lock(&_lk); BOOL had = [_s member:o] != nil; if (had) [_s removeObject:o];
-    for (unsigned k = 0; k < 8; k++) if (_mru[k] == (__bridge const void *)o) _mru[k] = NULL;
-    os_unfair_lock_unlock(&_lk); if (had) nvmtl_resref(o, -1); }
+- (void)removeObject:(id)o { if (!o) return; os_unfair_lock_lock(&_lk); id member = [_s member:o];
+    if (member) [_s removeObject:member];
+    for (unsigned k = 0; k < 8; k++) if (_mru[k] == (__bridge const void *)member) _mru[k] = NULL;
+    os_unfair_lock_unlock(&_lk); if (member) nvmtl_resref(member, -1); }
 // Clearing, copying and sealing never go through -allObjects. That array is autoreleased into the CALLER's pool, and
 // these run on the app's own commit thread: Geekbench 7 never drains that pool, so every resource a command buffer had
 // ever touched stayed alive, and Super Resolution filled VRAM with 9 MB MPS buffers until allocations were refused.
@@ -4815,6 +4819,9 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
     nvmtl_vk_cmd_set_blend_color(&_c, defaultBlend);
     nvmtl_vk_cmd_set_line_width(&_c, 1.0f);
     (void)nvmtl_vk_cmd_set_polygon_mode(&_c, 0);
+    // Metal encoder state starts fresh even when the command buffer also contains an earlier GL render pass.
+    _c.restart_off = 0;
+    nvmtl_vk_cmd_set_depth_bias(&_c, 0.0f, 0.0f, 0.0f);
     nvmtl_vk_cmd_set_provoking_last(&_c, 0);
     (void)nvmtl_vk_cmd_set_depth_clip(&_c, 1);
     e->_visBuf = (NVMTLBuffer *)d.visibilityResultBuffer;
