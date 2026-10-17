@@ -1,16 +1,60 @@
 # Changelog
 
-## Fork additions to 2.1.0
+## Fork additions to 2.3.0
 
 - Restore GPU completion waiting in WindowServer's submit-and-wait path for Dock snapshots. A live A/B check on RTX 2060 Super / Tahoe 26.7.1 restored previews with completion waiting and reproduced invisible fresh previews after returning to 2.1.0's scheduling-only behavior. Fresh previews also worked after installing and rebooting with the rebuilt plugin while kernel GPU marks stayed enabled. The user reported little perceived performance loss; comparative frame delivery has not been measured.
 - Validate the dedicated push-constant block before enabling stencil-export emulation. Ordinary uniform fields at offset 160 falsely activated it in cached WindowServer and Chromium shaders. Hardware testing confirmed that this change alone did not restore Dock previews.
-- Keep framebuffer fetch off in Apple's Terminal to prevent stale text and skipped redraws in 2.1.0. Confirmed on RTX 2060 Super / Tahoe 26.7.1: disabling fetch in a fresh Terminal process restored normal updates without resizing. This compatibility workaround is specific to Terminal; other hardware still needs validation.
+- Replace the previous Terminal-only framebuffer-fetch workaround with upstream 2.3.0's general missing-attachment and ordered-triangle repair. Terminal now uses framebuffer fetch by default; hardware validation of the merged build is pending.
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
-- Restore upstream 2.1.0 framebuffer-resource creation, scanout lifetime and GPU mapping handling in NVAccel, removing the fork's borrowed-scanout extension. Keep the parked-backing dirty-update repair. This follows a 2070 Super boot regression report; the rebuilt Tahoe accelerator still needs hardware validation.
+- Retain parked-backing restoration before ordinary surface dirty updates while using upstream 2.3.0 framebuffer-resource creation, scanout lifetime and GPU mapping. The borrowed-scanout extension remains removed. Include upstream's event-driven flip and submission waits.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. The earlier combined fork booted on RTX 2060 Super / Tahoe 26.7.1. The current framebuffer-resource restoration needs a fresh hardware test; comparative performance remains unmeasured.
+The release entries below describe upstream releases. The prior 2.1.0-based fork booted on RTX 2060 Super / Tahoe 26.7.1. The merged 2.3.0 build needs a fresh hardware test; comparative performance remains unmeasured.
+
+## 2.3.0
+
+Fixes
+- Plugging a different monitor into the same port: macOS sees the new monitor (its name, size and modes) instead
+  of keeping the one it replaced
+- Terminal and other apps that draw text with programmable blending: text no longer comes out missing or garbled
+  (GTX 16 and others). Draws that read colour from a pass without every attachment were skipped; they are now drawn,
+  and overlapping triangles in one draw read each other's colour in order (thanks pengubow)
+- Above 60 Hz: the display and the accelerator woke up once per millisecond to check for a finished flip, which
+  users' flicker recordings showed as about 56 flips a second on a 143 Hz panel while windows moved. They now wake on
+  the flip itself (the display on macOS 15 and 26, the accelerator on macOS 26)
+- When a display's mode set is refused, the driver now tries the mode the firmware is already running before giving
+  up, and the log says why the mode was refused (reports of a black screen at login on some RTX 3060 boards)
+- Draws the Metal driver had to drop are now in the logs that Send logs collects
+
+AMD / Intel test program
+- 1401 can join the AMD and Intel GPU test program (AMD/Intel panel, Join). Testers get the newest signed test build
+  of the AMD/Intel driver, and after every restart 1401 sends what the driver did, so a start that hangs or panics
+  still reaches us. Leave the program from the same panel at any time
+
+## 2.2.0
+
+This release makes the driver do one thing: drive NVIDIA GPUs. Everything else it used to carry is now its own
+product or is gone, which makes the package smaller, leaves less running on your Mac, and leaves less to go wrong.
+
+Leaner
+- The package carries the NVIDIA driver only: the AMD/Intel GPU driver, the NPU driver and the audio driver are
+  separate products with their own packages and installers (the package drops from about 1 GB)
+- The boot logo is gone: the OpenCore logo driver, the boot progress screen and the display driver's code that kept
+  the logo on screen. Installing, updating or removing the driver takes an existing logo out of OpenCore
+- Three background jobs are gone: a display tracker that streamed the driver's log all the time, a WindowServer
+  restart at every boot (a flicker workaround from before the flicker fix in 2.1.0), and a crash-check login item.
+  Logs are collected only when you press Send logs. Installing or removing the driver takes out what an earlier
+  version left
+- The 1401 Mac app moved to the 1401 project; it installs this driver with the package's own installer
+
+Fixes
+- A display whose firmware boot timing NVIDIA's display code does not accept (seen on an RTX 3060 at 1920x1080) now
+  switches to the validated timing for the same resolution instead of crashing WindowServer at login
+- Checksum lists are checked strictly: a malformed line in SHA256SUMS used to be skipped while the check still passed
+- install.sh fixes PATH before running anything as root, like uninstall.sh
+- Crash reports sent with Send logs keep the library identifiers needed to read them (machine identifiers are still
+  removed)
 
 ## 2.1.0
 
