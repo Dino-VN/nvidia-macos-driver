@@ -1,5 +1,9 @@
 # Building the Tahoe driver with the retained fork fixes
 
+Before merging a newer upstream revision, read [Fork merge notes](docs/FORK-MERGE-NOTES.md).
+Retain the Tahoe fixes, existing performance optimizations and the OpenGL/Minecraft and MoltenVK
+changes, checking for conflicts and equivalent upstream implementations first.
+
 This guide targets upstream **2.3.0 at `5f812c4`**, with the retained Tahoe icon and System Settings glyph changes, parked-VRAM restoration, strict stencil detection, and Dock snapshot completion wait. Terminal uses upstream's general framebuffer-fetch repair. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. The historical references below identify their origins.
 
 Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.3.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and event-driven flip waits. NVAccel also uses upstream's framebuffer-resource creation, scanout lifetime, GPU mapping, and event-driven submission waits. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
@@ -8,7 +12,7 @@ The plugin caches upload-backing discovery for each sealed submission part and u
 
 ## Testing the upstream 2.3.0 repairs
 
-The locally committed OpenGL experiment builds on this 2.3.0 base. It adds pengubow's Minecraft shader and draw-path improvements, with additional control-flow, resource-cache and render-state checks. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the selected commits, test coverage and before/after procedure. Stage the rebuilt plugin and translator with the tested 2.3.0 kexts and NVK; the experiment does not require rebuilding those components. Hardware validation of this OpenGL candidate is pending.
+The OpenGL experiment builds on this 2.3.0 base. It adds pengubow's Minecraft shader and draw-path improvements, with additional control-flow, resource-cache and render-state checks. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the selected commits, test coverage and before/after procedure. It has since been installed and checked on RTX 2060 Super / Tahoe 26.7.1. The later NVMTL binding/sampler cache optimization is recorded in the [merge notes](docs/FORK-MERGE-NOTES.md), including its MoltenVK benchmark and remaining presentation limit. Stage the rebuilt plugin and translator with the tested 2.3.0 kexts and NVK; these experiments do not require rebuilding those components.
 
 The merge retains the parked-VRAM repair, WindowServer's Dock snapshot completion wait, strict stencil marker detection, Chromium GPU default, and release `-O2`. The only textual merge conflict was in the changelog; the driver source merged automatically.
 

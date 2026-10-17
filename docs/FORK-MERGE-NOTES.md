@@ -1,0 +1,119 @@
+# Retained fork changes for upstream merges
+
+## Merge policy
+
+Keep the fork's Tahoe fixes, existing performance optimizations, OpenGL/Minecraft changes and
+MoltenVK optimizations when merging upstream. This policy was confirmed on 2026-10-17.
+
+Before each merge:
+
+1. Fetch the requested upstream revision and inspect its changes since the previous merge.
+2. Check for both textual conflicts and changes to the behavior listed below. A clean Git merge
+   does not establish compatibility.
+3. Check whether upstream has already implemented each fix. Use its implementation when it fully
+   covers the retained behavior; keep any remaining fork-specific repair. Avoid applying equivalent
+   fixes twice, and inspect overlapping code before resolving a conflict.
+4. Build the affected components and check their behavior, resource lifetime and synchronization.
+   Record which fork changes upstream now covers, what remains local and the validation limits.
+
+The last upstream merge before these additions is `7f3c751`, based on upstream 2.3.0 at `5f812c4`.
+The commit list below records the subsequent additions; earlier retained fixes remain part of this policy.
+
+## Earlier Tahoe and performance fixes to retain
+
+- Tahoe icon rendering and System Settings/CoreImage glyph repairs.
+- Parked-VRAM backing restoration before ordinary surface dirty updates, including the repair
+  introduced by `eb6544b`.
+- WindowServer's GPU completion wait for fresh Dock window snapshots.
+- Strict detection of the dedicated stencil-export push-constant block.
+- Chromium, Edge and Electron acceleration enabled by default, with the existing application opt-out.
+- Submission upload-discovery caching, copy-backing deduplication and release plugin `-O2`.
+- Upstream framebuffer handling, framebuffer-resource allocation, scanout lifetime and GPU mapping.
+  The experimental framebuffer policies and borrowed-scanout extension remain retired.
+- Upstream's general Terminal framebuffer-fetch repair and event-driven flip/submission waits.
+
+See [TAHOE.MD](../TAHOE.MD) for their implementation history and build/staging procedure.
+
+## OpenGL/Minecraft and MoltenVK commits to retain
+
+These ten commits follow `7f3c751`. Preserve their behavior when resolving upstream conflicts;
+the benchmark-only commit provides supporting tools.
+
+| Fork commit | Change |
+| --- | --- |
+| `ee4152f` | Minecraft OpenGL vertex shader translation. |
+| `ff0f8d9` | OpenGL draw path, provoking vertex and texture-buffer views. |
+| `34fd3e6` | OpenGL per-draw benchmark and path probe. |
+| `16378da` | Remove per-draw allocations and retain the blit pipeline cache. |
+| `fdbb5e1` | Reuse texel-buffer descriptor sets. |
+| `fc13457` | Apply depth bias. |
+| `c49edb2` | Honor per-instance vertex step rates. |
+| `976d9ae` | Translate samplers and sampler arrays in mixed argument buffers. |
+| `b0ba21d` | Harden resource caching, shader selection and render-state handling. |
+| `d51bcd1` | Cache unchanged graphics bindings and sampler specialization keys. |
+
+### OpenGL and translator requirements
+
+- Retain the shader selection/dominance checks and zero-offset integer-vector load repair.
+- Keep descriptor reuse sensitive to layout, buffer address, dynamic offset and table-page changes.
+- Resource caches must keep the actual retained object alive, including when distinct objects compare equal.
+- Reset primitive restart, provoking vertex and depth bias for each render encoder. Preserve the
+  capability/profile checks and fallback for native last-vertex provoking behavior.
+- Preserve supported instance divisors, texture-buffer format views and mixed argument-buffer samplers.
+
+See [OpenGL performance](OPENGL-PERFORMANCE.md) for the selected source commits and test procedure.
+
+### MoltenVK/NVMTL requirements from `d51bcd1`
+
+- Cache graphics bindings per command recording and reset them for each new recording/event segment.
+- Rebind when the pipeline, pipeline layout, descriptor sets, heap, set count or dynamic offsets/count change.
+  Compute bindings use their separate bind point.
+- Cache up to eight recent sampler-state keys per render encoder. Invalidate the active key when
+  vertex/fragment sampler values or LOD clamps change, and preserve each pipeline's own variant lookup.
+- Preserve resource retention, surface publication, completion waits and specialization refusal handling.
+
+This commit changes NVMTL's submission path used by MoltenVK. It leaves the native NVK driver,
+translator, kexts and framebuffer unchanged.
+
+## Recorded results and limits
+
+Hardware: RTX 2060 Super, 8 GiB BAR1, macOS Tahoe 26.7.1, 75 Hz display.
+
+- Earlier OpenGL checks produced matching smooth/flat readback hashes and `GL_NO_ERROR` after installation.
+  Short runs fell from roughly 16–21 ms/frame to 2–3 ms/frame. Background activity and the short baseline
+  limit that comparison. A user screenshot showed Minecraft OpenGL at 149 FPS at 854×480; this was not a
+  matched before/after gameplay test.
+- For `d51bcd1`, five alternating runs per build of a normalized-sampler MoltenVK workload measured a median
+  **5.3635 → 4.0128 ms/frame**, or **25.18% lower frame time**. The workload rendered 5,000 textured draws
+  per frame into a 16×16 offscreen target for 40 measured frames. Readback matched the CPU reference.
+  This result does not establish a Minecraft FPS increase or a native NVK performance improvement.
+- Before staging, nine GPU state-transition cases and 23 surface publication/wrapper cases passed.
+  OpenGL smooth/flat readbacks also matched between builds.
+- After installation, Minecraft and WindowServer loaded the new plugin. A repeat 30-second sample during
+  windowed play, with a 35-second counter capture, recorded no additional surface timeouts, allocation
+  failures, flip refusals or drops. The surface-timeout counter stayed at nine; those earlier boot events
+  remain unattributed. No explicit GPU fault/reset/device-lost messages appeared in the matching log interval.
+- In that windowed sample, 3,214 of 5,067 render-thread samples (**63.43%**) were in drawable acquisition.
+  The refresh-linked presentation ceiling remains unresolved: the earlier game test reached about 150 FPS
+  at 75 Hz and 120 FPS at 60 Hz, and direct Metal reproduced the ceiling. Fullscreen switching is not
+  required for the drawable wait. Sample percentages are not FPS measurements.
+- An unnormalized-coordinate sampler test still fails through MoltenVK/NVMTL on both the older baseline
+  and this candidate. Native NVK passes it. It was excluded from performance claims and remains unfixed.
+
+All seven focused harnesses passed after the exact tested source was transferred into the fork:
+
+```sh
+python3 tools/test_render_sampler_cache.py
+python3 tools/test_graphics_bindings.py
+python3 tools/test_opengl_perf.py
+python3 tools/test_surface_publication.py
+python3 tools/test_submission_copies.py
+python3 tools/test_resset_seal.py
+python3 tools/test_resset_lifetime.py
+```
+
+The full translator suite still needs unpublished fixtures. These checks and one GPU's runtime results
+do not establish behavior on every GPU or rule out regressions after a future merge.
+
+Detailed local artifacts are under `out/vulkan-presentation-20261017-192317/`, including the repeat
+capture in `windowed-20261017-202439/`. This document retains the summary if those artifacts are cleaned up.

@@ -1,5 +1,9 @@
 # OpenGL performance experiment on the 2.3.0 fork
 
+For future upstream merges, retain these changes and the later MoltenVK/NVMTL optimization as
+described in [Fork merge notes](FORK-MERGE-NOTES.md). Check for equivalent upstream implementations
+and overlapping changes before resolving conflicts.
+
 This build selects the OpenGL changes from [pengubow's `opengl-perf` branch](https://github.com/pengubow/nvidia-macos-driver/commits/1706681662e1f8b0278b985ed3e742bf0d64d418/), based on upstream 2.1.0, and applies them to this fork's tested 2.3.0 base. It does not merge upstream 2.3.1.
 
 ## Imported changes
@@ -57,4 +61,10 @@ xcrun clang -O2 tools/glbench/glbench.c -framework OpenGL -o /tmp/glbench
 /tmp/glbench 500 5 flat
 ```
 
-Use several runs and compare the image checksums as well as timings. Also test Minecraft with the same world, location, settings and mods; Terminal erase/backspace; fresh Dock previews; Chromium WebGL; and a known Vulkan workload. Candidate hardware results remain pending until the staged package is installed.
+Use several runs and compare the image checksums as well as timings. Also test Minecraft with the same world, location, settings and mods; Terminal erase/backspace; fresh Dock previews; Chromium WebGL; and a known Vulkan workload.
+
+The candidate was subsequently installed on RTX 2060 Super / Tahoe 26.7.1. Repeated offscreen checks
+produced 2–3 ms/frame with matching smooth/flat checksums and `GL_NO_ERROR`. The short original
+baseline and background activity limit the comparison. A user screenshot showed Minecraft OpenGL
+at 149 FPS at 854×480; no matched before/after gameplay comparison was made. The later shared
+NVMTL cache optimization and its separate MoltenVK results are recorded in the merge notes.
