@@ -80,7 +80,9 @@ Retain these behaviors when reviewing an equivalent upstream implementation:
   cursor image surface alone. Allocate the worker with `THREAD_CALL_PRIORITY_KERNEL` and
   `THREAD_CALL_OPTIONS_ONCE`: one invocation can run and one rerun can be pending, using the latest cursor
   state. A default high-priority call permits overlapping workers to accumulate behind the display gate.
-  Keep the shared display gate, cursor-state lock and stop handling. This is a
+  Stop must use `thread_call_cancel_wait` on this ONCE worker outside display/state locks, release a cancelled
+  pending invocation's retain and free only after draining. Recheck stopping after taking the display gate;
+  freeing a call alone does not wait for a running callback. Keep the shared display gate and cursor-state lock. This is a
   targeted change from upstream's framebuffer; BAR1 allocation, primary scanout and display modes stay upstream's.
 - GL completion queries count committed command buffers, including texture owners and buffer-backed textures.
   Reuse the last sealed part's immutable resource snapshot instead of allocating another list. Unknown fence
@@ -88,6 +90,12 @@ Retain these behaviors when reviewing an equivalent upstream implementation:
 - Heap-route eligible argument-buffer texture arrays and keep texel buffers on texel-view bindings. Skip
   per-draw plan allocation for heap-routed fields, bound other arrays by the shared texture/sampler slot limits,
   and check field-offset arithmetic. Sampler-token fallback is bounded by persistent sampler slots.
+- Stage layouts carry one descriptor per binding: preserve the explicit refusal of larger/runtime/specialized
+  non-heap descriptor arrays until layout, writes and binding plans support them together. Recognize texel arrays
+  of one. Keep set-2 sampled-image heap arrays and ordinary buffer-internal arrays working.
+- Preflight shared address-table pointer uses before physical-buffer lowering. Clone logical pointer types for
+  supported chains/copies independently of traversal order; refuse helper/control-flow/store/return escapes rather
+  than emitting mismatched pointer types. Keep the existing controlled descriptor fallback/refusal behavior.
 - Preserve mip layers for arrays/cubes and halve 3D depth at each mip. Retain AIR-derived reflection and required
   function-constant errors while allowing the existing deferred mesh/object specialization.
 

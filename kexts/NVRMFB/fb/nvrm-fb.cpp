@@ -1804,6 +1804,7 @@ bool NVRMNVDAFramebuffer::cursorInit()
 bool NVRMNVDAFramebuffer::cursorApply(bool imageChanged)
 {
     NVRMDisplayGate gate; if (!gate.valid()) return false;
+    if (OSAddAtomic(0, &fStopping)) return false;
     if (!fKms || !fDev || !fCurSurf || !fModeSet) return false;
     struct NvKmsKapiRequestedModeSetConfig *cfg =
         (struct NvKmsKapiRequestedModeSetConfig *)IOMalloc(sizeof *cfg);
@@ -2339,7 +2340,14 @@ void NVRMNVDAFramebuffer::stop(IOService *provider)
         if (sl) IORecursiveLockUnlock(sl);
         if (mine) release();
     }
-    thread_call_t *calls[] = {&fHwVblCall, &fReflip, &fGpuWake, &fBars, &fVblTimer, &fSampler, &fHeadProbe, &fCursorCall};
+    // free() can succeed while a callback is still running. ONCE lets cancel_wait cancel its pending rerun
+    // and drain the active cursor callback. Hold no display/state lock while it waits for the display gate.
+    if (fCursorCall) {
+        if (thread_call_cancel_wait(fCursorCall)) release();
+        thread_call_free(fCursorCall);
+        fCursorCall = nullptr;
+    }
+    thread_call_t *calls[] = {&fHwVblCall, &fReflip, &fGpuWake, &fBars, &fVblTimer, &fSampler, &fHeadProbe};
     for (unsigned i = 0; i < sizeof calls / sizeof calls[0]; ++i) {
         thread_call_t call = *calls[i];
         if (!call) continue;

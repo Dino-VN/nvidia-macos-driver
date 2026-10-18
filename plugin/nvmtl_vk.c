@@ -225,7 +225,7 @@ static int g_mutable;
 static int g_mutable_layout;
 static PFN_vkCreateBufferView pvkCreateBufferView; static PFN_vkDestroyBufferView pvkDestroyBufferView;
 static void *g_dummyTexAlias, *g_dummyTexView;
-static void nvmtl_spirv_texel_mask(const void *p, size_t n, uint64_t out[4]);
+static int nvmtl_spirv_texel_mask(const void *p, size_t n, uint64_t out[4]);
 static int g_host_import; static size_t g_host_align;
 static int g_linmod;
 static PFN_vkGetMemoryHostPointerPropertiesEXT pvkGetMemoryHostPointerPropertiesEXT;
@@ -4038,7 +4038,7 @@ static int nvmtl_vk_pipeline_create_impl_lifetime_body(const void *vs, size_t vn
     out->has_stencil = rt->dfmt >= VK_FORMAT_S8_UINT && rt->dfmt <= VK_FORMAT_D32_SFLOAT_S8_UINT;
     for (uint32_t i = 0; samples > 1 && i < rt->ncol; i++) if (rt->cfmt[i]) out->rmask |= 1u << i;
     out->stex_hi[0] = nvmtl_spirv_stex_hi(vs, vn); out->stex_hi[1] = nvmtl_spirv_stex_hi(fs, fn);
-    nvmtl_spirv_texel_mask(vs, vn, out->tbm[0]); nvmtl_spirv_texel_mask(fs, fn, out->tbm[1]);
+    if (!nvmtl_spirv_texel_mask(vs, vn, out->tbm[0]) || !nvmtl_spirv_texel_mask(fs, fn, out->tbm[1])) return -1;
     out->tbany = 0; for (int k = 0; k < 4; k++) out->tbany |= (out->tbm[0][k] | out->tbm[1][k]) != 0;
     (void)vkfmt;
     VkRenderPass pass = VK_NULL_HANDLE;
@@ -4249,7 +4249,8 @@ static int nvmtl_vk_compute_pipeline_create_g_lifetime_body(const void *cs, size
     }
     if (!nvmtl_spirv_ok(cs, n, "compute module")) return -1;
     out->stex_hi[0] = nvmtl_spirv_stex_hi(cs, n);
-    nvmtl_spirv_texel_mask(cs, n, out->tbm[0]); memset(out->tbm[1], 0, sizeof out->tbm[1]);
+    if (!nvmtl_spirv_texel_mask(cs, n, out->tbm[0])) return -1;
+    memset(out->tbm[1], 0, sizeof out->tbm[1]);
     out->tbany = (out->tbm[0][0] | out->tbm[0][1] | out->tbm[0][2] | out->tbm[0][3]) != 0;
     out->lin = nvmtl_spirv_has_specid(cs, n / 4, 3);
     out->bmask_ok = (uint32_t)nvmtl_spirv_bmask(cs, n, out->bmask);
@@ -6715,29 +6716,79 @@ int nvmtl_vk_bind_texel_view(nvk_cmdbuf *c, uint32_t set, uint32_t index, void *
     if (index < NVMTL_NSTEX) nvmtl_bind_slot(c, set, NVMTL_STEX_BASE + index, storage && view ? NVMTL_SLOT_TEXBUF : NVMTL_SLOT_NONE, storage ? view : NULL, 0);
     return rc;
 }
-static void nvmtl_spirv_texel_mask(const void *p, size_t n, uint64_t out[4])
+static int nvmtl_spirv_texel_mask(const void *p, size_t n, uint64_t out[4])
 {
     memset(out, 0, 4 * sizeof *out);
     const uint32_t *w = (const uint32_t *)p; size_t nw = n / 4;
-    if (!p || nw < 5 || w[0] != 0x07230203u || !w[3] || w[3] > (1u << 22)) return;
+    if (!p || n % 4 || nw < 5 || nw > UINT32_MAX || w[0] != 0x07230203u || !w[3] || w[3] > (1u << 22)) {
+        nvlog("vk: descriptor scan REFUSED - invalid SPIR-V header"); return 0;
+    }
     const uint32_t bound = w[3];
-    uint8_t *kind = (uint8_t *)calloc(bound, 1);
-    if (!kind) return;
-    for (int pass = 0; pass < 2; pass++)
-        for (size_t i = 5; i < nw; ) {
-            uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
-            if (!wc || i + wc > nw) break;
-            if (pass == 0 && op == 25 && wc >= 4 && w[i + 1] < bound && w[i + 3] == 5) kind[w[i + 1]] = 1;
-            if (pass == 0 && op == 32 && wc == 4 && w[i + 1] < bound && w[i + 3] < bound && kind[w[i + 3]] == 1) kind[w[i + 1]] = 2;
-            if (pass == 0 && op == 59 && wc >= 4 && w[i + 2] < bound && w[i + 1] < bound && kind[w[i + 1]] == 2) kind[w[i + 2]] = 3;
-            if (pass == 1 && op == 71 && wc == 4 && w[i + 2] == 33 && w[i + 1] < bound && kind[w[i + 1]] == 3) {
-                uint32_t b = w[i + 3];
-                if (b >= NVMTL_NBUF && b < NVMTL_NBUF + NVMTL_NTEX) { uint32_t k = b - NVMTL_NBUF; out[k >> 6] |= 1ull << (k & 63); }
-                else if (b >= NVMTL_STEX_BINDING_NUMBER && b < NVMTL_STEX_BINDING_NUMBER + NVMTL_NSTEX) { uint32_t k = b - NVMTL_STEX_BINDING_NUMBER; out[2 + (k >> 6)] |= 1ull << (k & 63); }
-            }
-            i += wc;
+    struct descriptor_id { uint32_t offset, set; };
+    struct descriptor_id *ids = calloc(bound, sizeof *ids);
+    if (!ids) { nvlog("vk: descriptor scan REFUSED - out of memory"); return 0; }
+    int ok = 0;
+    // Record types/variables and sets first: decorations usually precede the definitions they name.
+    for (size_t i = 5; i < nw; ) {
+        uint32_t wc = w[i] >> 16, op = w[i] & 0xffffu;
+        if (!wc || wc > nw - i) goto malformed;
+        if ((op >= 19 && op <= 38) || op == 43 || op == 59) {
+            uint32_t at = (op == 43 || op == 59) ? 2 : 1;
+            if (wc <= at || !w[i + at] || w[i + at] >= bound) goto malformed;
+            ids[w[i + at]].offset = (uint32_t)i;
         }
-    free(kind);
+        if (op == 71 && wc == 4 && w[i + 2] == 34) {
+            if (!w[i + 1] || w[i + 1] >= bound) goto malformed;
+            ids[w[i + 1]].set = w[i + 3];
+        }
+        i += wc;
+    }
+    for (size_t i = 5; i < nw; i += w[i] >> 16) {
+        if ((w[i] & 0xffffu) != 71 || (w[i] >> 16) != 4 || w[i + 2] != 33) continue;
+        uint32_t var = w[i + 1], binding = w[i + 3];
+        if (!var || var >= bound) goto malformed;
+        // Set 2 is the separately sized bindless heap; its working sampled-image arrays stay intact.
+        if (ids[var].set > 1) continue;
+        uint32_t v = ids[var].offset;
+        if (!v || (w[v] & 0xffffu) != 59 || (w[v] >> 16) < 4) goto malformed;
+        if (w[v + 3] != 0 && w[v + 3] != 2 && w[v + 3] != 12) continue;
+        uint32_t type = w[v + 1];
+        if (!type || type >= bound) goto malformed;
+        uint32_t ptr = ids[type].offset;
+        if (!ptr || (w[ptr] & 0xffffu) != 32 || (w[ptr] >> 16) != 4) goto malformed;
+        type = w[ptr + 3];
+        uint32_t t = 0, depth = 0;
+        for (;;) {
+            if (!type || type >= bound || !(t = ids[type].offset) || ++depth > 32) goto malformed;
+            uint32_t op = w[t] & 0xffffu, wc = w[t] >> 16;
+            if (op != 28 && op != 29) break;
+            // Stage layouts have one descriptor per binding, not one descriptor per array element.
+            // An array of one fits; larger, runtime and specialized arrays need a different layout.
+            uint32_t c = op == 28 && wc == 4 && w[t + 3] < bound ? ids[w[t + 3]].offset : 0;
+            uint32_t ct = c && (w[c] >> 16) == 4 && w[c + 1] < bound ? ids[w[c + 1]].offset : 0;
+            if (!c || (w[c] & 0xffffu) != 43 || !ct || (w[ct] & 0xffffu) != 21 ||
+                (w[ct] >> 16) != 4 || w[ct + 2] != 32 || w[c + 3] != 1) {
+                nvlog("vk: pipeline REFUSED - descriptor array at set %u binding %u needs an array layout; stage bindings carry one descriptor",
+                      ids[var].set, binding); goto done;
+            }
+            type = w[t + 2];
+        }
+        if ((w[t] & 0xffffu) == 25 && (w[t] >> 16) >= 4 && w[t + 3] == 5) {
+            if (binding >= NVMTL_NBUF && binding < NVMTL_NBUF + NVMTL_NTEX) {
+                uint32_t k = binding - NVMTL_NBUF; out[k >> 6] |= 1ull << (k & 63);
+            } else if (binding >= NVMTL_STEX_BINDING_NUMBER && binding < NVMTL_STEX_BINDING_NUMBER + NVMTL_NSTEX) {
+                uint32_t k = binding - NVMTL_STEX_BINDING_NUMBER; out[2 + (k >> 6)] |= 1ull << (k & 63);
+            }
+        }
+    }
+    ok = 1;
+    goto done;
+malformed:
+    nvlog("vk: descriptor scan REFUSED - malformed SPIR-V declarations");
+done:
+    if (!ok) memset(out, 0, 4 * sizeof *out);
+    free(ids);
+    return ok;
 }
 
 int nvmtl_vk_bind_texture_view(nvk_cmdbuf *c, uint32_t set, uint32_t index, void *view)

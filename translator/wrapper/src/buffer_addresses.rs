@@ -59,6 +59,33 @@ fn existing_table(defs: &HashMap<u32, Instruction>, m: &rspirv::dr::Module, tv: 
     }
 }
 
+// These pointers must stay logical when the other StorageBuffer types become physical. A call, phi or
+// pointer-valued store would also need its signature/control-flow types rewritten; refuse it before mutation.
+fn table_pointer_values(m: &rspirv::dr::Module, table: u32, sb_types: &HashMap<u32, u32>) -> Result<HashSet<u32>, String> {
+    let chain = |op| matches!(op, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::InBoundsPtrAccessChain | Op::CopyObject);
+    let mut derived = HashSet::from([table]);
+    loop {
+        let mut changed = false;
+        for f in &m.functions { for b in &f.blocks { for i in &b.instructions {
+            if chain(i.class.opcode) && i.operands.first().and_then(id).is_some_and(|v| derived.contains(&v)) {
+                if let (Some(r), Some(t)) = (i.result_id, i.result_type) {
+                    if sb_types.contains_key(&t) { changed |= derived.insert(r); }
+                }
+            }
+        }}}
+        if !changed { break; }
+    }
+    for f in &m.functions { for b in &f.blocks { for i in &b.instructions {
+        for (at, operand) in i.operands.iter().enumerate() {
+            if id(operand).is_some_and(|v| derived.contains(&v))
+                && !(at == 0 && (chain(i.class.opcode) || matches!(i.class.opcode, Op::Load | Op::Store))) {
+                return Err(format!("address-table pointer escapes through {:?}; keeping the descriptor path", i.class.opcode));
+            }
+        }
+    }}}
+    Ok(derived)
+}
+
 fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut m = rspirv::dr::load_bytes(bytes).map_err(|e| e.to_string())?;
     let defs: HashMap<_,_> = m.types_global_values.iter().filter_map(|i| i.result_id.map(|n|(n,i.clone()))).collect();
@@ -90,6 +117,10 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
     for &(n,_,b) in &roots {
         if b >= 32 || sets.get(&n) != Some(&0) { return Err(format!("unsupported source buffer descriptor {n}, binding {b}")); }
     }
+    let table_pointers = match table_var {
+        Some(tv) => table_pointer_values(&m, tv, &sb_types)?,
+        None => HashSet::new(),
+    };
     let root_ids: HashSet<_> = roots.iter().map(|r|r.0).collect();
     let mut value_types = HashMap::new();
     for i in m.all_inst_iter() { if let (Some(n),Some(t)) = (i.result_id,i.result_type) { value_types.insert(n,t); } }
@@ -122,19 +153,17 @@ fn lower_addresses(bytes: &[u8]) -> Result<Vec<u8>, String> {
             inst(Op::TypePointer,None,Some(ptr_elem),vec![Operand::StorageClass(StorageClass::StorageBuffer),Operand::IdRef(elem)]),
         ]);
         m.types_global_values.push(var);
-        let mut dup: HashMap<u32,u32> = HashMap::new(); let mut derived: HashSet<u32> = HashSet::from([tv]); let mut dup_types = Vec::new();
+        let mut dup: HashMap<u32,u32> = HashMap::new(); let mut dup_types = Vec::new();
         for f in &mut m.functions { for b in &mut f.blocks { for i in &mut b.instructions {
-            if !matches!(i.class.opcode, Op::AccessChain | Op::InBoundsAccessChain | Op::PtrAccessChain | Op::CopyObject) { continue; }
-            if !i.operands.first().and_then(id).is_some_and(|v| derived.contains(&v)) { continue; }
+            if !i.result_id.is_some_and(|r| table_pointers.contains(&r)) { continue; }
             let (Some(r), Some(t)) = (i.result_id, i.result_type) else { continue };
-            derived.insert(r);
             if let Some(&pointee) = sb_types.get(&t) {
                 let n = *dup.entry(t).or_insert_with(|| { let n = fresh(); dup_types.push(inst(Op::TypePointer,None,Some(n),vec![Operand::StorageClass(StorageClass::StorageBuffer),Operand::IdRef(pointee)])); n });
                 i.result_type = Some(n); value_types.insert(r, n);
             }
         }}}
-        let vpos = m.types_global_values.iter().position(|i| i.result_id == Some(tv)).unwrap();
-        for (k, t) in dup_types.into_iter().enumerate() { m.types_global_values.insert(vpos + k, t); }
+        // Only function instructions use these clones; append after all of their pointee definitions.
+        m.types_global_values.extend(dup_types);
         (tv, ptr_elem, uvec2)
     } else {
     let arr=fresh(); let block=fresh(); let ptr_block=fresh(); let ptr_ulong=fresh(); let table=fresh();
@@ -341,6 +370,14 @@ OpFunctionEnd
     #[test] fn a_table_with_a_nonzero_block_offset_is_not_an_address_table() {
         let input=source(&WITH_TABLE.replace("OpMemberDecorate %tblock 0 Offset 0", "OpMemberDecorate %tblock 0 Offset 16"));
         assert_eq!(lower(&input).unwrap(), input, "a different table layout must keep the descriptor path");
+    }
+    #[test] fn refuses_table_pointers_passed_to_helpers_before_changing_types() {
+        let text = WITH_TABLE.replace("OpCapability Shader", "OpCapability Shader\nOpCapability VariablePointersStorageBuffer")
+            .replace("%fn = OpTypeFunction %void", "%helper_fn = OpTypeFunction %uint %pu\n%fn = OpTypeFunction %void")
+            .replace("%size = OpLoad %uint %size_p", "%size = OpFunctionCall %uint %helper %size_p")
+            + "\n%helper = OpFunction %uint None %helper_fn\n%arg = OpFunctionParameter %pu\n%entry = OpLabel\n%helper_value = OpLoad %uint %arg\nOpReturnValue %helper_value\nOpFunctionEnd\n";
+        let input = source(&text); validate(&input);
+        assert!(lower(&input).unwrap_err().contains("FunctionCall"));
     }
     #[test] #[ignore] fn corpus_lowered_shaders_still_validate() {
         use metal2vulkan::passes::Stage; use std::collections::BTreeMap;

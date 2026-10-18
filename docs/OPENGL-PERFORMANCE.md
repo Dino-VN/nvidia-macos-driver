@@ -28,6 +28,32 @@ keep their existing deferred constant specialization. Cursor completion state is
 The plugin, translator and framebuffer compile for x86_64 with a macOS 15.0 minimum; release plugin code
 uses `-O2`. Retained fixes and future merge rules are in [Fork merge notes](FORK-MERGE-NOTES.md).
 
+### Audit repairs
+
+The follow-up audit found three edge cases shared with the source branch:
+
+- Address-table pointers must stay in `StorageBuffer` while ordinary buffer pointers become physical.
+  Track supported pointer chains/copies before changing any types. If a table pointer reaches a helper,
+  phi, select, pointer-valued store or return, refuse lowering so the caller can use its descriptor fallback
+  or report an unsupported pipeline. The Uniform-table path can also refuse that fallback. This prevents
+  mismatched function arguments; it does not add helper-pointer support.
+- Stage descriptor bindings contain one descriptor each. Non-heap arrays larger than one, runtime arrays
+  and arrays with specialized lengths are refused before shader-module creation. A constant array of one
+  fits the layout, and its texel-buffer element now selects a buffer view correctly. Working sampled-image
+  heap arrays in set 2 remain supported; arrays inside ordinary buffer blocks are unaffected. Supporting
+  larger non-heap arrays requires matching layout, descriptor-write and binding-plan changes.
+- Keep the cursor worker at normal kernel priority with `THREAD_CALL_OPTIONS_ONCE`. During stop, use
+  `thread_call_cancel_wait` without holding display/state locks, release a cancelled pending invocation's
+  retain, then free the drained call. `thread_call_free` alone can return while a callback runs. A cursor
+  update also rechecks stopping after acquiring the display gate.
+
+`tools/test_opengl_audit_repairs.py` checks the production descriptor parser with address/undefined-behavior
+sanitizers, the real address-lowering code, and a concurrent model of the cursor stop block. With
+`--validator /path/to/spirv-val`, it also validates the helper input and safe lowered shaders for Vulkan 1.2.
+The model covers active/pending retain accounting; it cannot establish kernel shutdown safety on hardware.
+These repairs require rebuilding the plugin, translator and framebuffer. Earlier hardware results below
+describe the previous build, not runtime validation of these repairs.
+
 ### Follow-up checks on RTX 2060 Super / Tahoe 26.7.1
 
 - Installed hashes match the staged builds, and loaded kext UUIDs match. Minecraft and WindowServer load
