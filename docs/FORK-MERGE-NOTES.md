@@ -77,7 +77,10 @@ Retain these behaviors when reviewing an equivalent upstream implementation:
   replacing the method, serialized installation and the `NVMTL_NO_GL_VBLANK_FIX` opt-out. The correction is
   gated on the NVIDIA backend; it does not alter `CAMetalLayer` or Vulkan swapchain methods.
 - Cursor movement is coalesced onto a retained/drained framebuffer thread call. Position-only moves leave the
-  cursor image surface alone. Keep the shared display gate, cursor-state lock and stop handling. This is a
+  cursor image surface alone. Allocate the worker with `THREAD_CALL_PRIORITY_KERNEL` and
+  `THREAD_CALL_OPTIONS_ONCE`: one invocation can run and one rerun can be pending, using the latest cursor
+  state. A default high-priority call permits overlapping workers to accumulate behind the display gate.
+  Keep the shared display gate, cursor-state lock and stop handling. This is a
   targeted change from upstream's framebuffer; BAR1 allocation, primary scanout and display modes stay upstream's.
 - GL completion queries count committed command buffers, including texture owners and buffer-backed textures.
   Reuse the last sealed part's immutable resource snapshot instead of allocating another list. Unknown fence
@@ -101,6 +104,14 @@ does not establish a Minecraft FPS improvement. Keep the committed-use regressio
 fixture's bookkeeping declaration. VSync-on pacing, sleep/wake, mode changes and other GPUs remain unqualified.
 Earlier results below apply to their original builds. See [OpenGL performance](OPENGL-PERFORMANCE.md)
 for the source commits and validation limits.
+
+Two subsequent whole-machine failures on 2026-10-18 panicked with the high-priority thread-call pool at
+500 threads, 499 blocked. The cursor worker's default allocation permits that accumulation, but the panic
+reports lack the blocked-thread stacks needed to attribute it conclusively. The serialization repair above
+was rebuilt, staged and confirmed loaded on RTX 2060 Super / Tahoe 26.7.1 by its matching UUID and
+installed/package executable hashes. Extended runtime validation is ongoing; loading successfully and
+the earlier short gameplay capture do not establish stability. Similar upstream freeze reports have not
+been matched to this panic signature.
 
 ### Earlier imports
 

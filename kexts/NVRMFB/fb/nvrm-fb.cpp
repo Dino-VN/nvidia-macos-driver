@@ -296,7 +296,8 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     // WindowServer calls it for every mouse event from its cursor queue while holding CoreDisplay's cursor mutex,
     // which its main thread takes for every event too, so an NVKMS cursor flip (about 0.3 ms, under the display gate)
     // done there stalls the compositor while the mouse moves. A move that arrives while one is queued is applied with
-    // it. cursorApply and setCursorImage take turns on the display gate alone: a lock of the cursor's own taken before
+    // it. The worker runs once at a time, with at most one rerun for moves received while it is running.
+    // cursorApply and setCursorImage take turns on the display gate alone: a lock of the cursor's own taken before
     // the gate would deadlock with any thread that holds the gate and reaches setCursorImage.
     thread_call_t fCursorCall = nullptr;
     IOSimpleLock *fCurStateLock = nullptr;
@@ -1757,7 +1758,11 @@ bool NVRMNVDAFramebuffer::cursorInit()
         return false;
     }
     if (!fCurStateLock) fCurStateLock = IOSimpleLockAlloc();
-    if (!fCursorCall) fCursorCall = thread_call_allocate(cursorFire, this);
+    // cursorApply can sleep waiting for the display gate/NVKMS. ONCE coalesces moves received while it runs into
+    // one later invocation; a plain thread call could start another blocked worker for every move and exhaust
+    // the shared high-priority pool. Use normal kernel priority for this blocking work.
+    if (!fCursorCall) fCursorCall = thread_call_allocate_with_options(
+        cursorFire, this, THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
     if (!fCurStateLock || !fCursorCall) { FBLOG("cursor: lock or thread call allocation FAILED"); return false; }
     NvU32 dim = fCurMaxPx;
     if (dim > 256) dim = 256;
