@@ -80,8 +80,10 @@ Retain these behaviors when reviewing an equivalent upstream implementation:
   cursor image surface alone. Allocate the worker with `THREAD_CALL_PRIORITY_KERNEL` and
   `THREAD_CALL_OPTIONS_ONCE`: one invocation can run and one rerun can be pending, using the latest cursor
   state. A default high-priority call permits overlapping workers to accumulate behind the display gate.
-  Stop must use `thread_call_cancel_wait` on this ONCE worker outside display/state locks, release a cancelled
-  pending invocation's retain and free only after draining. Recheck stopping after taking the display gate;
+  Stop must cancel queued work with exported `thread_call_cancel`, then wait outside display/state locks for the
+  outstanding cursor-work count. Register before enqueue, undo duplicate entries, and retire on cancellation or
+  callback exit, including early stopping returns. This covers dispatched callbacks before their entry too.
+  `thread_call_cancel_wait` is not exported to kexts; do not reintroduce it. Free only after draining. Recheck stopping after taking the display gate;
   freeing a call alone does not wait for a running callback. Keep the shared display gate and cursor-state lock. This is a
   targeted change from upstream's framebuffer; BAR1 allocation, primary scanout and display modes stay upstream's.
 - GL completion queries count committed command buffers, including texture owners and buffer-backed textures.

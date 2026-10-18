@@ -2,7 +2,7 @@
 """CPU checks for descriptor arrays, address-table pointer escapes and cursor-worker shutdown.
 
 Build the translator dependencies first. --validator optionally checks the complete safe SPIR-V output.
-The cursor test models ONCE cancel/wait semantics; it is not an in-kernel shutdown test.
+The cursor test models exported cancellation plus outstanding-work accounting, not in-kernel shutdown.
 """
 import argparse
 import json
@@ -83,55 +83,117 @@ int main(void) {
 }
 '''
 
-drain = section(fb, '    if (fCursorCall) {\n        if (thread_call_cancel_wait(', '    thread_call_t *calls[]')
+drain = section(fb, '    if (fCursorCall) {\n        if (thread_call_cancel(', '    thread_call_t *calls[]')
+schedule = section(fb, 'void NVRMNVDAFramebuffer::scheduleCall(', '\nvoid NVRMNVDAFramebuffer::stop(')
+callback = section(fb, 'void NVRMNVDAFramebuffer::cursorFire(', '\nvoid NVRMNVDAFramebuffer::barsFire(')
+reference = section(fb, 'class NVRMCallReference {', 'class NVRMDisplayGate {')
 cpp = r'''
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <cstdio>
+using SInt32=int32_t;
+using IOInterruptState=int;
+using IOSimpleLock=std::mutex;
+using thread_call_param_t=void *;
+static SInt32 OSAddAtomic(SInt32 delta,volatile SInt32 *value) { return __atomic_fetch_add(value,delta,__ATOMIC_SEQ_CST); }
+static IOInterruptState IOSimpleLockLockDisableInterrupt(IOSimpleLock *lock) { lock->lock(); return 0; }
+static void IOSimpleLockUnlockEnableInterrupt(IOSimpleLock *lock,IOInterruptState) { lock->unlock(); }
+struct OSObject {
+    std::atomic<int> refs{1};
+    void retain() { refs++; }
+    void release() { assert(refs.fetch_sub(1)>1); }
+};
 struct Work {
     std::mutex mutex; std::condition_variable cv;
-    bool active=false, pending=false, mayFinish=false, waiting=false, freed=false;
+    bool active=false,pending=false,mayEnter=false,mayFinish=false,inApply=false,waiting=false,freed=false;
 };
-static bool thread_call_cancel_wait(Work *w) {
-    std::unique_lock<std::mutex> lock(w->mutex);
-    bool cancelled=w->pending; w->pending=false; w->waiting=true; w->cv.notify_all();
-    w->cv.wait(lock,[&]{return !w->active;}); return cancelled;
+using thread_call_t=Work *;
+static Work *observed;
+static bool thread_call_enter(Work *w) {
+    std::lock_guard<std::mutex> lock(w->mutex);
+    bool queued=w->pending; w->pending=true; return queued;
+}
+static bool thread_call_enter_delayed(Work *w,uint64_t) { return thread_call_enter(w); }
+static bool thread_call_cancel(Work *w) {
+    std::lock_guard<std::mutex> lock(w->mutex);
+    bool cancelled=w->pending; w->pending=false; return cancelled;
 }
 static bool thread_call_free(Work *w) {
-    assert(!w->active && !w->pending); w->freed=true; return true;
+    std::lock_guard<std::mutex> lock(w->mutex);
+    assert(!w->pending && !w->inApply);
+    // Like XNU, this may return before a running callback's final return to the dispatcher.
+    w->freed=true; return true;
 }
-struct Framebuffer {
-    Work *fCursorCall; std::atomic<int> refs{1}; std::atomic<bool> stopped{false};
-    void release() { assert(refs.fetch_sub(1)>1); }
+static void IOSleep(unsigned ms) {
+    { std::lock_guard<std::mutex> lock(observed->mutex); observed->waiting=true; observed->cv.notify_all(); }
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+''' + reference + r'''
+struct NVRMNVDAFramebuffer : OSObject {
+    Work *fCursorCall=nullptr; std::mutex scheduling;
+    IOSimpleLock *fFlipCacheLock=&scheduling;
+    volatile SInt32 fStopping=0,fCursorOutstanding=0;
+    std::atomic<bool> stopped{false};
+    void scheduleCall(thread_call_t,uint64_t);
+    static void cursorFire(thread_call_param_t,thread_call_param_t);
+    void cursorApply() {
+        std::unique_lock<std::mutex> lock(fCursorCall->mutex);
+        Work *w=fCursorCall; w->inApply=true; w->cv.notify_all();
+        w->cv.wait(lock,[&]{return w->mayFinish;}); w->inApply=false;
+    }
     void stop() {
+        { std::lock_guard<std::mutex> lock(scheduling); fStopping=1; }
 ''' + drain + r'''
         stopped=true;
     }
 };
-int main(void) {
-    for(bool active : {false,true}) for(bool pending : {false,true}) {
-        Work w; w.active=active; w.pending=pending;
-        Framebuffer fb; fb.fCursorCall=&w; fb.refs=1+active+pending;
-        std::thread callback;
-        if(active) callback=std::thread([&] {
-            std::unique_lock<std::mutex> lock(w.mutex);
-            w.cv.wait(lock,[&]{return w.mayFinish;});
-            fb.release(); w.active=false; w.cv.notify_all();
-        });
-        std::thread stopper([&]{fb.stop();});
-        if(active) {
-            std::unique_lock<std::mutex> lock(w.mutex);
-            w.cv.wait(lock,[&]{return w.waiting;});
-            assert(!w.freed && !fb.stopped);
-            w.mayFinish=true; w.cv.notify_all();
-        }
-        if(callback.joinable()) callback.join(); stopper.join();
-        assert(w.freed && fb.stopped && !fb.fCursorCall && fb.refs==1);
+''' + schedule + callback + r'''
+static void trial(bool dispatched,bool entered,bool pending) {
+    Work w; observed=&w;
+    NVRMNVDAFramebuffer fb; fb.fCursorCall=&w;
+    if(dispatched || pending) {
+        fb.scheduleCall(&w,0); fb.scheduleCall(&w,0);
+        assert(fb.refs==2 && OSAddAtomic(0,&fb.fCursorOutstanding)==1);
     }
-    puts("PASS: cursor stop drains an active worker, cancels pending reruns and balances all four retain cases");
+    std::thread worker;
+    if(dispatched) {
+        { std::lock_guard<std::mutex> lock(w.mutex); w.active=true; w.pending=false; w.mayEnter=entered; }
+        worker=std::thread([&] {
+            { std::unique_lock<std::mutex> lock(w.mutex); w.cv.wait(lock,[&]{return w.mayEnter;}); }
+            NVRMNVDAFramebuffer::cursorFire(&fb,nullptr);
+            { std::lock_guard<std::mutex> lock(w.mutex); w.active=false; w.cv.notify_all(); }
+        });
+        if(entered) {
+            std::unique_lock<std::mutex> lock(w.mutex); w.cv.wait(lock,[&]{return w.inApply;});
+        }
+        if(pending) {
+            for(unsigned i=0;i<8;i++) fb.scheduleCall(&w,0);
+            assert(fb.refs==3 && OSAddAtomic(0,&fb.fCursorOutstanding)==2);
+        }
+    }
+    std::thread stopper([&]{fb.stop();});
+    if(dispatched) {
+        std::unique_lock<std::mutex> lock(w.mutex);
+        w.cv.wait(lock,[&]{return w.waiting;});
+        assert(!w.freed && !fb.stopped && OSAddAtomic(0,&fb.fCursorOutstanding)==1);
+        w.mayEnter=w.mayFinish=true; w.cv.notify_all();
+    }
+    if(worker.joinable()) worker.join(); stopper.join();
+    assert(w.freed && fb.stopped && !fb.fCursorCall && fb.refs==1 && !OSAddAtomic(0,&fb.fCursorOutstanding));
+    fb.scheduleCall(&w,0); // Stop blocks late submissions, even if the caller kept the old call pointer.
+    assert(!w.pending && fb.refs==1 && !OSAddAtomic(0,&fb.fCursorOutstanding));
+}
+int main(void) {
+    for(unsigned repeat=0;repeat<100;repeat++) {
+        trial(false,false,false); trial(false,false,true);
+        trial(true,false,false); trial(true,true,false); trial(true,true,true);
+    }
+    puts("PASS: idle, queued, dispatched-before-entry, running and rerun shutdown; duplicate/late enqueues and retain balance");
 }
 '''
 cursor = section(fb, 'bool NVRMNVDAFramebuffer::cursorApply(', '    struct NvKmsKapiRequestedModeSetConfig')

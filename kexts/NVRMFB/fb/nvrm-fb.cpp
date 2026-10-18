@@ -33,9 +33,10 @@
 static IORecursiveLock *startLock();
 class NVRMCallReference {
     OSObject *owner;
+    volatile SInt32 *outstanding;
 public:
-    explicit NVRMCallReference(OSObject *object) : owner(object) {}
-    ~NVRMCallReference() { owner->release(); }
+    explicit NVRMCallReference(OSObject *object, volatile SInt32 *count = nullptr) : owner(object), outstanding(count) {}
+    ~NVRMCallReference() { if (outstanding) OSAddAtomic(-1, outstanding); owner->release(); }
 };
 class NVRMDisplayGate {
     IORecursiveLock *lock;
@@ -300,6 +301,8 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     // cursorApply and setCursorImage take turns on the display gate alone: a lock of the cursor's own taken before
     // the gate would deadlock with any thread that holds the gate and reaches setCursorImage.
     thread_call_t fCursorCall = nullptr;
+    // Count accepted invocations before enqueue, including a callback dispatched but not entered yet.
+    volatile SInt32 fCursorOutstanding = 0;
     IOSimpleLock *fCurStateLock = nullptr;
     static void cursorFire(thread_call_param_t p0, thread_call_param_t);
     bool fCursorEnabled = false;
@@ -1933,7 +1936,7 @@ IOReturn NVRMNVDAFramebuffer::setCursorState(SInt32 x, SInt32 y, bool visible)
 void NVRMNVDAFramebuffer::cursorFire(thread_call_param_t p0, thread_call_param_t)
 {
     NVRMNVDAFramebuffer *me = (NVRMNVDAFramebuffer *)p0;
-    NVRMCallReference callReference(me);
+    NVRMCallReference callReference(me, &me->fCursorOutstanding);
     if (OSAddAtomic(0, &me->fStopping)) return;
     me->cursorApply();   // takes the display gate
 }
@@ -2317,8 +2320,13 @@ void NVRMNVDAFramebuffer::scheduleCall(thread_call_t call, uint64_t deadline)
     IOInterruptState state = IOSimpleLockLockDisableInterrupt(fFlipCacheLock);
     if (!fStopping) {
         retain();
+        const bool cursor = call == fCursorCall;
+        if (cursor) OSAddAtomic(1, &fCursorOutstanding);
         const bool alreadyQueued = deadline ? thread_call_enter_delayed(call, deadline) : thread_call_enter(call);
-        if (alreadyQueued) release();
+        if (alreadyQueued) {
+            if (cursor) OSAddAtomic(-1, &fCursorOutstanding);
+            release();
+        }
     }
     IOSimpleLockUnlockEnableInterrupt(fFlipCacheLock, state);
 }
@@ -2340,10 +2348,14 @@ void NVRMNVDAFramebuffer::stop(IOService *provider)
         if (sl) IORecursiveLockUnlock(sl);
         if (mine) release();
     }
-    // free() can succeed while a callback is still running. ONCE lets cancel_wait cancel its pending rerun
-    // and drain the active cursor callback. Hold no display/state lock while it waits for the display gate.
+    // thread_call_cancel_wait is not exported to kexts. Cancel the queued ONCE invocation, then wait for
+    // all accepted cursor work to leave the callback body. Hold no display/state lock while waiting.
     if (fCursorCall) {
-        if (thread_call_cancel_wait(fCursorCall)) release();
+        if (thread_call_cancel(fCursorCall)) {
+            OSAddAtomic(-1, &fCursorOutstanding);
+            release();
+        }
+        while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);
         thread_call_free(fCursorCall);
         fCursorCall = nullptr;
     }

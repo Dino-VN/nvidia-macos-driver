@@ -43,14 +43,16 @@ The follow-up audit found three edge cases shared with the source branch:
   heap arrays in set 2 remain supported; arrays inside ordinary buffer blocks are unaffected. Supporting
   larger non-heap arrays requires matching layout, descriptor-write and binding-plan changes.
 - Keep the cursor worker at normal kernel priority with `THREAD_CALL_OPTIONS_ONCE`. During stop, use
-  `thread_call_cancel_wait` without holding display/state locks, release a cancelled pending invocation's
-  retain, then free the drained call. `thread_call_free` alone can return while a callback runs. A cursor
-  update also rechecks stopping after acquiring the display gate.
+  exported `thread_call_cancel`, then wait for the outstanding cursor-work count without holding display/state
+  locks. Count before enqueue, undo duplicate enqueues, and retire each count on cancellation or callback exit;
+  this also covers callbacks dispatched but not yet entered. Free the call after draining. The initially used
+  `thread_call_cancel_wait` is not exported to kexts and failed kernel-collection linking. A cursor update also
+  rechecks stopping after acquiring the display gate.
 
 `tools/test_opengl_audit_repairs.py` checks the production descriptor parser with address/undefined-behavior
 sanitizers, the real address-lowering code, and a concurrent model of the cursor stop block. With
 `--validator /path/to/spirv-val`, it also validates the helper input and safe lowered shaders for Vulkan 1.2.
-The model covers active/pending retain accounting; it cannot establish kernel shutdown safety on hardware.
+The model covers queued, dispatched and running retain accounting; it cannot establish kernel shutdown safety on hardware.
 These repairs require rebuilding the plugin, translator and framebuffer. Earlier hardware results below
 describe the previous build, not runtime validation of these repairs.
 
