@@ -16,8 +16,36 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The last upstream merge before these additions is `7f3c751`, based on upstream 2.3.0 at `5f812c4`.
-The commit list below records the subsequent additions; earlier retained fixes remain part of this policy.
+The current upstream base is **2.3.5 at `8b120f3`**, integrated on 2026-10-18. The previous upstream
+merge was `7f3c751`, based on 2.3.0 at `5f812c4`. The commit list below records the OpenGL/MoltenVK
+additions between those merges; earlier retained fixes remain part of this policy.
+
+## Upstream 2.3.5 integration
+
+- The only textual conflict was `CHANGELOG.md`; both the fork additions and upstream release history are kept.
+  The release plugin build also exposed a declaration of `nvtrace` colliding with the retained OpenGL
+  call-site macro. Guard that declaration when the macro is already defined; keep the macro's argument-cost saving.
+- NVRM and NVRMFB source remain identical to upstream. Keep its display-aware BAR1 budget, scanout lifetime,
+  plugin-write cookies, capture ordering, refresh-derived flip waits, hardware-vblank retries and startup changes.
+  Do not restore the retired experimental framebuffer policies.
+- Upstream still lacks the fork's parked-backing reactivation and unconditional WindowServer submit-and-wait
+  completion wait. Keep both. Restore the same parked allocation before upstream's dirty mark records its
+  allocation cookie. Kernel-gated capture publication complements the Dock wait; it is not treated as proof
+  that every offscreen consumer can safely use scheduling-only completion.
+- Keep all ten OpenGL/Minecraft and MoltenVK commits below, strict stencil detection, Chromium's enabled default
+  and release `-O2`. The new upstream remote release helper also uses `-O2`; the existing local build script
+  retains its settings. Translator and native NVK sources are unchanged by this upstream update.
+- Package against the official **2.3.5** RM/framebuffer and installer, with the rebuilt fork plugin and matching
+  Tahoe accelerator. Reuse the fork translator built from the unchanged source. The prior 2.3.0 package is not
+  the matching base for this merge.
+
+The merged release plugin compiles for x86_64 with macOS 15.0 as its minimum and `-O2`; the Tahoe accelerator
+also compiles. No runtime/GPU regression tests or boot of this combined build have been performed yet. Earlier
+Minecraft results below, and the reported successful ReBAR-off boot before this integration, do not validate it.
+
+The upstream boot guard is retained as provided. A previously identified source-level ordering concern remains:
+NVRM checks the stored failure count, then increments it; later components read the incremented count against
+the same limit. This is not a hardware-reproduced failure. A working boot alone does not cover the retry path.
 
 ## Earlier Tahoe and performance fixes to retain
 

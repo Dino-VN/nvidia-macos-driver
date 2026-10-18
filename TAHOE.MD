@@ -4,23 +4,33 @@ Before merging a newer upstream revision, read [Fork merge notes](docs/FORK-MERG
 Retain the Tahoe fixes, existing performance optimizations and the OpenGL/Minecraft and MoltenVK
 changes, checking for conflicts and equivalent upstream implementations first.
 
-This guide targets upstream **2.3.0 at `5f812c4`**, with the retained Tahoe icon and System Settings glyph changes, parked-VRAM restoration, strict stencil detection, and Dock snapshot completion wait. Terminal uses upstream's general framebuffer-fetch repair. The shader, Vulkan feature, MSAA, surface scheduling, framebuffer claim, and surface VRAM changes previously imported separately are now included in upstream. The historical references below identify their origins.
+This guide targets upstream **2.3.5 at `8b120f3`**, with the retained Tahoe icon and System Settings glyph changes, parked-VRAM restoration, strict stencil detection, Dock snapshot completion wait, and OpenGL/MoltenVK optimizations. Terminal uses upstream's general framebuffer-fetch repair. The historical references below identify the origins of earlier repairs.
 
-Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.3.0 framebuffer source and bundle metadata, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and event-driven flip waits. NVAccel also uses upstream's framebuffer-resource creation, scanout lifetime, GPU mapping, and event-driven submission waits. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.3.5 framebuffer source, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and event-driven flip waits. NVAccel also uses upstream's framebuffer-resource creation, scanout lifetime, GPU mapping, and event-driven submission waits. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
 
 The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
 
-## Testing the upstream 2.3.0 repairs
+## Testing the upstream 2.3.5 integration
 
-The OpenGL experiment builds on this 2.3.0 base. It adds pengubow's Minecraft shader and draw-path improvements, with additional control-flow, resource-cache and render-state checks. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the selected commits, test coverage and before/after procedure. It has since been installed and checked on RTX 2060 Super / Tahoe 26.7.1. The later NVMTL binding/sampler cache optimization is recorded in the [merge notes](docs/FORK-MERGE-NOTES.md), including its MoltenVK benchmark and remaining presentation limit. Stage the rebuilt plugin and translator with the tested 2.3.0 kexts and NVK; these experiments do not require rebuilding those components.
+The new merge adds refresh-derived flip pacing, retries for refused hardware-vblank registration, kernel-gated
+capture publication, Turing plugin-write tracking and startup settling, and longer waits for a busy GPU fence.
+It also removes the fixed 60-second sleep before enabling display flips. These changes retain upstream's guards
+for a small BAR1 and a second accelerated GPU. They do not establish a fix for every persistent cursor-only failure
+or for the refresh-linked Minecraft presentation ceiling.
+
+The release plugin and Tahoe accelerator compile. A trace declaration that collided with the retained OpenGL
+macro was resolved without removing that macro. Hardware validation of this combined build is pending.
+See the [merge notes](docs/FORK-MERGE-NOTES.md) for retained behavior and the remaining boot-guard review concern.
+
+The OpenGL changes were first tested on the 2.3.0 base. They add pengubow's Minecraft shader and draw-path improvements, with additional control-flow, resource-cache and render-state checks. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the selected commits, test coverage and before/after procedure. That earlier build was installed and checked on RTX 2060 Super / Tahoe 26.7.1. The NVMTL binding/sampler cache optimization is recorded in the [merge notes](docs/FORK-MERGE-NOTES.md), including its MoltenVK benchmark and remaining presentation limit. For the current merge, use the matching 2.3.5 RM/framebuffer, rebuilt fork plugin and Tahoe accelerator, and the existing fork translator. Native NVK and translator source did not change in this upstream update.
 
 The merge retains the parked-VRAM repair, WindowServer's Dock snapshot completion wait, strict stencil marker detection, Chromium GPU default, and release `-O2`. The only textual merge conflict was in the changelog; the driver source merged automatically.
 
 Terminal's process-specific framebuffer-fetch disable has been removed. Upstream now supplies a dummy view for missing colour inputs and orders small framebuffer-fetch draws per triangle, preventing skipped text draws and stale overlapping pixels. Start a fresh Terminal with its default environment to test clearing, backspace, scrolling, and cursor redraw. `NVMTL_NO_FBFETCH=1` bypasses this path and must be absent during that test.
 
-Upstream's framebuffer and Tahoe accelerator now wake flip/submission waits on completion events, with a 250 microsecond recheck, instead of polling once per millisecond. The existing wait bounds remain. Install the matching 2.3.0 framebuffer and newly built Tahoe accelerator to exercise both halves; replacing only the plugin will not update presentation timing.
+Upstream's framebuffer and Tahoe accelerator wake flip/submission waits on completion events. The new presentation budget is 1.25 refresh periods (about 16.7 ms at 75 Hz), while the worker still retains submitted surfaces until completion or its separate stuck limit. A short-budget miss is now a late-frame statistic, not directly comparable to the old 100 ms timeout count. Install the matching 2.3.5 RM/framebuffer and newly built Tahoe accelerator to exercise both halves; replacing only the plugin will not update presentation timing.
 
-After installation and reboot, also check fresh minimized-window previews and window dragging. The merged build's Terminal rendering and frame delivery have not yet been validated on hardware.
+After installation and reboot, check fresh minimized-window previews, Terminal redraw, screenshots, window dragging, and both OpenGL and MoltenVK Minecraft. The merged build has not yet been validated on hardware.
 
 ## Upstream framebuffer-resource handling
 
@@ -79,7 +89,7 @@ Restore and minimize the affected window to regenerate its thumbnail. This setti
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-Use the official **2.3.0 package** as the staging base to obtain its matching RM, framebuffer and NVK. Stage the fork's rebuilt plugin and Tahoe accelerator into that package. Translator source is unchanged from the preceding fork, so its finalized translator can be reused; the commands below also cover rebuilding it. They do not build the main RM binary, framebuffer binary or NVK. An older package is not a matching base for this workflow. A framebuffer rebuild, if needed, must include its matching plist. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
+Use the official **2.3.5 package** as the staging base to obtain its matching RM, framebuffer and runtime. Stage the fork's rebuilt plugin and Tahoe accelerator into that package. Translator source is unchanged from the preceding fork, so its finalized translator can be reused; the commands below also cover rebuilding it. They do not build the main RM binary, framebuffer binary or NVK. An older package is not a matching base for this workflow. Preserve the 2.3.5 package's framebuffer plist and version metadata when staging, rather than replacing them with the source template's `0.1` version. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 
@@ -281,7 +291,8 @@ Extract the official 2.3.0 prebuilt driver archive into a separate directory. Us
 ```bash
 cd "$HOME/nvmtl-build/LIVE"
 python3 build/stage_package.py "/path/to/upstream/pkgroot" \
-  "$HOME/nvmtl-build/tahoe-package/pkgroot"
+  "$HOME/nvmtl-build/tahoe-package/pkgroot" \
+  --framebuffer-plist "/path/to/upstream/pkgroot/Library/Extensions/NVRMFB.kext/Contents/Info.plist"
 ```
 
 The output directory must be new and outside the input package. The helper creates its parent directories and publishes the output only after all copies and checksum checks succeed. The upstream package and original build outputs remain intact.
@@ -296,11 +307,12 @@ By default, this stages the Tahoe PR changes using these exact paths in the chec
 
 The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. Plugin resources, the prebuilt NVRM/NVRMAGDC/framebuffer binaries, NVK, firmware, and the Sequoia accelerator are retained from the base package.
 
-The four historical PRs do not themselves require rebuilding NVAccel. The current fork's parked-backing repair does, and testing both event-driven waits requires the matching 2.3.0 framebuffer and Tahoe accelerator. Include the accelerator built in section 6 explicitly:
+The four historical PRs do not themselves require rebuilding NVAccel. The current fork's parked-backing repair does, and testing the merged display changes requires the matching 2.3.5 RM/framebuffer and Tahoe accelerator. Preserve the package version in the rebuilt accelerator's plist, then include it explicitly:
 
 ```bash
 python3 build/stage_package.py "/path/to/upstream/pkgroot" \
   "$HOME/nvmtl-build/tahoe-package/pkgroot" \
+  --framebuffer-plist "/path/to/upstream/pkgroot/Library/Extensions/NVRMFB.kext/Contents/Info.plist" \
   --accel-26 out/tahoe/NVAccel.kext
 ```
 

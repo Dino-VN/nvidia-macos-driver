@@ -19,6 +19,7 @@
 #include <vulkan/vulkan.h>
 #include "nvmtl_vk.h"
 #include "nvmtl_tex_upload.h"
+#include "nvmtl_cmd_refusal.h"
 #include "nvmtl_sampler_state.h"
 static int g_sampler_anisotropy, g_sampler_mirror_clamp;
 static int g_scalar_layout;
@@ -1896,7 +1897,7 @@ int nvmtl_vk_surface_share_on(void)
     }
     return on;
 }
-int nvmtl_vk_surface_dirty(uint32_t surfaceID, uint32_t plane)
+static int nvmtl_vk_surface_mark_newest(uint32_t surfaceID, uint32_t plane, uint32_t flags)
 {
     static int on = -1;
     if (on < 0) {
@@ -1907,15 +1908,32 @@ int nvmtl_vk_surface_dirty(uint32_t surfaceID, uint32_t plane)
               pnvk_surface_dirty ? "present" : "ABSENT", e ?: "unset");
     }
     if (!on || !g_dev) return -1;
-    uint32_t st = pnvk_surface_dirty(g_dev, surfaceID, plane);
+    uint32_t st = pnvk_surface_dirty(g_dev, surfaceID, plane | flags);
+    if (st == 0x80000007u) return 1;    /* NVRM_SS_BUSY: a try that found the accelerator lock taken */
     if (st) { static unsigned n; if (n++ < 8 || n % 2000 == 0) nvlog("surface %u dirty refused (%#x) - copy-out (%u so far)", surfaceID, st, n); }
     return st ? -1 : 0;
 }
+int nvmtl_vk_surface_dirty(uint32_t surfaceID, uint32_t plane) { return nvmtl_vk_surface_mark_newest(surfaceID, plane, 0); }
+/* the same mark, given up instead of waiting when the accelerator lock is taken (NVRM_SS_PLANE_TRYLOCK; only an NVAccel
+   that publishes NVAccelSurfaceWait is asked): 0 marked, 1 the lock was taken, -1 refused */
+int nvmtl_vk_surface_dirty_try(uint32_t surfaceID, uint32_t plane) { return nvmtl_vk_surface_mark_newest(surfaceID, plane, 0x40000000u); }
 // WindowServer completion mark (NVAccel nvSurfGpuEscape), on NVK's surface escape: 0 = the kernel took it
 uint32_t nvmtl_vk_surface_gpu_mark(uint32_t surfaceID, int pending)
 {
     if (!pnvk_surface_dirty || !g_dev) return 0x80000002u;
     return pnvk_surface_dirty(g_dev, surfaceID, 0x80000000u | (pending ? 1u : 0u));
+}
+/* 1 when NVAccel publishes NVAccelSurfaceWait: its page-off waits for a surface WindowServer's GPU is still writing */
+int nvmtl_vk_accel_surface_wait(void)
+{
+    io_service_t s = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("NVAccel"));
+    if (!s) return 0;
+    CFTypeRef v = IORegistryEntryCreateCFProperty(s, CFSTR("NVAccelSurfaceWait"), kCFAllocatorDefault, 0);
+    int on = 0;
+    if (v && CFGetTypeID(v) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &on);
+    if (v) CFRelease(v);
+    IOObjectRelease(s);
+    return on == 1;
 }
 int nvmtl_vk_surface_vram(uint32_t surfaceID, uint32_t plane, size_t need, nvk_buffer *out)
 {
@@ -2874,12 +2892,22 @@ static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint
                 continue;
             }
             if (NVMTL_COPY_HAS(copym, i)) { cp[ncp++] = (VkCopyDescriptorSet){ VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, NULL, from, NVMTL_BINDING_NUMBER(i), 0, set, NVMTL_BINDING_NUMBER(i), 0, 1 }; continue; }
-            if (sl && sl->kind == NVMTL_SLOT_TEX) { ii[i] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, (VkImageView)sl->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }; pi = &ii[i]; }
-            else pi = &dummyI;
+            // A texture slot whose sampled view could not be built is recorded with a null handle. The descriptor
+            // written for it is the dummy image, never the null handle: a null view reads as zero in NVK, and a
+            // debug NVK asserts on any handle that is not a live image view.
+            if (sl && sl->kind == NVMTL_SLOT_TEX && sl->h) { ii[i] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, (VkImageView)sl->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }; pi = &ii[i]; }
+            else {
+                if (sl && sl->kind == NVMTL_SLOT_TEX) { static int said; if (!said++) nvlog("vk: texture slot %u is bound to a texture with no sampled view - the dummy image is bound instead (said once)", i - NVMTL_NBUF); }
+                pi = &dummyI;
+            }
         } else {
             if (NVMTL_COPY_HAS(copym, i)) { cp[ncp++] = (VkCopyDescriptorSet){ VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, NULL, from, NVMTL_BINDING_NUMBER(i), 0, set, NVMTL_BINDING_NUMBER(i), 0, 1 }; continue; }
-            if (sl && sl->kind == NVMTL_SLOT_SAMP) { ii[i] = (VkDescriptorImageInfo){ (VkSampler)sl->h, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED }; pi = &ii[i]; }
-            else pi = &dummyS;
+            // Same for a sampler slot: a sampler state whose VkSampler was never created binds the dummy sampler.
+            if (sl && sl->kind == NVMTL_SLOT_SAMP && sl->h) { ii[i] = (VkDescriptorImageInfo){ (VkSampler)sl->h, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED }; pi = &ii[i]; }
+            else {
+                if (sl && sl->kind == NVMTL_SLOT_SAMP) { static int said; if (!said++) nvlog("vk: sampler slot %u is bound to a sampler state with no VkSampler - the dummy sampler is bound instead (said once)", i - NVMTL_NBUF - NVMTL_NTEX); }
+                pi = &dummyS;
+            }
         }
         w[nw++] = (VkWriteDescriptorSet){ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, set, NVMTL_BINDING_NUMBER(i), 0, 1, ty, pi, pb, NULL };
     }
@@ -4582,26 +4610,39 @@ static void nvmtl_tspool_push(VkQueryPool q) {
     pthread_mutex_unlock(&g_tspool_lock);
     if (!kept) pvkDestroyQueryPool(g_dev, q, NULL);
 }
+// Every caller of nvmtl_vk_cmd_begin sees only -1, and the queue's nil for WindowServer used to carry no cause. The
+// reason is logged here with the Vulkan result where there is one. One call site per cause: nvlog throttles by format.
+static int nvmtl_cmd_refused(nvmtl_refusal why, int vkresult)
+{
+    switch (why) {
+    case NVMTL_REFUSE_BACKEND_DOWN: nvlog("vk: command buffer refused in %s: " NVMTL_REFUSE_TEXT_BACKEND_DOWN, getprogname()); break;
+    case NVMTL_REFUSE_POOL:  nvlog("vk: command buffer refused in %s: " NVMTL_REFUSE_TEXT_POOL " (VkResult %d)", getprogname(), vkresult); break;
+    case NVMTL_REFUSE_ALLOC: nvlog("vk: command buffer refused in %s: " NVMTL_REFUSE_TEXT_ALLOC " (VkResult %d)", getprogname(), vkresult); break;
+    case NVMTL_REFUSE_BEGIN: nvlog("vk: command buffer refused in %s: " NVMTL_REFUSE_TEXT_BEGIN " (VkResult %d)", getprogname(), vkresult); break;
+    default: break;
+    }
+    return -1;
+}
 int nvmtl_vk_cmd_begin(nvk_queue *q, nvk_cmdbuf *out)
 {
     (void)q;
-    if (nvmtl_vk_init()) return -1;
+    if (nvmtl_vk_init()) return nvmtl_cmd_refused(NVMTL_REFUSE_BACKEND_DOWN, 0);
     const uint64_t b0 = nvmtl_perf_now();
     memset(out, 0, sizeof *out);
     VkCommandPool pool = nvmtl_keep_pool_pop();
     VkCommandPoolCreateInfo cpci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL,
         VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, g_qfam };
     VkResult result = pool != VK_NULL_HANDLE ? VK_SUCCESS : pvkCreateCommandPool(g_dev, &cpci, NULL, &pool);
-    if (result != VK_SUCCESS) { nvlog("vk: recording pool creation -> %d", result); return -1; }
+    if (result != VK_SUCCESS) { nvlog("vk: recording pool creation -> %d", result); return nvmtl_cmd_refused(NVMTL_REFUSE_POOL, result); }
     out->pool = pool;
     VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, pool,
         VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
     result = nvmtl_opaque_AllocateCommandBuffers(g_dev, &ai, &out->cb);
-    if (result != VK_SUCCESS) { pvkDestroyCommandPool(g_dev, pool, NULL); memset(out, 0, sizeof *out); return -1; }
+    if (result != VK_SUCCESS) { pvkDestroyCommandPool(g_dev, pool, NULL); memset(out, 0, sizeof *out); return nvmtl_cmd_refused(NVMTL_REFUSE_ALLOC, result); }
     VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL,
         VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL };
     result = pvkBeginCommandBuffer(out->cb, &bi);
-    if (result != VK_SUCCESS) { pvkDestroyCommandPool(g_dev, pool, NULL); memset(out, 0, sizeof *out); return -1; }
+    if (result != VK_SUCCESS) { pvkDestroyCommandPool(g_dev, pool, NULL); memset(out, 0, sizeof *out); return nvmtl_cmd_refused(NVMTL_REFUSE_BEGIN, result); }
     if (pvkGetCalibratedTimestampsEXT && g_timestamp_bits) {
         VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, 2, 0 };
         VkQueryPool timing = nvmtl_tspool_pop();
@@ -5693,12 +5734,29 @@ int nvmtl_vk_submit_finish(nvmtl_inflight *f)
     nvmtl_prologue *const pre = &f->pre;
     const long budget_ms = nvmtl_gpu_wait_budget_ms();
     const uint64_t w0 = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-    VkResult wr; long waited_ms = 0;
+    VkResult wr; long waited_ms = 0, said_ms = 0;
+    // A fence that is late is a GPU that is busy, not a GPU that is gone. Giving up at the budget used to disable the
+    // backend for the rest of the process; in WindowServer every later command buffer was then refused and CoreDisplay
+    // aborted the session, which is what three Macs on macOS 26 reported as a crash. The wait now runs on past the
+    // budget, in calls twice as long as the budget: the Vulkan driver's own no-progress detector is armed per call
+    // with a five-second threshold, checked after the call's own deadline, so it turns a stalled channel into
+    // VK_ERROR_DEVICE_LOST only when a single call outlasts that threshold. A fence that neither signals nor errors
+    // for ten budgets (50 s in WindowServer, ten minutes elsewhere) is given up as lost, so a stall nothing reports still ends.
+    const long give_up_ms = budget_ms * 10;
     for (;;) {
-        wr = pvkWaitForFences(g_dev, 1, &fence, VK_TRUE, 250ull * 1000 * 1000);
+        const long slice_ms = budget_ms < 250 ? 500 : budget_ms * 2;
+        wr = pvkWaitForFences(g_dev, 1, &fence, VK_TRUE, (uint64_t)slice_ms * 1000 * 1000);
         waited_ms = (long)((clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - w0) / 1000000ull);
         if (wr != VK_TIMEOUT) break;
-        if (waited_ms >= budget_ms) break;
+        if (g_state != 1) break;
+        if (waited_ms >= give_up_ms) {
+            nvlog("vk: fence still pending after %ld ms in %s with no error from the device; giving it up as lost", waited_ms, getprogname());
+            break;
+        }
+        if (waited_ms >= budget_ms && waited_ms - said_ms >= budget_ms) {
+            said_ms = waited_ms;
+            nvlog("vk: fence still pending after %ld ms (budget %ld ms) in %s - waiting on, the device has not reported a loss", waited_ms, budget_ms, getprogname());
+        }
     }
     pt[5] = nvmtl_perf_now();
     atomic_fetch_add(&g_submit_wait_ns, clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - w0);
@@ -5710,7 +5768,7 @@ int nvmtl_vk_submit_finish(nvmtl_inflight *f)
     }
     if (wr != VK_SUCCESS || g_state != 1) {
         g_state = -1;
-        nvlog("vk: fence wait -> %d after %ld ms (budget %ld ms); disabling backend without retiring in-flight resources", wr, waited_ms, budget_ms);
+        nvlog("vk: fence wait -> %d after %ld ms (budget %ld ms); the device is lost, disabling backend without retiring in-flight resources", wr, waited_ms, budget_ms);
         return -2;
     }
     if (c->wseq && c->wseq != NVMTL_WSEQ_BLIND) {

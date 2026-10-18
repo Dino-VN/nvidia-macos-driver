@@ -1,19 +1,109 @@
 # Changelog
 
-## Fork additions to 2.3.0
+## Fork additions to 2.3.5
+
+- Merge upstream 2.3.5, including refresh-derived flip pacing, hardware-vblank retries, capability-gated capture ordering, Turing write tracking and startup repairs, and longer waits for busy GPU fences. Retain the fork changes below; the combined build needs a new hardware test.
 
 - Import the selected OpenGL/Minecraft shader, descriptor-reuse, provoking-vertex, texture-buffer, instancing and sampler fixes from pengubow's OpenGL branch. Harden constant resource selection and resource-cache lifetime, reset render state per encoder, and enable depth bias dynamically for nonzero bias. Include diagnostic benchmarks and regression checks; see [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the RTX 2060 Super checks and comparison limits.
 - Cache unchanged graphics bindings per command recording and recent sampler specialization keys per encoder. A targeted MoltenVK offscreen workload measured 25.18% lower frame time; a Minecraft FPS gain remains unmeasured and the refresh-linked presentation ceiling remains unresolved. See [Fork merge notes](docs/FORK-MERGE-NOTES.md) for the commits, retained behavior, hardware results and future merge policy.
 
 - Restore GPU completion waiting in WindowServer's submit-and-wait path for Dock snapshots. A live A/B check on RTX 2060 Super / Tahoe 26.7.1 restored previews with completion waiting and reproduced invisible fresh previews after returning to 2.1.0's scheduling-only behavior. Fresh previews also worked after installing and rebooting with the rebuilt plugin while kernel GPU marks stayed enabled. The user reported little perceived performance loss; comparative frame delivery has not been measured.
 - Validate the dedicated push-constant block before enabling stencil-export emulation. Ordinary uniform fields at offset 160 falsely activated it in cached WindowServer and Chromium shaders. Hardware testing confirmed that this change alone did not restore Dock previews.
-- Replace the previous Terminal-only framebuffer-fetch workaround with upstream 2.3.0's general missing-attachment and ordered-triangle repair. Terminal now uses framebuffer fetch by default; hardware validation of the merged build is pending.
+- Keep upstream's general missing-attachment and ordered-triangle framebuffer-fetch repair. Terminal uses framebuffer fetch by default; the earlier 2.3.0-based fork was checked on RTX 2060 Super / Tahoe 26.7.1.
 - Keep Chromium, Edge and Electron GPU acceleration enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround for an application.
 - Use the upstream framebuffer and retire the fork's experimental small-BAR policies and scanout allocation fallbacks from the default build.
-- Retain parked-backing restoration before ordinary surface dirty updates while using upstream 2.3.0 framebuffer-resource creation, scanout lifetime and GPU mapping. The borrowed-scanout extension remains removed. Include upstream's event-driven flip and submission waits.
+- Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. The prior 2.1.0-based fork booted on RTX 2060 Super / Tahoe 26.7.1. The merged 2.3.0 build needs a fresh hardware test; comparative performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.3.5 build; comparative desktop performance remains unmeasured.
+
+## 2.3.5
+
+Stability
+- The login screen no longer stays black for a minute after the display comes up. The driver waited 60 seconds before
+  letting the compositor's frames reach the panel, on the assumption that the screen was already showing them another
+  way; on macOS 26 it was not, so every boot sat on a black login screen for exactly that minute
+
+## 2.3.4
+
+Pre-release for the early-updates testers; it becomes the general release only after every GPU generation passes the
+field gate.
+
+Stability
+- Window dragging, Launchpad and games stutter less: each screen update waits at most one refresh period for the
+  previous one, instead of a fixed tenth of a second; the wait wakes on the display's own event
+- macOS Sequoia screenshots and window captures: the capture ordering fix from 2.3.2 returns, and it now follows what the
+  installed kernel driver supports, so a Metal driver and a kernel driver from different versions never mismatch again
+- Turing (GTX 16 and RTX 20): the login screen no longer stays black with a cursor when the first frame has not been
+  drawn yet; the driver only shows video memory the Metal driver has written
+- Turing: the ten-second start wait the installer used to add is now the driver's own default, so a laptop card or a Mac
+  whose boot arguments were rewritten gets it too (a value you set yourself still wins)
+- Laptops with a hybrid display: the driver no longer copies the boot screen from another card's memory, which could
+  stop the Mac during startup. When WhateverGreen is present next to the driver, the installer notes the gfxrst setting it needs
+- A Mac reset during the driver's own start-up wait (the ten-second Turing settle, the 100-second wait when the card's
+  memory window cannot be moved) no longer counts toward switching the driver off. Two such resets used to leave a
+  working Mac on the fallback driver, reported at the next login as "driver loaded: no"
+- A GPU that is busy is not a GPU that is gone: the Metal driver keeps waiting for a late frame instead of disabling
+  itself for the rest of the process. In WindowServer that disablement meant every later command buffer was refused
+  and the session restarted ("Failed to get a MTLCommandBuffer")
+- Every kernel driver now carries the package version. A Mac that still runs an older kernel driver after an update
+  (the kernel collection was not rebuilt) is named in Send logs and in the "reached the desktop" report instead of
+  counting as the new version
+
+Logging (so a report says what happened)
+- The kernel driver logs its own version at start
+- A full video-memory window logs the first refusals and then every 256th, with one line saying who holds the window
+- Spare framebuffer instances (more instances than displays) say so instead of reporting a failure
+- A display that stops flipping logs how long the frame had been pending and the flip counters
+- Every ten seconds of screen activity, one line per display records the flip rate against the panel rate, missed
+  refreshes and skipped frames
+- A refused mode set or flip in the kernel names the stage that refused it
+- The Metal driver says why it could not begin a command buffer (a lost GPU, a failed allocation), the line
+  WindowServer crashes without
+
+## 2.3.3
+
+Stability
+- 2.3.2 made some Macs worse: blank or torn windows and a Dock missing its apps on macOS Sequoia, WindowServer
+  crashes on some Tahoe desktops. Its display changes (screenshots and the lock screen, the brightness and video-memory
+  logging, the Turing flip change) are withdrawn from the package until they pass a staged test with the testers.
+  2.3.3 ships the 2.3.1 driver, which has the longest clean record in the field, on both macOS 15 and macOS 26
+- macOS Sequoia: installing and updating works again (the 2.3.2 fix is kept: the Metal driver is built for macOS 15)
+- After a rollback, the installed version record follows the files that are really installed (kept from 2.3.2)
+
+## 2.3.2
+
+Fixes
+- macOS Sequoia: installing or updating to 2.3.0 or 2.3.1 stopped with "runtime payload requires macOS 26.0.0". The
+  Metal driver in those packages was built for macOS 26 only; it is built for macOS 15 again, and a release can no
+  longer ship anything that needs a newer macOS than 15
+- Screenshots, window captures and the lock screen showed a blurred or empty window. macOS reads a window right
+  after drawing it, and the driver now finishes the drawing first, as Apple's drivers do
+- Send logs now includes how much of the card's video memory window is in use, so a black screen with only a
+  cursor can be told apart from a leak
+- After an update was rolled back, Send logs still named the new version. The installed version now follows the files
+  that are actually installed, so reports say what your Mac is really running
+- The Metal driver never hands the GPU a missing texture or sampler; it uses an empty one and logs it (a cause of
+  Safari crashes in older versions)
+- Laptops with the screen on the NVIDIA GPU: every step of the brightness setup is logged, so brightness that stays
+  greyed out can be traced from Send logs
+
+AMD / Intel test program
+- A test driver that fails to start no longer panics the Mac: memory still mapped when the start gave up is kept
+  until it is unmapped, instead of being freed under the mapping
+- Intel 11th and 12th gen graphics (Tiger Lake, Rocket Lake, Alder Lake-S) and DG1 now reach the Intel driver. Two
+  drivers list these chips and the device was offered to the wrong one, so neither took it
+- When a start fails, its first error lines are kept and reported on the next start, even if the Mac stopped
+- The test driver's log names AMD and Intel devices correctly
+
+## 2.3.1
+
+Safer updates
+- If an update cannot bring your display up, your Mac no longer stays on a black screen. After two starts in a row
+  that never reached the display, the driver turns itself off so macOS still starts, and the driver you had before the
+  update is put back automatically with one restart. Nothing stays running once an update has worked
+- Releases now also have to pass app checks on the new Metal driver (Terminal text, window capture) and may not do
+  worse than the release before
 
 ## 2.3.0
 
