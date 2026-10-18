@@ -237,11 +237,13 @@ id<MTLCounterSet> nvmtl_timestamp_counter_set(void);
   int _resRefs, _rstate, _lruReg, _wantOn; uint64_t _lastUse;
   uint64_t _useEp;
   BOOL _texSeen;
+  int _gpuRefs;   // uses by committed command buffers not yet completed (isComplete); _resRefs counts from encoding
 } @end
 @interface NVMTLTexture () { @public NSString *_label; MTLResourceOptions _ropt; BOOL _shareable; BOOL _fbo;
   MTLTextureSwizzleChannels _swz; BOOL _hasSwz; void *_swzView;
   void *_tbView, *_tbAlias; BOOL _tbStorage;
   int _resRefs;
+  int _gpuRefs;   // as NVMTLBuffer's: on the texture that owns the storage (_parent), never on a view
   int _nviews;
   int _rstate;
   uint64_t _lastUse;
@@ -260,6 +262,8 @@ void nvmtl_texture_desc_swizzle(NVMTLTexture *t, MTLTextureDescriptor *d);
 @interface NVMTLCommandQueue () { @public NSString *_label; } @end
 @interface NVMTLCommandBuffer () { @public NSString *_label; uint64_t _rep; } @end
 @interface NVMTLCommandBuffer () { @public NSMutableSet *_stTwins; } @end
+// The last sealed part's immutable resource snapshot also owns the committed-use counts; no second list is needed.
+@interface NVMTLCommandBuffer () { @public NSSet *_gpuUses; BOOL _gpuUsesUncertain; } @end
 @interface NVMTLTexture () { @public nvk_image _stTwin; BOOL _stTwinTried; } @end
 @interface NVMTLDepthStencilState () { @public NSString *_label; } @end
 @interface NVMTLSamplerState () { @public NSString *_label; } @end

@@ -118,7 +118,7 @@ typedef struct { int unused; } nvmtl_inflight;
 - (BOOL)nvmtlSurfaceOutDirtied:(BOOL)dirtied { if (events) [events addObject:[NSString stringWithFormat:@"o%d:%d",_tag,(int)dirtied]]; return YES; }
 @end
 @interface NVMTLCommandBuffer : NSObject { @public
-    BOOL _executionDone, _committed, _commitMarking; NSError *_cbError;
+    BOOL _executionDone, _committed, _commitMarking, _gpuUsesUncertain; NSError *_cbError;
     NSUInteger _nextSubmit, _nextPart; NSMutableArray *_parts; double _legacyKernelStart;
 }
 - (BOOL)nvmtlSubmitAhead;

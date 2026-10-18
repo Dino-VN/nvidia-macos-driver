@@ -1,10 +1,61 @@
-# OpenGL performance experiment on the 2.3.0 fork
+# OpenGL performance changes
 
 For future upstream merges, retain these changes and the later MoltenVK/NVMTL optimization as
 described in [Fork merge notes](FORK-MERGE-NOTES.md). Check for equivalent upstream implementations
 and overlapping changes before resolving conflicts.
 
-This build selects the OpenGL changes from [pengubow's `opengl-perf` branch](https://github.com/pengubow/nvidia-macos-driver/commits/1706681662e1f8b0278b985ed3e742bf0d64d418/), based on upstream 2.1.0, and applies them to this fork's tested 2.3.0 base. It does not merge upstream 2.3.1.
+## Newer `perf` changes on 2.3.5
+
+The follow-up selects these additions from [pengubow's `perf` branch](https://github.com/pengubow/nvidia-macos-driver/commits/153fe3c464aea4c76750720351134b4afb473d5b/). Its earlier OpenGL work is already present.
+
+| Source commit | Selected behavior |
+| --- | --- |
+| [8e88b38](https://github.com/pengubow/nvidia-macos-driver/commit/8e88b38dda889ceba33e7e6fe6f192386a09b4e9) | Coalesce cursor moves outside WindowServer's cursor call, update the cursor surface only when needed, and correct GL VSync timing from the window display's refresh period. |
+| [e13b339](https://github.com/pengubow/nvidia-macos-driver/commit/e13b33933606ad909bc59bf6ea59b3cd34aa4053) | Route eligible argument-buffer texture arrays through the heap while retaining texel-buffer bindings. |
+| [153fe3c](https://github.com/pengubow/nvidia-macos-driver/commit/153fe3c464aea4c76750720351134b4afb473d5b) | Track committed resource uses, preserve sampler tokens, handle embedded texture/texel-buffer fields, fix 3D/array mipmaps and improve reflection/function-constant handling. |
+
+The fork adds checks for the private GL method signature and ivar sizes, serializes installation and publishes
+its fallback before the replacement can run. Invalid, stale or overflowing timing data uses AppKit's original
+wait. A spanning window follows its centre display; display lookup is cached for one second. The correction
+has no fixed 75 Hz target and can be disabled with `NVMTL_NO_GL_VBLANK_FIX=1` in an application's environment.
+It changes GL's AppKit wait, not Metal drawable acquisition or MoltenVK's presentation ceiling.
+
+Committed resource tracking reuses the sealed resource snapshot instead of creating another list per command
+buffer. A fence whose completion is uncertain keeps its resources busy and retained. Array plans are bounded
+by the backend's actual slot counts, while heap-routed fields allocate no per-draw plans. Mesh/object functions
+keep their existing deferred constant specialization. Cursor completion state is synchronized with queued moves.
+
+The plugin, translator and framebuffer compile for x86_64 with a macOS 15.0 minimum; release plugin code
+uses `-O2`. Retained fixes and future merge rules are in [Fork merge notes](FORK-MERGE-NOTES.md).
+
+### Follow-up checks on RTX 2060 Super / Tahoe 26.7.1
+
+- Installed hashes match the staged builds, and loaded kext UUIDs match. Minecraft and WindowServer load
+  the new plugin and translator. Minecraft reports OpenGL 4.1 over NVMTL/NVK, with VSync off.
+- A 30-second gameplay capture recorded no additional allocation failures, surface timeouts, flip refusals
+  or dropped flips. Parking/reuse counters were active since boot (nine parks and three reuses); none changed
+  during this capture, so it does not isolate the parked-backing repair's execution or speedup.
+- The asynchronous framebuffer cursor path logged successful updates. A separate process confirmed the
+  private AppKit layout is recognized and the replacement `synchronize` method is installed. Minecraft's
+  VSync-off sample did not enter that wait, so this is not a VSync-on pacing measurement.
+- Five alternating runs per build of the 500-draw, 80-frame offscreen OpenGL workload measured the same
+  rounded median, **2.8 ms/frame**, for the parent and this candidate. Every image matched the reference and
+  GL returned no error. This workload does not establish a Minecraft FPS gain.
+- Smooth/flat OpenGL readbacks, all nine sampler-state cases, and normalized-sampler MoltenVK and native
+  Vulkan readbacks match their references; both Vulkan paths report zero wrong bytes. These short checks
+  establish correctness for those workloads, not unchanged performance for every Vulkan application.
+- Eight CPU regression harnesses pass, including committed resource accounting, alias/backing-buffer
+  lifetime and uncertain-fence quarantine. The submission fixture now declares the new bookkeeping field.
+- The user initially reported 90–120 FPS versus 150–200 previously. A later fullscreen screenshot showed
+  202 FPS with a 209 average. Profiling/test workloads can affect live FPS, and the initial WindowServer
+  sample also showed shader compilation. These observations do not identify the cause of the earlier dip.
+
+Mode changes, sleep/wake, multiple displays, VSync-on pacing and the broader metadata/texture edge cases
+still need hardware/application coverage. These results apply to this RTX 2060 Super, not every GPU.
+
+## Original 2.3.0 experiment
+
+The original experiment selected the OpenGL changes from [pengubow's `opengl-perf` branch](https://github.com/pengubow/nvidia-macos-driver/commits/1706681662e1f8b0278b985ed3e742bf0d64d418/), based on upstream 2.1.0, and applied them to this fork's 2.3.0 base. Those initial imports did not merge upstream 2.3.1.
 
 ## Imported changes
 

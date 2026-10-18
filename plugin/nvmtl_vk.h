@@ -86,6 +86,7 @@ typedef struct { void *cb; void *fb; void *pool; void *dset[2]; void *depth_view
                  uint32_t graphics_set_count, graphics_offset_count, graphics_offsets[2];
                } nvk_cmdbuf;
 int  nvmtl_vk_init(void);
+enum { NVMTL_STAGE_TEXTURE_SLOTS = 128, NVMTL_STAGE_SAMPLER_SLOTS = 32 };
 int nvmtl_vk_sample_positions_backend(void);
 int nvmtl_vk_sample_positions_default(uint32_t count, nvmtl_sample_pattern *out);
 int  nvmtl_vk_cmd_abandon(nvk_cmdbuf *c);

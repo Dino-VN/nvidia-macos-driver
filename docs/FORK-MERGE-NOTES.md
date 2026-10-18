@@ -64,6 +64,46 @@ See [TAHOE.MD](../TAHOE.MD) for their implementation history and build/staging p
 
 ## OpenGL/Minecraft and MoltenVK commits to retain
 
+### Newer `perf` follow-up on 2.3.5
+
+The follow-up adapts `8e88b38`, `e13b339` and `153fe3c` from pengubow's `perf` branch at
+`153fe3c464aea4c76750720351134b4afb473d5b` into one fork commit. Its build scripts are not imported;
+the older OpenGL changes and `0695972` declaration repair are already covered by this fork.
+
+Retain these behaviors when reviewing an equivalent upstream implementation:
+
+- Recognized `NSCGLSurface` waits use the window display's period when image-queue timing would impose a
+  slower rate. Keep method/ivar layout checks, valid timestamp/rate bounds, a fallback IMP published before
+  replacing the method, serialized installation and the `NVMTL_NO_GL_VBLANK_FIX` opt-out. The correction is
+  gated on the NVIDIA backend; it does not alter `CAMetalLayer` or Vulkan swapchain methods.
+- Cursor movement is coalesced onto a retained/drained framebuffer thread call. Position-only moves leave the
+  cursor image surface alone. Keep the shared display gate, cursor-state lock and stop handling. This is a
+  targeted change from upstream's framebuffer; BAR1 allocation, primary scanout and display modes stay upstream's.
+- GL completion queries count committed command buffers, including texture owners and buffer-backed textures.
+  Reuse the last sealed part's immutable resource snapshot instead of allocating another list. Unknown fence
+  completion keeps the snapshot alive and its resources busy, matching the existing in-flight quarantine.
+- Heap-route eligible argument-buffer texture arrays and keep texel buffers on texel-view bindings. Skip
+  per-draw plan allocation for heap-routed fields, bound other arrays by the shared texture/sampler slot limits,
+  and check field-offset arithmetic. Sampler-token fallback is bounded by persistent sampler slots.
+- Preserve mip layers for arrays/cubes and halve 3D depth at each mip. Retain AIR-derived reflection and required
+  function-constant errors while allowing the existing deferred mesh/object specialization.
+
+All prior Tahoe, parked-VRAM, Dock, stencil, Chromium, `-O2` and OpenGL/MoltenVK cache fixes remain required.
+Native NVK, NVRM and NVAccel are unchanged by this follow-up. Rebuild the plugin, translator and **NVRMFB**
+for a test package; the stock 2.3.5 framebuffer lacks the asynchronous cursor change. The current staging helper
+replaces only the framebuffer plist: the rebuilt framebuffer binary must also be included and checksums refreshed.
+
+The three components compile and booted on the RTX 2060 Super / Tahoe 26.7.1. Eight CPU regression
+harnesses pass; OpenGL, sampler-state, normalized MoltenVK and native Vulkan readbacks match their
+references. The 30-second gameplay capture added no allocation failures, surface timeouts or refused/dropped
+flips. The isolated OpenGL comparison measured the same rounded 2.8 ms/frame median as the parent; it
+does not establish a Minecraft FPS improvement. Keep the committed-use regression harness and the submission
+fixture's bookkeeping declaration. VSync-on pacing, sleep/wake, mode changes and other GPUs remain unqualified.
+Earlier results below apply to their original builds. See [OpenGL performance](OPENGL-PERFORMANCE.md)
+for the source commits and validation limits.
+
+### Earlier imports
+
 These ten commits follow `7f3c751`. Preserve their behavior when resolving upstream conflicts;
 the benchmark-only commit provides supporting tools.
 

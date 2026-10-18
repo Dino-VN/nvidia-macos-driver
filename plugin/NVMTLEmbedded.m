@@ -13,6 +13,10 @@
 
 _Static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "resource ID keys require 64-bit pointers");
 static NSMapTable *nvmtl_resid_map;
+// The first sampler object given each sampler heap slot (one slot per distinct sampler state), kept for the process. A
+// sampler token whose own object is gone resolves to it (nvmtl_resid_lookup): an app may encode a sampler into an
+// argument buffer and let the object go, and on Apple's driver the state stays in the device's sampler heap.
+static NSMutableDictionary<NSNumber *, id> *nvmtl_sampler_kept;
 static os_unfair_lock nvmtl_resid_lock = OS_UNFAIR_LOCK_INIT;
 static uint64_t nvmtl_resid_seq;
 
@@ -39,6 +43,7 @@ static id nvmtl_resid_lookup(uint64_t token)
     if (!token) return nil;
     os_unfair_lock_lock(&nvmtl_resid_lock);
     id resource = [nvmtl_resid_map objectForKey:(__bridge id)(void *)(uintptr_t)token];
+    if (!resource && (token & NVMTL_RESID_SAMPLER) && (uint32_t)token) resource = nvmtl_sampler_kept[@((uint32_t)token)];
     os_unfair_lock_unlock(&nvmtl_resid_lock);
     return resource;
 }
@@ -56,6 +61,8 @@ uint64_t nvmtl_resid_for_sampler(id s)
         valueOptions:NSPointerFunctionsWeakMemory capacity:0];
     const uint64_t token = NVMTL_RESID_SAMPLER | ((++nvmtl_resid_seq & 0x3fffffffull) << 32) | slot;
     [nvmtl_resid_map setObject:s forKey:(__bridge id)(void *)(uintptr_t)token];
+    if (!nvmtl_sampler_kept) nvmtl_sampler_kept = [NSMutableDictionary new];
+    if (!nvmtl_sampler_kept[@(slot)]) nvmtl_sampler_kept[@(slot)] = s;
     os_unfair_lock_unlock(&nvmtl_resid_lock);
     return token;
 }
@@ -182,21 +189,40 @@ static NSArray<NVMTLEmbeddedPlan *> *nvmtl_embedded_plan(NVMTLFunction *fn) {
         for (NSDictionary *entry in nvmtl_embedded_bindings(fn)) {
             NSDictionary *src = entry[@"embedded_source"];
             NSNumber *slotNum = entry[@"metal_index"];
-            if (![src isKindOfClass:[NSDictionary class]] || !slotNum) continue;
-            NVMTLEmbeddedPlan *plan = [NVMTLEmbeddedPlan new];
-            plan->wantSampler = [entry[@"kind"] isEqualToString:@"EmbeddedArgBufferSampler"];
-            plan->storage = [entry[@"access"] isKindOfClass:[NSString class]] && [entry[@"access"] isEqualToString:@"Storage"];
-            plan->slot = (uint32_t)slotNum.unsignedLongValue;
-            plan->ownerIndex = [src[@"buffer_index"] unsignedLongValue];
-            plan->fieldOffset = [src[@"field_offset"] unsignedLongValue];
-            id binding = entry[@"descriptor"][@"binding"];
-            plan->bindingText = binding ? [[binding description] copy] : @"(absent)";
-            { id ds = entry[@"descriptor"][@"set"];
-              plan->dset = [ds respondsToSelector:@selector(unsignedIntValue)] ? [ds unsignedIntValue] : 0;
-              plan->dbinding = [binding respondsToSelector:@selector(unsignedIntValue)] ? [binding unsignedIntValue] : UINT32_MAX; }
-            if (haveDecl && !plan->wantSampler && plan->dset < 2 && plan->dbinding < 512 &&
-                !((decl[plan->dset][plan->dbinding >> 6] >> (plan->dbinding & 63)) & 1)) { heapRouted++; continue; }
-            [plans addObject:plan];
+            if (![src isKindOfClass:[NSDictionary class]] || ![slotNum isKindOfClass:[NSNumber class]]) continue;
+            const BOOL sampler = [entry[@"kind"] isEqualToString:@"EmbeddedArgBufferSampler"];
+            NSDictionary *descriptor = entry[@"descriptor"];
+            if (![descriptor isKindOfClass:[NSDictionary class]]) continue;
+            id binding = descriptor[@"binding"], ds = descriptor[@"set"];
+            const uint64_t dset = [ds respondsToSelector:@selector(unsignedLongLongValue)] ? [ds unsignedLongLongValue] : UINT64_MAX;
+            const uint64_t dbinding = [binding respondsToSelector:@selector(unsignedLongLongValue)] ? [binding unsignedLongLongValue] : UINT64_MAX;
+            // A heap-routed array needs no per-draw plans, regardless of its length.
+            if (haveDecl && !sampler && dset < 2 && dbinding < 512 &&
+                !((decl[dset][dbinding >> 6] >> (dbinding & 63)) & 1)) { heapRouted++; continue; }
+            // an array of textures or samplers (array<texture2d<float>, 3>) is one binding of count elements: element k
+            // is the next slot's, its handle the next MTLResourceID in the argument buffer
+            id countNum = descriptor[@"count"];
+            const uint64_t declaredCount = [countNum respondsToSelector:@selector(unsignedLongLongValue)] ? [countNum unsignedLongLongValue] : 1;
+            const uint64_t count = declaredCount ?: 1, first = slotNum.unsignedLongLongValue;
+            const uint64_t limit = sampler ? NVMTL_STAGE_SAMPLER_SLOTS : NVMTL_STAGE_TEXTURE_SLOTS;
+            const uint64_t field = [src[@"field_offset"] unsignedLongLongValue];
+            if (first >= limit || count > limit - first || field > NSUIntegerMax - (count - 1) * sizeof(MTLResourceID)) {
+                nvlog("embedded arguments: %s has an out-of-range array (slot %llu, count %llu)",
+                      fn->_fname.UTF8String, (unsigned long long)first, (unsigned long long)count);
+                continue;
+            }
+            for (uint32_t k = 0; k < count; k++) {
+                NVMTLEmbeddedPlan *plan = [NVMTLEmbeddedPlan new];
+                plan->wantSampler = sampler;
+                plan->storage = [entry[@"access"] isKindOfClass:[NSString class]] && [entry[@"access"] isEqualToString:@"Storage"];
+                plan->slot = (uint32_t)first + k;
+                plan->ownerIndex = [src[@"buffer_index"] unsignedLongValue];
+                plan->fieldOffset = (NSUInteger)field + k * sizeof(MTLResourceID);
+                plan->bindingText = binding ? (count > 1 ? [NSString stringWithFormat:@"%@[%u]", binding, k] : [[binding description] copy]) : @"(absent)";
+                plan->dset = dset <= UINT32_MAX ? (uint32_t)dset : UINT32_MAX;
+                plan->dbinding = dbinding <= UINT32_MAX ? (uint32_t)dbinding : UINT32_MAX;
+                [plans addObject:plan];
+            }
         }
         { static _Atomic unsigned said; if (heapRouted && atomic_fetch_add(&said, 1) < 8)
             nvlog("tier2: %s reads %u argument-buffer texture(s) through the bindless heap; %lu field(s) still bound per draw",
@@ -302,6 +328,11 @@ void nvmtl_bind_embedded(NVMTLCommandBuffer *cb, uint32_t set, NVMTLFunction *fn
         } else {
             NVMTLTexture *t = resource;
             nvmtl_retain_resource(cb, t);
+            if (t->_tbView) {   // a texture buffer: its texel view, as when it is bound directly
+                if (nvmtl_vk_bind_texel_view(&cb->_c, set, slot, t->_tbView, t->_tbStorage))
+                    nvlog("embedded texture buffer slot %u: bind FAILED", slot);
+                continue;
+            }
             nvmtl_surface_in_for_cb(cb, t);
             { NVMTLTexture *sr = t->_parent ? t->_parent : t; if (sr->_surf) embSurf = YES; }
             if (nvmtl_vk_bind_texture_view(&cb->_c, set, slot, [t nvsampleview]))

@@ -6,11 +6,18 @@ changes, checking for conflicts and equivalent upstream implementations first.
 
 This guide targets upstream **2.3.5 at `8b120f3`**, with the retained Tahoe icon and System Settings glyph changes, parked-VRAM restoration, strict stencil detection, Dock snapshot completion wait, and OpenGL/MoltenVK optimizations. Terminal uses upstream's general framebuffer-fetch repair. The historical references below identify the origins of earlier repairs.
 
-Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB uses the unmodified upstream 2.3.5 framebuffer source, including its display-aware allocation budget, overlap guards, mode selection, hotplug, and event-driven flip waits. NVAccel also uses upstream's framebuffer-resource creation, scanout lifetime, GPU mapping, and event-driven submission waits. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
+Chromium, Edge, and Electron keep their GPU path enabled by default in this fork. `NVMTL_ANGLE_METAL=0` disables that workaround for an affected application. NVRMFB retains upstream 2.3.5's display-aware allocation budget, overlap guards, mode selection, hotplug and event-driven flip waits. The newer OpenGL follow-up adds coalesced asynchronous cursor moves; it requires a framebuffer rebuild. NVAccel also uses upstream's framebuffer-resource creation, scanout lifetime, GPU mapping, and event-driven submission waits. The fork's experimental small-BAR policies, scanout allocation fallbacks, and borrowed-scanout extension are retired.
 
 The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
 
 ## Testing the upstream 2.3.5 integration
+
+The subsequent [`perf` follow-up](docs/OPENGL-PERFORMANCE.md) changes the plugin, translator and NVRMFB.
+All three must be rebuilt for that candidate. The workflow below predates the framebuffer binary change:
+`stage_package.py` replaces its plist only, so also include the complete rebuilt NVRMFB bundle and regenerate
+package checksums. Keep the package's version metadata. The earlier staged package does not acquire these
+source changes automatically. The follow-up booted on the RTX 2060 Super; the limited runtime results and
+remaining hardware coverage are recorded in [OpenGL performance](docs/OPENGL-PERFORMANCE.md).
 
 The new merge adds refresh-derived flip pacing, retries for refused hardware-vblank registration, kernel-gated
 capture publication, Turing plugin-write tracking and startup settling, and longer waits for a busy GPU fence.

@@ -2,6 +2,7 @@
 
 ## Fork additions to 2.3.5
 
+- Adapt the newer OpenGL `perf` changes: refresh-aware GL VSync waits, coalesced cursor moves, committed-resource completion queries, argument-buffer texture arrays and texel views, sampler-token lifetime, 3D/array mipmaps, and reflection/function-constant repairs. Add layout/timestamp/range guards, reuse sealed resource snapshots, retain busy resources after uncertain GPU completion, and preserve deferred mesh/object specialization. Plugin, translator and framebuffer require rebuilding. Limited RTX 2060 Super checks pass; the isolated OpenGL comparison shows no measured gain over the parent. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md).
 - Merge upstream 2.3.5, including refresh-derived flip pacing, hardware-vblank retries, capability-gated capture ordering, Turing write tracking and startup repairs, and longer waits for busy GPU fences. Retain the fork changes below; the combined build needs a new hardware test.
 
 - Import the selected OpenGL/Minecraft shader, descriptor-reuse, provoking-vertex, texture-buffer, instancing and sampler fixes from pengubow's OpenGL branch. Harden constant resource selection and resource-cache lifetime, reset render state per encoder, and enable depth bias dynamically for nonzero bias. Include diagnostic benchmarks and regression checks; see [OpenGL performance](docs/OPENGL-PERFORMANCE.md) for the RTX 2060 Super checks and comparison limits.
