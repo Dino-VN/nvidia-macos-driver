@@ -53,6 +53,11 @@ the same limit. This is not a hardware-reproduced failure. A working boot alone 
 - Parked-VRAM backing restoration before ordinary surface dirty updates, including the repair
   introduced by `eb6544b`.
 - WindowServer's GPU completion wait for fresh Dock window snapshots.
+- Dock badge mip initialization after full level-zero uploads. Keep the shared eligibility checks for CPU and
+  buffer-copy uploads: single-layer, single-sample 8-bit 2D textures, at most 2048 pixels on either axis, with
+  no explicitly authored higher mip levels. Preserve atomic root-texture tracking for uploads, copies, render
+  attachments/resolves, storage bindings and application mip generation. Do not broaden automatic generation
+  to integer/depth/compressed formats, array/cube/3D textures or texture views.
 - Strict detection of the dedicated stencil-export push-constant block.
 - Chromium, Edge and Electron acceleration enabled by default, with the existing application opt-out.
 - Submission upload-discovery caching, copy-backing deduplication and release plugin `-O2`.

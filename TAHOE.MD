@@ -10,6 +10,13 @@ Chromium, Edge, and Electron keep their GPU path enabled by default in this fork
 
 The plugin caches upload-backing discovery for each sealed submission part and uses set membership to deduplicate copies. Host bytes still upload immediately before submission, and GPU writes still publish before completion events. Release builds use `-O2`. These CPU overhead changes introduce no frame-rate cap; smoother desktop animation and higher-refresh performance still need hardware validation.
 
+Dock badge digits can disappear when a texture has a mip chain but only level zero was uploaded. The plugin now
+fills untouched levels after a full upload into a small 8-bit 2D texture: a CPU box filter for `replaceRegion`, or
+GPU mip generation after a buffer copy. Both paths use the same size/format checks. Explicit higher-level writes,
+storage bindings and application mip generation turn this fallback off on the root texture, including writes through
+views and render resolves. Only the plugin needs rebuilding. Badge appearance and application performance still
+need checking after installation; this change does not alter the Dock snapshot completion wait.
+
 ## Testing the upstream 2.3.5 integration
 
 The subsequent [`perf` follow-up](docs/OPENGL-PERFORMANCE.md) changes the plugin, translator and NVRMFB.

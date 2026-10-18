@@ -264,7 +264,15 @@ void nvmtl_texture_desc_swizzle(NVMTLTexture *t, MTLTextureDescriptor *d);
 @interface NVMTLCommandBuffer () { @public NSMutableSet *_stTwins; } @end
 // The last sealed part's immutable resource snapshot also owns the committed-use counts; no second list is needed.
 @interface NVMTLCommandBuffer () { @public NSSet *_gpuUses; BOOL _gpuUsesUncertain; } @end
-@interface NVMTLTexture () { @public nvk_image _stTwin; BOOL _stTwinTried; } @end
+@interface NVMTLTexture () { @public nvk_image _stTwin; BOOL _stTwinTried; BOOL _mipsWritten; } @end
+static inline void nvmtl_mips_written(NVMTLTexture *t) {
+    if (!t) return;
+    NVMTLTexture *root = t->_parent ?: t;
+    if ([root nvi]->mips > 1) __atomic_store_n(&root->_mipsWritten, YES, __ATOMIC_RELEASE);
+}
+static inline void nvmtl_mip_written(NVMTLTexture *t, NSUInteger level) {
+    if (t && (level || t->_baseLevel)) nvmtl_mips_written(t);
+}
 @interface NVMTLDepthStencilState () { @public NSString *_label; } @end
 @interface NVMTLSamplerState () { @public NSString *_label; } @end
 @interface NVMTLComputePipelineState () { @public NSString *_label; } @end
