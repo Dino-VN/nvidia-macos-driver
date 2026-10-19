@@ -1,8 +1,14 @@
 # Changelog
 
-## Fork additions to 2.3.5
+## Fork integration with upstream 2.3.7
 
-- Restore scaled Dock badge digits by filling untouched mip levels after full level-zero uploads of small 8-bit 2D textures. Apply the same format/size checks to CPU and buffer-copy uploads; explicit higher-level writes, storage bindings and application mip generation disable the fallback. Plugin rebuild only; hardware validation is pending.
+- Merge the `sec-2.3.7` release branch at `e2b0e54`, including the Tahoe icon/Liquid Glass regression repair, A8 render targets, defined fetch-disabled colour inputs, submit-ahead scheduling, single-field shader structs, installer/firmware repairs and bounds/lifetime fixes.
+- Use upstream's equivalent parked-VRAM and earlier OpenGL/MoltenVK optimizations once. Retain the fork's Dock snapshot completion wait, strict stencil detection, broader Chromium GPU default, release `-O2`, submission-copy caching and newer OpenGL resource/array/reflection repairs.
+- Keep the serialized cursor worker with exported cancellation/drain accounting, guarded OpenGL timing and the stronger Dock badge mip checks/tracking. Preserve upstream's display allocation and scanout behavior. See [Fork merge notes](docs/FORK-MERGE-NOTES.md) for decisions and validation limits.
+
+## Earlier fork additions on 2.3.5
+
+- Restore scaled Dock badge digits by filling untouched mip levels after full level-zero uploads of small 8-bit 2D textures. Apply the same format/size checks to CPU and buffer-copy uploads; explicit higher-level writes, storage bindings and application mip generation disable the fallback. Plugin rebuild only; the user reported working badge digits on RTX 2060 Super / Tahoe 26.7.1 before this merge.
 - Fix NVRMFB kernel-collection linking: replace the unexported cursor cancel/wait call with exported cancellation and explicit outstanding-work accounting. Wait through dispatched and running cursor callbacks before shutdown cleanup.
 - Harden the OpenGL follow-up: refuse address-table pointers that escape into helpers/control flow before changing their types, check non-heap descriptor arrays against the actual one-descriptor layout, and recognize texel arrays of one. Drain the serialized cursor worker before framebuffer shutdown and recheck stopping after taking the display gate. Keep sampled-image heap arrays and the existing performance paths. CPU checks cover these cases; shutdown and gameplay still need testing with this build.
 - Adapt the newer OpenGL `perf` changes: refresh-aware GL VSync waits, coalesced cursor moves, committed-resource completion queries, argument-buffer texture arrays and texel views, sampler-token lifetime, 3D/array mipmaps, and reflection/function-constant repairs. Add layout/timestamp/range guards, reuse sealed resource snapshots, retain busy resources after uncertain GPU completion, and preserve deferred mesh/object specialization. Plugin, translator and framebuffer require rebuilding. Limited RTX 2060 Super checks pass; the isolated OpenGL comparison shows no measured gain over the parent. See [OpenGL performance](docs/OPENGL-PERFORMANCE.md).
@@ -19,7 +25,31 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.3.5 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.3.7 build; comparative desktop performance remains unmeasured.
+
+## 2.3.6
+
+Desktop and windows
+- Dragging and scrolling windows: a surface whose video memory had been set aside is put back before its update is
+  recorded, so the driver no longer copies the whole window back to system memory on every frame (PR #245, thanks
+  HighDelay; #253 measured the same readback on an RTX 5070 Ti at 4K)
+- Moving the mouse no longer stalls the compositor: the cursor position is applied on its own thread instead of under
+  the system's cursor lock, and OpenGL apps wait for the display's real refresh rate instead of 60 Hz on faster
+  panels (thanks pengubow)
+- Core Animation passes that read the colour attachment with framebuffer fetch off now read a defined image instead of an
+  unbound descriptor, which could put garbage on screen inside WindowServer (PR #270, thanks watchthelight)
+- Text and badge masks drawn into A8 targets land in the right lane, and Dock badges show their numbers again (PRs #271
+  and #274, thanks watchthelight)
+
+Apps and games
+- OpenGL: Minecraft's vertex shaders translate, the draw path no longer allocates per draw, texel-buffer descriptors and
+  unchanged bindings are reused, depth bias and per-instance step rates take effect, samplers work inside argument buffers
+  (thanks HighDelay)
+- Chrome and Chromium use Metal through ANGLE by default, so their GPU process starts; Electron apps stay opt-in with
+  NVMTL_ANGLE_METAL=1, and NVMTL_ANGLE_METAL=0 turns it off everywhere (PR #263, thanks Hi-Jiajun)
+- Shaders with `[[visible]]` function references that function constants turn off are no longer refused, which lost
+  pipelines in the login window, Spotlight, icon services and the Dock
+- Metal reports the card's whole video memory as its working set, as a Mac does (8 GB cards said 5.9 GB, 12 GB cards 8.9 GB)
 
 ## 2.3.5
 

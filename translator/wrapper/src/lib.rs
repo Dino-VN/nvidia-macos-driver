@@ -437,7 +437,22 @@ pub extern "C" fn nvmtl_translate_fc(
         Ok(v) => v,
         Err(e) => { set_err(&format!("AIR specialization: {e}")); return -1; }
     };
-    match translate_one(specialized.as_ref(), st) {
+    // A library may declare `[[visible]]` function references that only a function-constant-disabled
+    // path calls. The pre-emit refusal is a TEXT search for `.MTL_VISIBLE_FN_REF`, so it fired on such a
+    // module even once the constants had folded the caller away, and every system process that ships one
+    // lost the pipeline (loginwindow, Spotlight, icon services, Dock, measured on GA102 and GB206 10-17).
+    // Closing the graph against an EMPTY linkage renames each unsupplied stub off `.MTL_VISIBLE_FN_REF`,
+    // so a dead reference folds away here and a LIVE one is still refused at emission, by name. That is
+    // the contract batch 51 already uses for a partly supplied pipeline; a pipeline that really links
+    // functions arrives through nvmtl_translate_linked and does not reach this path.
+    let specialized = match metal2vulkan::linked_functions::specialize_visible_function_references(
+        specialized.as_ref(),
+        &metal2vulkan::linked_functions::LinkedFunctionLinkage::default(),
+    ) {
+        Ok(v) => v,
+        Err(e) => { set_err(&format!("visible function reference: {e}")); return -1; }
+    };
+    match translate_one(specialized.as_str(), st) {
         Ok(spv) => {
             let mut b = spv.into_boxed_slice();
             unsafe { *out = b.as_mut_ptr(); *out_len = b.len(); }
@@ -658,13 +673,15 @@ pub unsafe extern "C" fn nvmtl_translate_samplers(
         let reflection=metal2vulkan::reflect_sanitized(ll,st,metal2vulkan::passes::TransformOptions::default())?;
         let states:std::collections::BTreeMap<u32,metal2vulkan::reflect::RuntimeSamplerState>=serde_json::from_value(j["samplers"].clone()).map_err(|e|e.to_string())?;
         let mut opts=formatless_options(ll,st,CAPS.load(Ordering::Relaxed)).unwrap_or_default();
+        let a8=j["a8_targets"].as_u64().unwrap_or(0) as u32;   // Metal A8Unorm colour attachments, bit per location
+        opts=opts.with_a8_render_targets(a8);
         let mut used=0;
         for (idx,state) in states {
             if reflection.bindings.iter().any(|b| b.kind==metal2vulkan::reflect::ResourceKind::Sampler && b.metal_index==idx) {
                 opts=opts.with_runtime_sampler(idx,state)?;used+=1;
             }
         }
-        if used==0{return translate_one(ll,st)}
+        if used==0 && a8==0{return translate_one(ll,st)}
         metal2vulkan::translate_native_no_retry_constructed_with_options(ll,st,apply_tg(opts))
     })();
     match result {

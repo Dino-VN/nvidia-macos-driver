@@ -16,11 +16,55 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.3.5 at `8b120f3`**, integrated on 2026-10-18. The previous upstream
-merge was `7f3c751`, based on 2.3.0 at `5f812c4`. The commit list below records the OpenGL/MoltenVK
-additions between those merges; earlier retained fixes remain part of this policy.
+The current upstream base is **2.3.7 at `e2b0e54`** from `upstream/sec-2.3.7`, also the commit
+pointed to by the annotated `v2.3.7` tag. It was integrated on 2026-10-19. Upstream `main` still
+pointed to 2.3.6 at `6372823` when fetched. The preceding fork base was 2.3.5 at `8b120f3`.
 
-## Upstream 2.3.5 integration
+## Upstream 2.3.7 integration
+
+Ten files had textual conflicts. Resolve the overlaps by behavior; do not reapply the earlier
+OpenGL imports or parked-VRAM repair on top of upstream's equivalent code.
+
+| Upstream inclusion | Fork decision |
+| --- | --- |
+| Parked-backing restoration and the earlier OpenGL/Minecraft and binding/sampler caches, included in 2.3.6. | Use the shared implementation once. NVAccel source now matches 2.3.7, including its plane-index bounds. |
+| Fetch-disabled colour inputs and A8 render-target alpha/blend handling. | Keep both new upstream repairs alongside the existing ordered-triangle fetch path. |
+| Dock badge mip filling. | Keep the fork's shared CPU/GPU eligibility checks, atomic root tracking, resolve/storage/view tracking, and checked row arithmetic. Upstream's simpler mip flag and broader GPU-copy fallback do not cover those guards. |
+| Asynchronous cursor moves and refresh-aware OpenGL waits. | Keep the fork's serialized kernel-priority ONCE worker and exported cancellation/drain accounting; retain private-layout, timestamp, NVIDIA-backend and installation guards. |
+| Default ANGLE Metal for Chrome/Chromium. | Keep the fork's existing Edge/Electron default too, with the same opt-out; retain upstream's activation log. Its Chrome-only default-policy check is not the fork's policy. |
+| Submit-ahead from commit while the worker waits (PR 289), and single-field struct allocation repair (PR 291). | Take upstream's changes; keep committed-resource snapshots, uncertain-fence quarantine and the unconditional WindowServer completion wait for Dock snapshots. |
+| Private-copy installer and retired user NVKMS selectors (PRs 266 and 267). | Take upstream, including the follow-up that selects NVAccel from the checked copy. |
+
+The branch also carries the 2.3.6 Tahoe icon/Liquid Glass regression repair: ask the translator for
+visible-function references before deferring to pipeline linking, instead of depending on one error
+message. Keep the fork's required function-constant checks, linked pixel-sampler variants and mesh/object
+deferral. Preserve upstream's firmware-backup fallback and the card-mapping correction that accepts all
+of the GPU's valid apertures, including display register windows; the earlier framebuffer-only restriction
+caused WindowServer restarts. Keep the remaining upstream client/map-table, copy-region and shader-reader
+bounds changes. NVRM source is identical to the release branch.
+
+Still local: the Dock snapshot completion wait, strict stencil marker detection, broad Chromium default,
+submission-copy caching, release `-O2`, committed GL resource accounting, argument-buffer array/texel routing,
+physical-pointer preflight/refusal, reflection/mipmap/constant repairs, serialized cursor shutdown and guarded
+GL timing. The retired experimental framebuffer allocation/scanout policies remain removed.
+
+The release plugin (`-O2`), translator, framebuffer and Tahoe accelerator compile for x86_64 with
+macOS 15.0 as their minimum. The rebuilt framebuffer imports no new kernel symbols compared with the
+preceding exported-cancellation repair. This is not a kernel-collection link or boot test.
+
+Compilation and validation limits are recorded with the current build artifacts under
+`out/upstream-2.3.7-merge-20261019-112636/`. No automated tests or runtime/GPU checks were run for this
+integration. Earlier successful boots, badge checks and performance measurements do not validate the combined
+2.3.7 build or establish the gain from submit-ahead on the RTX 2060 Super. Recheck Dock previews, icons,
+Terminal redraw, OpenGL/MoltenVK, window dragging and cursor/shutdown behavior after installation.
+
+Use the official **2.3.7 package** for its matching main RM, runtime, installer and firmware layout, plus the
+rebuilt fork plugin, translator, framebuffer and Tahoe accelerator. The local NVIDIA headers lack the Darwin
+RM/KMS build metadata and archives needed to link a complete main RM, so reuse the official 2.3.7 NVRM binary;
+its source is unchanged by this merge resolution. `pkgroot` and the installed driver are not updated by a source
+merge or these compilation checks. Preserve package version metadata and refresh both checksum manifests when staging.
+
+## Historical upstream 2.3.5 integration
 
 - The only textual conflict was `CHANGELOG.md`; both the fork additions and upstream release history are kept.
   The release plugin build also exposed a declaration of `nvtrace` colliding with the retained OpenGL

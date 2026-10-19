@@ -273,6 +273,63 @@ static void nvmtl_nvenc_register(void)
               st ? "NOT registered" : "REGISTERED", me, (int)st, path);
     });
 }
+// An encoder built outside this driver can register itself beside ours and let VTRating decide which
+// one an app gets, so both can be installed and compared. The one this was written for reports H.264
+// at about 5 ms where the library we ship takes about 12, and it runs on Turing, Ampere and Ada,
+// which nvmtl_nvenc_register above turns away for not being Blackwell.
+// Off unless NVMTL_NVENCVT names this process (or is 1), from nvrm610.conf or the environment.
+// ⛔ This loads code into every app that encodes, so the library and the directory holding it must be
+// ours and nobody else's. The firmware taught this: it used to sit in /Users/Shared, which is mode
+// 1777, and the only permission step was a chmod that adds read bits and never takes write away, so
+// a directory left there by any user was adopted as-is. A path anyone can write is not a path you can
+// trust. lstat, not stat: a symlink must not be followed into something else.
+static bool nvmtl_loadable_root_only(const char *path)
+{
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH))) return false;
+    char dir[1024]; strlcpy(dir, path, sizeof dir);
+    char *d = dirname(dir);
+    struct stat ds;                                  // a writable directory lets the file be swapped
+    if (!d || lstat(d, &ds) != 0 || !S_ISDIR(ds.st_mode)) return false;
+    return ds.st_uid == 0 && !(ds.st_mode & (S_IWGRP | S_IWOTH));
+}
+static void nvmtl_nvencvt_register(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *me = getprogname();
+        const char *sel = getenv("NVMTL_NVENCVT");
+        if (!sel || !*sel || !strcmp(sel, "0")) return;
+        if (strcmp(sel, "1")) {                      // a process list, so one app can be moved over at a time
+            char list[512]; strlcpy(list, sel, sizeof list);
+            bool named = false;
+            for (char *t = strtok(list, ", :"); t && !named; t = strtok(NULL, ", :")) named = !strcmp(t, me);
+            if (!named) return;
+        }
+        if (!strcmp(me, "WindowServer")) return;     // the codec registrars all stay out of it
+        Dl_info di;
+        if (!dladdr((const void *)nvmtl_nvencvt_register, &di) || !di.dli_fname) { nvlog("nvencvt: dladdr failed - not registering"); return; }
+        char dir[1024], path[1200];
+        strlcpy(dir, di.dli_fname, sizeof dir);
+        snprintf(path, sizeof path, "%s/libnvencvt.dylib", dirname(dir));
+        if (!nvmtl_loadable_root_only(path)) {
+            nvlog("nvencvt: %s is absent, or is not a root-owned file inside a root-owned directory - REFUSED", path);
+            return;
+        }
+        void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (!h) { nvlog("nvencvt: dlopen %s FAILED: %s", path, dlerror()); return; }
+        typedef int32_t (*RegFn)(int);
+        RegFn r = (RegFn)dlsym(h, "NVEncVT_Register");
+        if (!r) { nvlog("nvencvt: %s has no NVEncVT_Register", path); return; }
+        int rating = 1100;                           // above our own 1000, so the opt-in one wins where it is asked for
+        const char *rv = getenv("NVMTL_NVENCVT_RATING");
+        if (rv) { int v = atoi(rv); if (v > 0) rating = v; }
+        int32_t st = r(rating);
+        nvlog("nvencvt: external encoder %s in %s (NVEncVT_Register -> %d, rating %d, %s)",
+              st ? "NOT registered" : "REGISTERED", me, (int)st, rating, path);
+    });
+}
 static void nvmtl_nvdec_hevc_register(void)
 {
     static dispatch_once_t once;
@@ -374,9 +431,14 @@ __attribute__((constructor)) static void nvmtl_angle_allow_nvidia(void)
 {
     const char *opt = getenv("NVMTL_ANGLE_METAL");
     if (opt && !strcmp(opt, "0")) return;
+    const char *me = getprogname();
     const char *key = "ANGLE_FEATURE_OVERRIDES_DISABLED", *rule = "disableMetalOnNvidia";
     const char *cur = getenv(key);
     if (cur && strstr(cur, rule)) return;
+    // One line per process, outside nvlog's release failure filter: a field report must show whether the rule was
+    // active in this process.
+    syslog(LOG_NOTICE, "NullMoth: angle: Metal allowed in %s (%s; NVMTL_ANGLE_METAL=0 disables)", me ? me : "?",
+           (opt && !strcmp(opt, "1")) ? "NVMTL_ANGLE_METAL=1" : "fork default");
     char v[1024];
     if (cur && *cur) snprintf(v, sizeof v, "%s:%s", cur, rule); else snprintf(v, sizeof v, "%s", rule);
     setenv(key, v, 1);
@@ -477,6 +539,7 @@ static void nvmtl_install_hw_resource_pools(id dev)
         nvmtl_nvenc_register();
         nvmtl_nvdec_hevc_register();
         nvmtl_nvenc_hevc_register();
+        nvmtl_nvencvt_register();   // last, so an opt-in external encoder registers above ours
     }
     SEL il = sel_registerName("initLimits");
     if ([self respondsToSelector:il]) {
@@ -1286,11 +1349,24 @@ static int nvmtl_blend_op(MTLBlendOperation op, uint32_t *v) {
             nvlog("blend: operation %lu is not a value this driver knows", (unsigned long)op); return -1;
     }
 }
-static int nvmtl_blend_from(MTLRenderPipelineColorAttachmentDescriptor *ca, int noWrite, nvk_blend_state *b) {
+// An A8Unorm attachment is an R8 image on Vulkan whose red lane holds Metal's alpha (the shader variant broadcasts alpha
+// to every lane). A factor that reads the destination's alpha must read its colour instead: R8 has no alpha to read.
+static uint32_t nvmtl_a8_factor(uint32_t f) {
+    switch (f) {
+    case VK_BLEND_FACTOR_DST_ALPHA: return VK_BLEND_FACTOR_DST_COLOR;
+    case VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case VK_BLEND_FACTOR_SRC1_ALPHA: return VK_BLEND_FACTOR_SRC1_COLOR;
+    case VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+    default: return f;
+    }
+}
+static int nvmtl_blend_from(MTLRenderPipelineColorAttachmentDescriptor *ca, int noWrite, int a8, nvk_blend_state *b) {
     *b = (nvk_blend_state){ .enabled = ca.blendingEnabled,
         .src_rgb = VK_BLEND_FACTOR_ONE, .dst_rgb = VK_BLEND_FACTOR_ZERO, .op_rgb = VK_BLEND_OP_ADD,
         .src_alpha = VK_BLEND_FACTOR_ONE, .dst_alpha = VK_BLEND_FACTOR_ZERO, .op_alpha = VK_BLEND_OP_ADD };
-    if (!noWrite) {
+    if (!noWrite && a8) {
+        if (ca.writeMask & MTLColorWriteMaskAlpha) b->write_mask |= VK_COLOR_COMPONENT_R_BIT;
+    } else if (!noWrite) {
         if (ca.writeMask & MTLColorWriteMaskRed) b->write_mask |= VK_COLOR_COMPONENT_R_BIT;
         if (ca.writeMask & MTLColorWriteMaskGreen) b->write_mask |= VK_COLOR_COMPONENT_G_BIT;
         if (ca.writeMask & MTLColorWriteMaskBlue) b->write_mask |= VK_COLOR_COMPONENT_B_BIT;
@@ -1318,6 +1394,7 @@ static NVMTLFunction *nvmtl_empty_fragment(void) {
     return fn;
 }
 MTLRenderPipelineDescriptor *nvmtl_gl_rewrite_descriptor(MTLRenderPipelineDescriptor *d, NSError **err);
+NSData *nvmtl_translate_samplers(NVMTLFunction *fn, NSDictionary *states, uint32_t a8, NSString **err);
 void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
 - (id<MTLRenderPipelineState>)newRenderPipelineStateWithDescriptor:(MTLRenderPipelineDescriptor *)d error:(NSError **)err {
     if (err) *err = nil;
@@ -1348,15 +1425,21 @@ void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
     if ([samplePayload isKindOfClass:[NSDictionary class]] && !nvmtl_vk_sample_positions_backend())
         return nvmtl_fail(err, @"pipeline: fragment sample positions require the checked NVIDIA runtime payload contract");
     NVMTLRenderPipelineState *ps = [NVMTLRenderPipelineState new];
-    nvk_rt rt; memset(&rt, 0, sizeof rt);
+    nvk_rt rt; memset(&rt, 0, sizeof rt); uint32_t a8mask = 0;
     for (uint32_t i = 0; i < NVMTL_NCOL; i++) {
         MTLRenderPipelineColorAttachmentDescriptor *ca = d.colorAttachments[i];
         if (ca.pixelFormat == MTLPixelFormatInvalid) continue;
         uint32_t svk = 0, sbpp = 0; int sa8 = 0;
         if (nvmtl_pixfmt(ca.pixelFormat, &svk, &sbpp, &sa8))
             return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: colour attachment %u pixel format %lu not carried by this driver", i, (unsigned long)ca.pixelFormat]);
-        if (nvmtl_blend_from(ca, noFrag, &rt.blend[i]))
+        if (nvmtl_blend_from(ca, noFrag, sa8, &rt.blend[i]))
             return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: colour attachment %u has a blend factor or operation this driver cannot translate (the reason is the preceding \"blend:\" log line)", i]);
+        if (sa8) {
+            a8mask |= 1u << i;
+            if (rt.blend[i].enabled) {   // the red lane is Metal's alpha: blend it with the alpha factors and operation
+                rt.blend[i].src_rgb = nvmtl_a8_factor(rt.blend[i].src_alpha); rt.blend[i].dst_rgb = nvmtl_a8_factor(rt.blend[i].dst_alpha);
+                rt.blend[i].op_rgb = rt.blend[i].op_alpha; }
+        }
         rt.cfmt[i] = svk; rt.ncol = i + 1;
     }
     for (uint32_t i = 0; i < rt.ncol; i++) {
@@ -1407,8 +1490,20 @@ void nvmtl_gl_tag_reflection(id refl, MTLRenderPipelineDescriptor *d);
             @"pipeline: REFUSED — %@ is a visible function, not an entry point (vertex %lu B, fragment %lu B)",
             !vf->_spirv.length ? vf->_fname : ff->_fname,
             (unsigned long)vf->_spirv.length, (unsigned long)ff->_spirv.length]);
+    NVMTLFunction *ffx = ff;   // the fragment stage as built: an A8-target variant when a colour attachment is A8Unorm
+    ps->_a8mask = a8mask;
+    if (a8mask && !noFrag) {
+        NSString *why = nil; NSData *fa = nvmtl_translate_samplers(ff, nil, a8mask, &why);
+        if (!fa) return nvmtl_fail(err, [NSString stringWithFormat:@"pipeline: A8 target variant of %@ REFUSED: %@", ff->_fname, why ?: @"?"]);
+        if (fa != ff->_spirv) {
+            ffx = [NVMTLFunction new]; ffx->_spirv = fa; ffx->_fname = ff->_fname; ffx->_stage = ff->_stage; ffx->_fc = ff->_fc;
+            ffx->_refl = ff->_refl; ffx->_airNames = ff->_airNames; ffx->_arguments = ff->_arguments; ffx->_embedded = ff->_embedded;
+            static _Atomic unsigned na8; if (atomic_fetch_add(&na8, 1) < 8)
+                nvlog("pipeline: %s writes alpha into A8 target(s) mask %#x (%lu B variant)", ff->_fname.UTF8String, a8mask, (unsigned long)fa.length);
+        }
+    }
     uint32_t rsc = (uint32_t)([d respondsToSelector:@selector(rasterSampleCount)] ? d.rasterSampleCount : d.sampleCount); if (!rsc) rsc = 1;
-    NSData *flk = nvmtl_varying_link(vf, ff); const void *fsb = flk ? flk.bytes : ff->_spirv.bytes; size_t fsl = flk ? flk.length : ff->_spirv.length;
+    NSData *flk = nvmtl_varying_link(vf, ffx); const void *fsb = flk ? flk.bytes : ffx->_spirv.bytes; size_t fsl = flk ? flk.length : ffx->_spirv.length;
     uint32_t tpt = 0, tcps = 0; int prc;
     if (nvmtl_spirv_tess_info(vf->_spirv.bytes, vf->_spirv.length, &tpt, &tcps)) {
         if (d.tessellationFactorFormat != MTLTessellationFactorFormatHalf)

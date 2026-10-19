@@ -4,6 +4,15 @@ For future upstream merges, retain these changes and the later MoltenVK/NVMTL op
 described in [Fork merge notes](FORK-MERGE-NOTES.md). Check for equivalent upstream implementations
 and overlapping changes before resolving conflicts.
 
+## Upstream 2.3.7 integration
+
+Upstream now includes the initial OpenGL/Minecraft imports, their shader/cache hardening and the unchanged-binding
+and sampler-key caches. The merge preserves the newer committed-use accounting, argument-buffer arrays, pointer
+preflight, reflection/mipmap repairs, cursor serialization/drain and GL timing guards described below. Submit-ahead
+from commit is also included, while WindowServer's Dock snapshot completion wait remains. No new FPS comparison or
+runtime validation has been performed for this combination. Use the current [merge notes](FORK-MERGE-NOTES.md)
+and 2.3.7 package base; the measurements below describe earlier source revisions.
+
 ## Newer `perf` changes on 2.3.5
 
 The follow-up selects these additions from [pengubow's `perf` branch](https://github.com/pengubow/nvidia-macos-driver/commits/153fe3c464aea4c76750720351134b4afb473d5b/). Its earlier OpenGL work is already present.
