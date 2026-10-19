@@ -7,9 +7,8 @@ import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[1]
 source = (root / 'plugin/NVMTLDevice.m').read_text()
-# The constructor calls the Chrome-family helper defined just above it, so both are lifted together. The test binary is
-# named "policy", which is not a Chrome process, so the six cases below are the default-off path.
-start = source.index('static bool nvmtl_angle_chrome_family(void)')
+# Lift the production constructor. The fixture process also receives the fork's all-app default.
+start = source.index('__attribute__((constructor)) static void nvmtl_angle_allow_nvidia(void)')
 end = source.index('static bool nvmtl_process_is_allowed(void)', start)
 constructor = source[start:end]
 with tempfile.TemporaryDirectory() as directory:

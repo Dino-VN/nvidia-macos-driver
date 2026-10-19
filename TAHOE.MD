@@ -10,10 +10,14 @@ submit-ahead scheduling and single-field shader-struct fix. The earlier parked-V
 optimizations are now covered upstream and are included once. See the [merge notes](docs/FORK-MERGE-NOTES.md)
 for overlap decisions and retained fork behavior.
 
-Chromium, Edge and Electron keep their GPU path enabled by default; `NVMTL_ANGLE_METAL=0` disables the workaround.
-Keep the Dock snapshot GPU completion wait, strict stencil detection, submission-copy caching, release `-O2`,
-OpenGL committed-resource accounting and MoltenVK binding/sampler caches. Submit-ahead does not remove the
-snapshot wait. Its benefit on this fork and the remaining refresh-linked presentation ceiling need measurement.
+ANGLE Metal remains enabled by default for all apps loading this plugin, including Chrome, Chromium, Edge and
+Electron. `NVMTL_ANGLE_METAL=0` skips the automatic workaround for an application. The user reconfirmed this
+broader default on 2026-10-19.
+Keep strict stencil detection, submission-copy caching, release `-O2`, OpenGL committed-resource accounting
+and MoltenVK binding/sampler caches. WindowServer now uses upstream's conditional completion policy: wait until
+scheduled when NVAccel accepts GPU marks, or until completed when those marks are unavailable. Surface page-off
+still waits for pending GPU writes before CPU capture. Submit-ahead's benefit on this fork and the remaining
+refresh-linked presentation ceiling need measurement.
 
 NVRMFB keeps upstream's display-aware BAR1 allocation, scanout lifetime, modes, hotplug and event-driven flips.
 The cursor worker retains the fork's kernel-priority ONCE serialization, cancellation/drain accounting and
@@ -69,13 +73,21 @@ The new stencil-export emulation originally treated any shader structure member 
 
 The plugin now follows the actual push-constant variable to its block and checks the translator's dedicated layout: one unsigned 32-bit member at offset 160. Ordinary uniform fields no longer activate emulation. The translator's stencil-export path remains supported. Hardware testing on RTX 2060 Super / Tahoe 26.7.1 confirmed that this change alone did not restore the missing Dock window previews.
 
-## Dock window previews in 2.1.0
+## WindowServer completion policy in 2.3.7
+
+The user reports working Dock previews with official 2.3.7. The fork's extra unconditional wait is therefore
+removed in favor of upstream's conditional wait, while retaining pending-surface marks and capture/page-off
+synchronization. `NVMTL_WS_WAIT_COMPLETION` still forces completion waiting; disabling GPU marks also uses the
+fallback. The combined fork needs fresh-preview, screenshot and window-drag checks after installation.
+The historical A/B result below established the workaround on 2.1.0 and does not establish its necessity on 2.3.7.
+
+## Historical Dock window previews in 2.1.0
 
 The 2.1.0 plugin changed WindowServer's `commitAndWaitUntilSubmitted` to return after scheduling when NVAccel accepted GPU completion marks. NVAccel waits for those marks before display flips, but that does not order offscreen snapshot consumers. Minimized windows could therefore animate correctly and then show an empty thumbnail with only the app badge.
 
 On RTX 2060 Super / Tahoe 26.7.1, a live A/B check restored the previews with `debug.nvaccel_surface_gpu_on=0`, which makes the plugin wait for completion again. Restoring the value to `1` made a fresh window's preview invisible again. The same plugin stayed loaded throughout; no reboot or cache clearing separated these observations.
 
-The plugin now waits for GPU completion in WindowServer's submit-and-wait call. Other asynchronous submissions retain the existing kernel swap marks. This can reduce CPU/GPU overlap in that WindowServer path. Submission copy caching, release `-O2`, and parked-VRAM restoration remain enabled.
+The 2.1.0-based fork restored GPU completion waiting in WindowServer's submit-and-wait call. Other asynchronous submissions retained the existing kernel swap marks. That workaround could reduce CPU/GPU overlap in WindowServer. It is superseded by the 2.3.7 policy above; submission copy caching, release `-O2` and parked-VRAM restoration remain enabled.
 
 After installing and rebooting with the rebuilt plugin, fresh minimized-window previews worked with `debug.nvaccel_surface_gpu_on=1`. The user reported little perceived performance loss. A 20-second counter check recorded no additional completion timeouts (the count stayed at four from earlier in the boot). Comparative frame delivery has not been measured; this result covers RTX 2060 Super / Tahoe 26.7.1.
 

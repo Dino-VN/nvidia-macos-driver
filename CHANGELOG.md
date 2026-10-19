@@ -2,8 +2,10 @@
 
 ## Fork integration with upstream 2.3.7
 
+- Retire the extra unconditional WindowServer completion wait. Use upstream's scheduling-only return when NVAccel accepts GPU marks, with completion waiting as the fallback. Preserve capture/page-off synchronization and submit-ahead scheduling. The user reports working previews on official 2.3.7; this fork combination still needs runtime validation.
+
 - Merge the `sec-2.3.7` release branch at `e2b0e54`, including the Tahoe icon/Liquid Glass regression repair, A8 render targets, defined fetch-disabled colour inputs, submit-ahead scheduling, single-field shader structs, installer/firmware repairs and bounds/lifetime fixes.
-- Use upstream's equivalent parked-VRAM and earlier OpenGL/MoltenVK optimizations once. Retain the fork's Dock snapshot completion wait, strict stencil detection, broader Chromium GPU default, release `-O2`, submission-copy caching and newer OpenGL resource/array/reflection repairs.
+- Use upstream's equivalent parked-VRAM and earlier OpenGL/MoltenVK optimizations once. Retain strict stencil detection, ANGLE Metal enabled by default for all apps, release `-O2`, submission-copy caching and newer OpenGL resource/array/reflection repairs.
 - Keep the serialized cursor worker with exported cancellation/drain accounting, guarded OpenGL timing and the stronger Dock badge mip checks/tracking. Preserve upstream's display allocation and scanout behavior. See [Fork merge notes](docs/FORK-MERGE-NOTES.md) for decisions and validation limits.
 
 ## Earlier fork additions on 2.3.5

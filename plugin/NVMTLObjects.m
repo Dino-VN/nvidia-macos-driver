@@ -5096,15 +5096,14 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
 - (void)popDebugGroup {}
 - (void)encodeSignalEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordSignal:e value:v]; }
 - (void)encodeWaitForEvent:(id<MTLEvent>)e value:(uint64_t)v { [self nvmtlRecordWait:e value:v]; }
-// WindowServer also uses this call before handing off offscreen snapshots.
-// NVAccel's swap wait orders scanout, but snapshot consumers have no such wait
-// and can read unfinished pixels. Keep the completion wait here until those
-// consumers can share the producer's GPU fence.
+// NVAccel orders display swaps with the pending GPU marks, and its surface
+// page-off orders CPU captures. Keep the completion fallback when the kernel
+// does not accept the marks or NVMTL_WS_WAIT_COMPLETION requests it.
 - (BOOL)commitAndWaitUntilSubmitted {
     static int ws = -1;
     if (ws < 0) ws = (getprogname() && !strcmp(getprogname(), "WindowServer")) ? 1 : 0;
     [self commit];
-    if (ws) [self waitUntilCompleted]; else [self waitUntilScheduled];
+    if (ws && !nvmtl_ws_kernel_waits()) [self waitUntilCompleted]; else [self waitUntilScheduled];
     return self.status != MTLCommandBufferStatusError;
 }
 - (void)commit {

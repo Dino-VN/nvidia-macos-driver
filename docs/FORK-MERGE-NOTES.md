@@ -31,8 +31,8 @@ OpenGL imports or parked-VRAM repair on top of upstream's equivalent code.
 | Fetch-disabled colour inputs and A8 render-target alpha/blend handling. | Keep both new upstream repairs alongside the existing ordered-triangle fetch path. |
 | Dock badge mip filling. | Keep the fork's shared CPU/GPU eligibility checks, atomic root tracking, resolve/storage/view tracking, and checked row arithmetic. Upstream's simpler mip flag and broader GPU-copy fallback do not cover those guards. |
 | Asynchronous cursor moves and refresh-aware OpenGL waits. | Keep the fork's serialized kernel-priority ONCE worker and exported cancellation/drain accounting; retain private-layout, timestamp, NVIDIA-backend and installation guards. |
-| Default ANGLE Metal for Chrome/Chromium. | Keep the fork's existing Edge/Electron default too, with the same opt-out; retain upstream's activation log. Its Chrome-only default-policy check is not the fork's policy. |
-| Submit-ahead from commit while the worker waits (PR 289), and single-field struct allocation repair (PR 291). | Take upstream's changes; keep committed-resource snapshots, uncertain-fence quarantine and the unconditional WindowServer completion wait for Dock snapshots. |
+| Default ANGLE Metal for Chrome/Chromium. | Keep the fork's enabled default for all apps, including Edge and Electron, with the same opt-out; retain upstream's activation log. The user reconfirmed this policy on 2026-10-19; do not narrow it to browser names or make Electron opt-in. |
+| Submit-ahead from commit while the worker waits (PR 289), and single-field struct allocation repair (PR 291). | Take upstream's changes; keep committed-resource snapshots, uncertain-fence quarantine and upstream's conditional completion policy. |
 | Private-copy installer and retired user NVKMS selectors (PRs 266 and 267). | Take upstream, including the follow-up that selects NVAccel from the checked copy. |
 
 The branch also carries the 2.3.6 Tahoe icon/Liquid Glass regression repair: ask the translator for
@@ -43,7 +43,7 @@ of the GPU's valid apertures, including display register windows; the earlier fr
 caused WindowServer restarts. Keep the remaining upstream client/map-table, copy-region and shader-reader
 bounds changes. NVRM source is identical to the release branch.
 
-Still local: the Dock snapshot completion wait, strict stencil marker detection, broad Chromium default,
+Still local: strict stencil marker detection, ANGLE Metal enabled by default for all apps,
 submission-copy caching, release `-O2`, committed GL resource accounting, argument-buffer array/texel routing,
 physical-pointer preflight/refusal, reflection/mipmap/constant repairs, serialized cursor shutdown and guarded
 GL timing. The retired experimental framebuffer allocation/scanout policies remain removed.
@@ -53,8 +53,12 @@ macOS 15.0 as their minimum. The rebuilt framebuffer imports no new kernel symbo
 preceding exported-cancellation repair. This is not a kernel-collection link or boot test.
 
 Compilation and validation limits are recorded with the current build artifacts under
-`out/upstream-2.3.7-merge-20261019-112636/`. No automated tests or runtime/GPU checks were run for this
-integration. Earlier successful boots, badge checks and performance measurements do not validate the combined
+`out/upstream-2.3.7-merge-20261019-112636/`. The final staged package and review are recorded under
+`out/tahoe-2.3.7-stage-20261019-115452/`. Five focused CPU fixtures passed: ANGLE environment overrides,
+the all-app default (including Edge and Electron), surface pending-resource lifetime, overlapping surface
+publication and GL committed-resource accounting. Both package manifests, userland signatures, output hashes
+and all 503 saved source hashes were verified. No runtime/GPU checks were run for this integration.
+Earlier successful boots, badge checks and performance measurements do not validate the combined
 2.3.7 build or establish the gain from submit-ahead on the RTX 2060 Super. Recheck Dock previews, icons,
 Terminal redraw, OpenGL/MoltenVK, window dragging and cursor/shutdown behavior after installation.
 
@@ -64,7 +68,23 @@ RM/KMS build metadata and archives needed to link a complete main RM, so reuse t
 its source is unchanged by this merge resolution. `pkgroot` and the installed driver are not updated by a source
 merge or these compilation checks. Preserve package version metadata and refresh both checksum manifests when staging.
 
+## WindowServer completion policy after the 2.3.7 integration
+
+The fork's unconditional completion wait from `0b121d3` is retired. The user reports that official 2.3.7
+already displays Dock previews correctly. That observation does not isolate the responsible change, but upstream
+contains the explicit capture repair in `79f47d0`, strengthened by `40daaa6`: mark VRAM current at commit,
+keep pending writes counted across command buffers, and wait at CPU page-off before copying unfinished pixels.
+The 2.3.7 visible-function repair may also affect preview rendering; it has not been isolated here.
+
+Restore upstream's `commitAndWaitUntilSubmitted` policy: WindowServer waits only until scheduled when NVAccel
+accepts GPU marks, and waits until completed when it does not. `NVMTL_WS_WAIT_COMPLETION` still forces the
+completion fallback, as does disabling the kernel marks. Preserve the surface/page-off synchronization and
+submit-ahead coordination. Do not reintroduce the unconditional wait during a future merge based only on the
+historical 2.1.0 preview result. The fork combination still needs fresh previews/capture and performance checks.
+
 ## Historical upstream 2.3.5 integration
+
+The unconditional-wait decision in this historical section is superseded by the 2.3.7 policy above.
 
 - The only textual conflict was `CHANGELOG.md`; both the fork additions and upstream release history are kept.
   The release plugin build also exposed a declaration of `nvtrace` colliding with the retained OpenGL
@@ -72,8 +92,8 @@ merge or these compilation checks. Preserve package version metadata and refresh
 - NVRM and NVRMFB source remain identical to upstream. Keep its display-aware BAR1 budget, scanout lifetime,
   plugin-write cookies, capture ordering, refresh-derived flip waits, hardware-vblank retries and startup changes.
   Do not restore the retired experimental framebuffer policies.
-- Upstream still lacks the fork's parked-backing reactivation and unconditional WindowServer submit-and-wait
-  completion wait. Keep both. Restore the same parked allocation before upstream's dirty mark records its
+- At this integration, upstream lacked the fork's parked-backing reactivation and unconditional WindowServer
+  submit-and-wait completion wait, so both were retained. Restore the same parked allocation before upstream's dirty mark records its
   allocation cookie. Kernel-gated capture publication complements the Dock wait; it is not treated as proof
   that every offscreen consumer can safely use scheduling-only completion.
 - Keep all ten OpenGL/Minecraft and MoltenVK commits below, strict stencil detection, Chromium's enabled default
@@ -96,14 +116,17 @@ the same limit. This is not a hardware-reproduced failure. A working boot alone 
 - Tahoe icon rendering and System Settings/CoreImage glyph repairs.
 - Parked-VRAM backing restoration before ordinary surface dirty updates, including the repair
   introduced by `eb6544b`.
-- WindowServer's GPU completion wait for fresh Dock window snapshots.
+- Upstream's capture/page-off synchronization and conditional completion fallback for WindowServer. The older
+  unconditional Dock snapshot wait is retired on the 2.3.7 base.
 - Dock badge mip initialization after full level-zero uploads. Keep the shared eligibility checks for CPU and
   buffer-copy uploads: single-layer, single-sample 8-bit 2D textures, at most 2048 pixels on either axis, with
   no explicitly authored higher mip levels. Preserve atomic root-texture tracking for uploads, copies, render
   attachments/resolves, storage bindings and application mip generation. Do not broaden automatic generation
   to integer/depth/compressed formats, array/cube/3D textures or texture views.
 - Strict detection of the dedicated stencil-export push-constant block.
-- Chromium, Edge and Electron acceleration enabled by default, with the existing application opt-out.
+- ANGLE Metal enabled by default for all apps loading the plugin, including Chrome, Chromium, Edge and Electron.
+  `NVMTL_ANGLE_METAL=0` skips the automatic workaround. Preserve existing ANGLE overrides and activation logging.
+  This broader policy was reconfirmed by the user on 2026-10-19; do not adopt upstream's Electron opt-in default.
 - Submission upload-discovery caching, copy-backing deduplication and release plugin `-O2`.
 - Upstream framebuffer handling, framebuffer-resource allocation, scanout lifetime and GPU mapping.
   The experimental framebuffer policies and borrowed-scanout extension remain retired.
@@ -150,7 +173,8 @@ Retain these behaviors when reviewing an equivalent upstream implementation:
 - Preserve mip layers for arrays/cubes and halve 3D depth at each mip. Retain AIR-derived reflection and required
   function-constant errors while allowing the existing deferred mesh/object specialization.
 
-All prior Tahoe, parked-VRAM, Dock, stencil, Chromium, `-O2` and OpenGL/MoltenVK cache fixes remain required.
+All prior Tahoe, parked-VRAM, stencil, Chromium, `-O2` and OpenGL/MoltenVK cache fixes remain required.
+For Dock captures use the current 2.3.7 completion policy above; badge mip tracking remains local.
 Native NVK, NVRM and NVAccel are unchanged by this follow-up. Rebuild the plugin, translator and **NVRMFB**
 for a test package; the stock 2.3.5 framebuffer lacks the asynchronous cursor change. The current staging helper
 replaces only the framebuffer plist: the rebuilt framebuffer binary must also be included and checksums refreshed.

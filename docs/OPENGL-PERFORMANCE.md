@@ -9,8 +9,9 @@ and overlapping changes before resolving conflicts.
 Upstream now includes the initial OpenGL/Minecraft imports, their shader/cache hardening and the unchanged-binding
 and sampler-key caches. The merge preserves the newer committed-use accounting, argument-buffer arrays, pointer
 preflight, reflection/mipmap repairs, cursor serialization/drain and GL timing guards described below. Submit-ahead
-from commit is also included, while WindowServer's Dock snapshot completion wait remains. No new FPS comparison or
-runtime validation has been performed for this combination. Use the current [merge notes](FORK-MERGE-NOTES.md)
+from commit is also included. WindowServer uses upstream's conditional completion fallback and surface/page-off
+synchronization; the older unconditional Dock snapshot wait is retired. No new FPS comparison or runtime validation
+has been performed for this combination. Use the current [merge notes](FORK-MERGE-NOTES.md)
 and 2.3.7 package base; the measurements below describe earlier source revisions.
 
 ## Newer `perf` changes on 2.3.5
@@ -118,7 +119,7 @@ Apple's GL renderer normally emulates last-vertex flat shading by rewriting inde
 - Reusing a pre-existing address table requires its block member to start at byte zero, as well as its existing element/stride checks. An incompatible table keeps the existing descriptor path.
 - The benchmark checks shader linking, input counts, GL errors and readback errors, and reports an image checksum.
 
-The changes retain parked-VRAM restoration, WindowServer's Dock completion wait, strict stencil detection, Chromium's GPU default and release `-O2`. The package uses the same tested 2.3.0 NVRM, NVRMFB, NVAccel and NVK binaries. Only the Metal plugin and AIR-to-SPIR-V translator need rebuilding.
+The original 2.3.0 changes retained parked-VRAM restoration, WindowServer's Dock completion wait, strict stencil detection, Chromium's GPU default and release `-O2`. That package used the same tested 2.3.0 NVRM, NVRMFB, NVAccel and NVK binaries. Only the Metal plugin and AIR-to-SPIR-V translator need rebuilding.
 
 ## Checks and limits
 

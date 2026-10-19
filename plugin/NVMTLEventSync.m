@@ -82,9 +82,8 @@ static void nvmtl_surface_register_writes(NVMTLCommandBuffer *cb) {
 // WindowServer frame completion, with NVAccel's nvSurfGpuEscape: each surface a WindowServer command buffer renders is
 // marked pending when it commits and ready when the GPU has finished it, and the swap waits for that in the kernel, off
 // WindowServer's thread (NVIDIA completes flips on the display's flip event, never in the compositor). The marks go
-// through NVK's surface escape because WindowServer's sandbox denies sysctl writes. These marks order display swaps;
-// commitAndWaitUntilSubmitted still waits for completion to protect offscreen snapshot consumers. Whether the kernel
-// takes marks (an older NVAccel, debug.nvaccel_surface_gpu_on=0) is re-read every second.
+// through NVK's surface escape because WindowServer's sandbox denies sysctl writes. A mark the kernel does not take (an
+// older NVAccel, debug.nvaccel_surface_gpu_on=0) keeps WindowServer's own wait; that answer is re-read every second.
 static _Atomic int nvmtl_ws_marks_on = -1;
 static _Atomic uint64_t nvmtl_ws_marks_checked;
 static BOOL nvmtl_ws_kernel_waits(void) {
@@ -95,8 +94,7 @@ static BOOL nvmtl_ws_kernel_waits(void) {
     if (atomic_load(&nvmtl_ws_marks_on) < 0 || now - atomic_load(&nvmtl_ws_marks_checked) > 1000000000ull) {
         const int on = nvmtl_vk_surface_gpu_mark(0, 0) == 0;   // surface 0: a probe the kernel answers and ignores
         if (on != atomic_exchange(&nvmtl_ws_marks_on, on))
-            nvlog("WindowServer frame completion: %s", on ? "NVAccel swap marks enabled; submit-and-wait also waits for snapshot pixels"
-                                                                       : "NVAccel swap marks unavailable; submit-and-wait waits for completion");
+            nvlog("WindowServer frame completion: %s", on ? "the swap waits in NVAccel (no composite wait here)" : "waiting for each composite here");
         atomic_store(&nvmtl_ws_marks_checked, now);
     }
     return atomic_load(&nvmtl_ws_marks_on) == 1;

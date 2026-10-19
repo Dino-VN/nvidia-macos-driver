@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""The ANGLE Metal rule is on by default for Chrome and Chromium, and opt-in for everything else.
+"""The fork enables the ANGLE Metal rule by default for all apps, including Electron.
 
-The constructor read the environment and the process name; lift it into a fixture with stubs so the
-matching and the NVMTL_ANGLE_METAL overrides are checked without a GPU or a browser.
+Lift the production constructor into a fixture with stubs to check the default and
+NVMTL_ANGLE_METAL overrides without a GPU or a browser. Keep this historical filename
+so existing test commands continue to cover the fork's broader policy.
 """
 import pathlib
 import subprocess
@@ -11,8 +12,8 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 source = (ROOT / "plugin/NVMTLDevice.m").read_text()
 
-start = source.index("static bool nvmtl_angle_chrome_family(void)")
-end = source.index("static bool nvmtl_process_is_allowed(void)")
+start = source.index("__attribute__((constructor)) static void nvmtl_angle_allow_nvidia(void)")
+end = source.index("static bool nvmtl_process_is_allowed(void)", start)
 region = source[start:end].replace("__attribute__((constructor)) ", "")
 
 fixture = r"""
@@ -43,7 +44,7 @@ static void syslog(int, const char *, ...) { g_logs++; }
 
 """ + region + r"""
 
-static void run(const char *name, const char *opt, const char *pre, const char *want) {
+static void run(const char *name, const char *opt, const char *pre, const char *want, int logs = 1) {
     g_name = name;
     g_opt = opt;
     if (pre) {
@@ -54,9 +55,9 @@ static void run(const char *name, const char *opt, const char *pre, const char *
     }
     g_logs = 0;
     nvmtl_angle_allow_nvidia();
-    if (strcmp(g_angle, want) != 0) {
-        fprintf(stderr, "%s opt=%s pre=%s -> '%s', want '%s'\n",
-                name, opt ? opt : "-", pre ? pre : "-", g_angle, want);
+    if (strcmp(g_angle, want) != 0 || g_logs != logs) {
+        fprintf(stderr, "%s opt=%s pre=%s -> '%s', want '%s'; logs=%d, want %d\n",
+                name ? name : "<null>", opt ? opt : "-", pre ? pre : "-", g_angle, want, g_logs, logs);
         exit(1);
     }
 }
@@ -67,16 +68,25 @@ int main() {
     run("Google Chrome Helper (Aperitif)", nullptr, nullptr, "disableMetalOnNvidia");
     run("Chromium", nullptr, nullptr, "disableMetalOnNvidia");
     run("Chromium Helper (GPU)", nullptr, nullptr, "disableMetalOnNvidia");
-    // Everything else stays opt-in.
-    run("Safari", nullptr, nullptr, "");
-    run("Slack Helper (Renderer)", nullptr, nullptr, "");
-    run("QQ Helper", nullptr, nullptr, "");
+    // The fork keeps all apps on by default, including Edge and Electron helpers.
+    run("Microsoft Edge", nullptr, nullptr, "disableMetalOnNvidia");
+    run("Microsoft Edge Helper (GPU)", nullptr, nullptr, "disableMetalOnNvidia");
+    run("Electron", nullptr, nullptr, "disableMetalOnNvidia");
+    run("Discord Helper (GPU)", nullptr, nullptr, "disableMetalOnNvidia");
+    run("Safari", nullptr, nullptr, "disableMetalOnNvidia");
+    run("Slack Helper (Renderer)", nullptr, nullptr, "disableMetalOnNvidia");
+    run("QQ Helper", nullptr, nullptr, "disableMetalOnNvidia");
+    run("policy", nullptr, nullptr, "disableMetalOnNvidia");
+    run(nullptr, nullptr, nullptr, "disableMetalOnNvidia");
     // The environment variable still overrides both ways.
     run("Safari", "1", nullptr, "disableMetalOnNvidia");
-    run("Google Chrome", "0", nullptr, "");
+    run("Google Chrome", "0", nullptr, "", 0);
+    run("Discord Helper (GPU)", "0", nullptr, "", 0);
+    run("policy", "0", "otherRule", "otherRule", 0);
     // An existing ANGLE override is kept, without duplicating the rule.
     run("Google Chrome", nullptr, "foo", "foo:disableMetalOnNvidia");
-    run("Google Chrome", nullptr, "disableMetalOnNvidia", "disableMetalOnNvidia");
+    run("Google Chrome", nullptr, "disableMetalOnNvidia", "disableMetalOnNvidia", 0);
+    run("Discord Helper (GPU)", nullptr, "foo:disableMetalOnNvidia", "foo:disableMetalOnNvidia", 0);
     printf("ok\n");
     return 0;
 }
@@ -92,4 +102,4 @@ with tempfile.TemporaryDirectory() as tmp:
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok", result.stdout
 
-print("ok: ANGLE Chrome/Chromium matching, opt-in for other apps, NVMTL_ANGLE_METAL overrides")
+print("ok: ANGLE enabled for all apps, Electron/Edge defaults, opt-out, existing overrides and activation logging")
