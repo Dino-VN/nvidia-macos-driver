@@ -4,11 +4,11 @@ Before merging a newer upstream revision, read [Fork merge notes](docs/FORK-MERG
 Retain the Tahoe fixes, existing performance optimizations and the OpenGL/Minecraft and MoltenVK
 changes, checking for conflicts and equivalent upstream implementations first.
 
-This guide targets upstream **2.3.7 at `e2b0e54`**, from the `sec-2.3.7` release branch. It includes
-upstream's Tahoe icon/Liquid Glass regression repairs, A8 alpha handling, fetch-disabled colour-input repair,
-submit-ahead scheduling and single-field shader-struct fix. The earlier parked-VRAM and OpenGL/Minecraft
-optimizations are now covered upstream and are included once. See the [merge notes](docs/FORK-MERGE-NOTES.md)
-for overlap decisions and retained fork behavior.
+This guide targets upstream **2.4.2 at `272ccd9`**. It adds Turing/Ampere H.264/HEVC encoder registration,
+stale shader-cache cleanup, firmware power-source reporting and an installer boot-guard job. The preceding
+2.3.7 Tahoe icon/Liquid Glass, A8, fetch-disabled colour-input, submit-ahead and shader-struct repairs remain.
+The earlier parked-VRAM and OpenGL/Minecraft optimizations are covered upstream and are included once.
+See the [merge notes](docs/FORK-MERGE-NOTES.md) for overlap decisions and retained fork behavior.
 
 ANGLE Metal remains enabled by default for all apps loading this plugin, including Chrome, Chromium, Edge and
 Electron. `NVMTL_ANGLE_METAL=0` skips the automatic workaround for an application. The user reconfirmed this
@@ -29,19 +29,24 @@ explicit mip-write detection, including views, resolves and storage bindings. Th
 and is retained alongside it. The user reported working badge digits on the preceding fork; this combined build
 still needs checking after installation.
 
-## Testing the upstream 2.3.7 integration
+## Testing the upstream 2.4.2 integration
 
-The source merge does not update the running driver or `~/Downloads/pkgroot`. Use the official 2.3.7 package as
-the base: its main RM and installer now use `/Library/NullMoth/nvfw`, with digest checks and a firmware-backup
-fallback for upgrades from the old location. An older package is not a matching base.
+The source merge alone does not update the running driver or `~/Downloads/pkgroot`. Use the official 2.4.2
+package as the base for its main RM, codecs, firmware and installer. Upstream reports display build regressions
+in the 2.4 and 2.4.1 packages; neither is a matching base. The main RM and installer retain
+`/Library/NullMoth/nvfw`, digest checks and the firmware-backup fallback.
 
-Rebuild the plugin, translator, NVRMFB and Tahoe NVAccel. The helper below replaces the framebuffer plist only;
+Rebuild the plugin, NVRMFB and Tahoe NVAccel. Translator source is unchanged in this update; reuse the preceding
+fork translator only after checking its source snapshot and executable hash, otherwise rebuild it too.
+The helper below replaces the framebuffer plist only;
 include the rebuilt framebuffer executable separately, preserve the package's version metadata and regenerate
-checksums. Main RM source matches upstream 2.3.7 and can use the matching official binary. Local headers do not
+checksums. Main RM source matches upstream 2.4.2 and uses the matching official binary. Local headers do not
 include the NVIDIA Darwin RM/KMS archives needed for a complete RM link.
 
-The release plugin (`-O2`), translator, framebuffer and Tahoe accelerator compile for x86_64 with a macOS 15.0
-minimum. Validation covers source review and compilation; no automated or runtime/GPU tests were run. After installation and reboot, check Tahoe icons and Settings glyphs, fresh Dock previews and badge
+The release plugin (`-O2`), translator, framebuffer and Tahoe accelerator target x86_64 with a macOS 15.0
+minimum. Build/staging records are under `out/tahoe-2.4.2-stage-20261020-081614/`. Validation covers source
+review, compilation and package integrity; no automated or runtime/GPU tests were run. After installation
+and reboot, check Tahoe icons and Settings glyphs, fresh Dock previews and badge
 digits, Terminal clearing/scrolling, window dragging, OpenGL/MoltenVK Minecraft, and cursor/shutdown behavior.
 Earlier RTX 2060 Super results in [OpenGL performance](docs/OPENGL-PERFORMANCE.md) apply to their original builds.
 
@@ -110,7 +115,7 @@ Restore and minimize the affected window to regenerate its thumbnail. This setti
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-Use the official **2.3.7 package** as the staging base for its matching RM, runtime, installer and firmware layout. Rebuild the fork plugin, translator, framebuffer and Tahoe accelerator; translator source changed in this integration and the preceding library must not be reused. The commands below cover the plugin, translator and accelerator, but do not build the main RM, framebuffer binary or NVK. Include the separately rebuilt framebuffer executable as described above. Preserve the 2.3.7 package's plist versions instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
+Use the official **2.4.2 package** as the staging base for its matching RM, runtime, codecs, installer and firmware layout. Rebuild the fork plugin, framebuffer and Tahoe accelerator; the preceding fork translator can be reused only after verifying its unchanged source snapshot and executable hash. The commands below also support rebuilding it. They do not build the main RM, framebuffer binary or NVK. Include the separately rebuilt framebuffer executable as described above. Preserve the 2.4.2 package's plist versions instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 
@@ -307,7 +312,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Stage the Tahoe PR outputs in an upstream package
 
-Extract the official 2.3.0 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
+Extract the official 2.4.2 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
 
 ```bash
 cd "$HOME/nvmtl-build/LIVE"
@@ -328,7 +333,7 @@ By default, this stages the Tahoe PR changes using these exact paths in the chec
 
 The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. The helper itself retains plugin resources, prebuilt NVRM/NVRMAGDC/framebuffer binaries, NVK, firmware and the Sequoia accelerator from the base package. For the current fork, also include the rebuilt framebuffer executable and regenerate checksums before using the package; the helper does not copy that executable.
 
-The four historical PRs do not themselves require rebuilding NVAccel. Testing the current merge requires the matching 2.3.7 RM, rebuilt framebuffer and Tahoe accelerator with upstream's parked-backing repair and plane bounds. Preserve the package version in the rebuilt accelerator's plist, then include it explicitly:
+The four historical PRs do not themselves require rebuilding NVAccel. Testing the current merge uses the matching 2.4.2 RM, rebuilt framebuffer and Tahoe accelerator with upstream's parked-backing repair and plane bounds. Preserve the package version in the rebuilt accelerator's plist, then include it explicitly:
 
 ```bash
 python3 build/stage_package.py "/path/to/upstream/pkgroot" \

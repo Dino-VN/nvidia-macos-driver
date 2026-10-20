@@ -16,11 +16,44 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.3.7 at `e2b0e54`** from `upstream/sec-2.3.7`, also the commit
-pointed to by the annotated `v2.3.7` tag. It was integrated on 2026-10-19. Upstream `main` still
-pointed to 2.3.6 at `6372823` when fetched. The preceding fork base was 2.3.5 at `8b120f3`.
+The current upstream base is **2.4.2 at `272ccd9`**, from `upstream/main` and `v2.4.2`, integrated
+on 2026-10-20. The preceding base was 2.3.7 at `e2b0e54` from `upstream/sec-2.3.7` and the annotated
+`v2.3.7` tag, integrated on 2026-10-19.
 
-## Upstream 2.3.7 integration
+## Upstream 2.4.2 integration
+
+Only `CHANGELOG.md` had a textual conflict; retain both the fork history and new upstream entries.
+The plugin's generation-specific Turing/Ampere H.264 and HEVC encoder registration and background stale
+SPIR-V cache sweep merge alongside the existing fork behavior. Keep the matching codec libraries from the
+official package. Cache pruning removes other translator builds' entries; it does not eliminate compilation
+for a new translator. `NVMTL_SPVCACHE_KEEP_STALE` disables the sweep.
+
+Take upstream's main RM power-source reporting and installer boot-guard job as provided. Firmware queries
+read cached battery/mains state, refreshed at startup and power-state transitions outside firmware locks.
+The new job treats WindowServer being present at two observations 45 seconds apart as a successful boot;
+it does not verify a usable desktop or the same process. The existing kernel guard ordering is unchanged.
+
+No new equivalents of the remaining fork-specific repairs were added in this update. Framebuffer, NVAccel
+and translator source are unchanged from the preceding merge. Retain the kernel-priority ONCE cursor worker,
+exported cancellation and outstanding-work drain, strict stencil detection, all-app ANGLE Metal default,
+stronger badge mip tracking, guarded GL timing/resource/descriptor repairs, MoltenVK caches, submission-copy
+caching and release `-O2`. Keep upstream's parked-backing restoration, scanout/allocation and conditional
+WindowServer completion policy once; the old unconditional Dock wait and experimental framebuffer remain retired.
+
+Use the official **2.4.2** package for the main RM, matching runtime, codecs, firmware, installer and version
+metadata. Upstream reports that 2.4 shipped an outdated framebuffer binary and 2.4.1 still had a main RM built
+without a required display interface; 2.4.2 corrects those release builds. Do not use either older package as
+the staging base. Local NVIDIA headers still lack the Darwin RM/KMS archives needed to link the main RM.
+
+Build/staging records are under `out/tahoe-2.4.2-stage-20261020-081614/`. The release plugin, framebuffer
+and Tahoe accelerator compile successfully. The preceding signed fork translator is reused after checking
+all 381 tracked translator inputs and its executable hash against the compiled snapshot. The staged
+`~/Downloads/pkgroot` preserves 2.4.2 plist versions; both regenerated checksum manifests and all replacement
+hashes pass. Kexts remain unsigned; userland signatures are verified. Validation is limited to source review, compilation, artifact
+identity, signatures and package integrity; no automated tests, kernel-collection preflight or runtime/GPU
+tests are run for this integration. Earlier successful boots and performance results do not qualify this build.
+
+## Historical upstream 2.3.7 integration
 
 Ten files had textual conflicts. Resolve the overlaps by behavior; do not reapply the earlier
 OpenGL imports or parked-VRAM repair on top of upstream's equivalent code.

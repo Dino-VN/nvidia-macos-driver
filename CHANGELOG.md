@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork integration with upstream 2.4.2
+
+- Add generation-specific Turing/Ampere H.264 and HEVC encoder registration, stale shader-cache cleanup, firmware power-source reporting and the installer boot-guard job. Use the matching official 2.4.2 RM and runtime; 2.4 and 2.4.1 carried display build regressions.
+- Retain the Tahoe rendering repairs, parked-VRAM restoration, OpenGL/MoltenVK optimizations, all-app ANGLE Metal default, strict stencil detection, release `-O2`, stronger badge mip tracking and serialized cursor cancellation/drain. Keep upstream display allocation, scanout and conditional completion waits. See [Fork merge notes](docs/FORK-MERGE-NOTES.md) for scope and validation limits.
+
 ## Fork integration with upstream 2.3.7
 
 - Retire the extra unconditional WindowServer completion wait. Use upstream's scheduling-only return when NVAccel accepts GPU marks, with completion waiting as the fallback. Preserve capture/page-off synchronization and submit-ahead scheduling. The user reports working previews on official 2.3.7; this fork combination still needs runtime validation.
@@ -27,7 +32,25 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.3.7 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.4.2 build; comparative desktop performance remains unmeasured.
+
+## 2.4.2
+
+- Fix the black screen and the startup that stops on the verbose text after updating to 2.4 or 2.4.1. The display driver checks for a part of the display interface that the 2.4 and 2.4.1 core driver was built without, so it refused to start and the screen never moved off the startup text. 2.4.2 builds the core driver with it again; nothing else changes.
+
+## 2.4.1
+
+- Fix a black screen after updating to 2.4. The 2.4 package carried a framebuffer kext built from an outdated copy of its source, missing the display code the earlier releases had; 2.4.1 ships the complete framebuffer with the 2.4 changes.
+
+## 2.4
+
+- Hardware H.264 and HEVC video encode on RTX 20 (Turing) and RTX 30 (Ampere) cards, selected automatically per card; earlier builds used the hardware encoder on RTX 50 only.
+- Security hardening: caller values are bounded, each client is serialised, and kernel addresses, registers and firmware stay private.
+- macOS 26: the system icons and the glass menus and panels draw correctly again.
+- Install from a root-owned copy of the package, with the previous driver kept as an automatic fallback.
+- The kernel driver reads the power source (battery or mains) and reports it to the GPU firmware.
+- Clear a stale shader cache left by an earlier build, which could show a black screen at login after an update.
+- A boot counts as good once the desktop is up.
 
 ## 2.3.6
 
