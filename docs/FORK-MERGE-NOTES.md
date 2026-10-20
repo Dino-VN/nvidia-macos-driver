@@ -16,11 +16,41 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.4.2 at `272ccd9`**, from `upstream/main` and `v2.4.2`, integrated
-on 2026-10-20. The preceding base was 2.3.7 at `e2b0e54` from `upstream/sec-2.3.7` and the annotated
-`v2.3.7` tag, integrated on 2026-10-19.
+The current upstream base is **2.4.3 at `47f818b`**, from `upstream/main` and `v2.4.3`, integrated
+on 2026-10-20. The preceding base was 2.4.2 at `272ccd9`, integrated earlier that day.
 
-## Upstream 2.4.2 integration
+## Upstream 2.4.3 integration
+
+Two files had textual conflicts: `CHANGELOG.md` and the cursor allocation in
+`kexts/NVRMFB/fb/nvrm-fb.cpp`. Keep the fork history alongside upstream's release entry. Take upstream's
+`nvrmfbCall` helper and its ONCE allocations for vblank delivery, the fallback timer, hotplug/connect,
+backlight, GPU wake, reflip and diagnostic workers. Each handle runs at most one invocation at a time;
+different workers can still run concurrently. This extends the cursor serialization already in the fork.
+
+Keep the fork's cursor allocation at `THREAD_CALL_PRIORITY_KERNEL` with `THREAD_CALL_OPTIONS_ONCE`,
+its exported cancellation, outstanding accepted-work count/drain, stopping/status checks and failed-start
+cleanup. Upstream uses HIGH priority for its helper and does not replace these cursor lifetime repairs.
+The cursor scheduling, callback and stop/drain functions remain unchanged from the preceding fork.
+
+Take upstream's AIR-text digest repair: mark internally produced long shader text and reuse its digest
+state. The earlier mutable-string class check prevented reuse for CF-backed text. Cache keys and hashing
+are unchanged; the new marker limits reuse to text the driver does not edit. Do not replace the existing
+OpenGL/MoltenVK binding, sampler or resource caches with this separate optimization.
+
+Main RM, NVAccel, Rust translator, BAR1 budgeting, scanout/modes, ANGLE defaults, strict stencil detection,
+badge tracking, submission-copy caching, guarded GL timing and release `-O2` are unchanged by this merge.
+Keep upstream's conditional completion policy; the unconditional Dock wait and experimental framebuffer
+allocation policies remain retired.
+
+Compilation records are under `out/upstream-2.4.3-merge-20261020-122844/`. The release plugin (`-O2`)
+and framebuffer compile for x86_64 with a macOS 15.0 minimum. The framebuffer adds no undefined imports;
+the unused `_thread_call_allocate` import is removed. Never introduce `thread_call_cancel_wait`.
+No automated tests, kernel-collection
+preflight, runtime/GPU checks or staging are performed for this merge. Before the next hardware test, use
+the official 2.4.3 package and preserve its version/dependency plists while adding the fork outputs. The
+previously verified fork build was 2.4.2; its boot and performance results do not qualify this combination.
+
+## Historical upstream 2.4.2 integration
 
 Only `CHANGELOG.md` had a textual conflict; retain both the fork history and new upstream entries.
 The plugin's generation-specific Turing/Ampere H.264 and HEVC encoder registration and background stale

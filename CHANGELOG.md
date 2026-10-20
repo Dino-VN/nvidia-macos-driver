@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork integration with upstream 2.4.3
+
+- Apply upstream callback serialization to vblank, hotplug, backlight and other framebuffer workers. Keep the fork's cursor at kernel priority with ONCE, exported cancellation and explicit outstanding-work drain.
+- Reuse shader-text digest state for internally produced AIR text. Retain the existing Tahoe repairs, OpenGL/MoltenVK caches and rendering optimizations.
+
 ## Fork integration with upstream 2.4.2
 
 - Add generation-specific Turing/Ampere H.264 and HEVC encoder registration, stale shader-cache cleanup, firmware power-source reporting and the installer boot-guard job. Use the matching official 2.4.2 RM and runtime; 2.4 and 2.4.1 carried display build regressions.
@@ -32,7 +37,12 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.4.2 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.4.3 build; comparative desktop performance remains unmeasured.
+
+## 2.4.3
+
+- Fix a desktop freeze followed by a kernel panic ("thread_call group 'high' reached max thread cap") a few seconds to a few minutes after logging in (#295). The display driver started a new kernel thread for every vblank and every cursor move while an earlier one was still waiting; each of its callbacks now runs one at a time.
+- Metal apps translate a shader they have already seen without hashing it again: the digest kept on the translated text was never reused (PR #294, thanks watchthelight).
 
 ## 2.4.2
 
