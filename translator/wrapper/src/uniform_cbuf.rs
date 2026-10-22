@@ -254,10 +254,16 @@ pub fn promote(bytes: &[u8], binding: u32, limit: u32) -> Result<(Vec<u8>, u32),
         if !grew { break; }
     }
     let mut extent = 0u32;
-    for i in m.functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.instructions) {
+    // Check every use before changing a pointer's storage class. A global
+    // initializer can capture the root too; rewriting only function accesses
+    // would leave that alias with the old StorageBuffer pointer type.
+    for i in m.all_inst_iter() {
         for (at, operand) in i.operands.iter().enumerate() {
             let Some(&(kind, off)) = id(operand).and_then(|v| derived.get(&v)) else { continue };
             match i.class.opcode {
+                Op::Name | Op::Decorate | Op::DecorateId if at == 0 => {}
+                Op::EntryPoint if at >= 3 => {}
+                Op::GroupDecorate if at >= 1 => {}
                 Op::AccessChain | Op::InBoundsAccessChain | Op::CopyObject
                     if at == 0 && i.result_id.is_some_and(|n| derived.contains_key(&n)) => {}
                 Op::Load if at == 0 && kind == 2 && i.result_type == Some(elem) => {
@@ -345,4 +351,163 @@ pub fn promote(bytes: &[u8], binding: u32, limit: u32) -> Result<(Vec<u8>, u32),
     ]);
     m.header.as_mut().unwrap().bound = next;
     Ok((m.assemble().iter().flat_map(|w| w.to_le_bytes()).collect(), extent))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rspirv::dr::{Block, Function, Module, ModuleHeader};
+
+    fn module(float_words: bool) -> Module {
+        let elem = if float_words { 3 } else { 2 };
+        let mut m = Module::default();
+        m.header = Some(ModuleHeader { magic_number: 0x07230203, version: 0x00010300,
+            generator: 0, bound: 64, reserved_word: 0 });
+        m.capabilities.push(inst(Op::Capability, None, None, vec![Operand::Capability(Capability::Shader)]));
+        m.memory_model = Some(inst(Op::MemoryModel, None, None, vec![
+            Operand::AddressingModel(AddressingModel::Logical), Operand::MemoryModel(MemoryModel::GLSL450)]));
+        m.entry_points.push(inst(Op::EntryPoint, None, None, vec![
+            Operand::ExecutionModel(ExecutionModel::GLCompute), Operand::IdRef(18), Operand::LiteralString("main".into())]));
+        m.execution_modes.push(inst(Op::ExecutionMode, None, None, vec![Operand::IdRef(18),
+            Operand::ExecutionMode(ExecutionMode::LocalSize), Operand::LiteralBit32(1), Operand::LiteralBit32(1), Operand::LiteralBit32(1)]));
+        for (target, decoration, value) in [(4, Decoration::ArrayStride, Some(4)),
+            (5, Decoration::Block, None), (15, Decoration::NonWritable, None),
+            (15, Decoration::DescriptorSet, Some(0)), (15, Decoration::Binding, Some(7))] {
+            let mut operands = vec![Operand::IdRef(target), Operand::Decoration(decoration)];
+            if let Some(n) = value { operands.push(Operand::LiteralBit32(n)); }
+            m.annotations.push(inst(Op::Decorate, None, None, operands));
+        }
+        m.annotations.push(inst(Op::MemberDecorate, None, None, vec![Operand::IdRef(5),
+            Operand::LiteralBit32(0), Operand::Decoration(Decoration::Offset), Operand::LiteralBit32(0)]));
+        m.types_global_values = vec![
+            inst(Op::TypeVoid, None, Some(1), vec![]),
+            inst(Op::TypeInt, None, Some(2), vec![Operand::LiteralBit32(32), Operand::LiteralBit32(0)]),
+            inst(Op::TypeFloat, None, Some(3), vec![Operand::LiteralBit32(32)]),
+            inst(Op::TypeRuntimeArray, None, Some(4), vec![Operand::IdRef(elem)]),
+            inst(Op::TypeStruct, None, Some(5), vec![Operand::IdRef(4)]),
+            inst(Op::TypePointer, None, Some(6), vec![Operand::StorageClass(StorageClass::StorageBuffer), Operand::IdRef(5)]),
+            inst(Op::TypePointer, None, Some(7), vec![Operand::StorageClass(StorageClass::StorageBuffer), Operand::IdRef(elem)]),
+            inst(Op::Constant, Some(2), Some(8), vec![Operand::LiteralBit32(0)]),
+            inst(Op::Constant, Some(2), Some(9), vec![Operand::LiteralBit32(3)]),
+            inst(Op::TypeFunction, None, Some(10), vec![Operand::IdRef(1)]),
+            inst(Op::Variable, Some(6), Some(15), vec![Operand::StorageClass(StorageClass::StorageBuffer)]),
+        ];
+        m.functions.push(Function {
+            def: Some(inst(Op::Function, Some(1), Some(18), vec![Operand::FunctionControl(FunctionControl::NONE), Operand::IdRef(10)])),
+            end: Some(inst(Op::FunctionEnd, None, None, vec![])), parameters: vec![],
+            blocks: vec![Block { label: Some(inst(Op::Label, None, Some(19), vec![])), instructions: vec![
+                inst(Op::AccessChain, Some(7), Some(20), vec![Operand::IdRef(15), Operand::IdRef(8), Operand::IdRef(9)]),
+                inst(Op::Load, Some(elem), Some(21), vec![Operand::IdRef(20)]),
+                inst(Op::Return, None, None, vec![]),
+            ] }],
+        });
+        m
+    }
+
+    fn bytes(m: &Module) -> Vec<u8> { m.assemble().iter().flat_map(|w| w.to_le_bytes()).collect() }
+
+    #[test]
+    fn uint_and_float_words_preserve_the_load_type() {
+        for float_words in [false, true] {
+            let (output, extent) = promote(&bytes(&module(float_words)), 7, 65536).unwrap();
+            assert_eq!(extent, 16);
+            let m = rspirv::dr::load_bytes(output).unwrap();
+            let variable = m.types_global_values.iter().find(|i| i.result_id == Some(15)).unwrap();
+            assert_eq!(variable.operands[0], Operand::StorageClass(StorageClass::Uniform));
+            let load = m.functions[0].blocks[0].instructions.iter().find(|i| i.class.opcode == Op::Load).unwrap();
+            assert_eq!(load.result_type, Some(if float_words { 3 } else { 2 }));
+            assert!(m.annotations.iter().any(|i| i.operands == [Operand::IdRef(15),
+                Operand::Decoration(Decoration::Binding), Operand::LiteralBit32(BINDING)]));
+        }
+    }
+
+    #[test]
+    fn function_local_constant_arithmetic_proves_the_word_offset() {
+        let mut m = module(false);
+        m.types_global_values.push(inst(Op::Constant, Some(2), Some(22), vec![Operand::LiteralBit32(1352)]));
+        m.types_global_values.push(inst(Op::Constant, Some(2), Some(23), vec![Operand::LiteralBit32(4)]));
+        let instructions = &mut m.functions[0].blocks[0].instructions;
+        instructions[0].operands[2] = Operand::IdRef(25);
+        instructions.splice(0..0, [
+            inst(Op::IAdd, Some(2), Some(24), vec![Operand::IdRef(22), Operand::IdRef(8)]),
+            inst(Op::UDiv, Some(2), Some(25), vec![Operand::IdRef(24), Operand::IdRef(23)]),
+        ]);
+        let (output, extent) = promote(&bytes(&m), 7, 65536).unwrap();
+        assert_eq!(extent, 1356);
+        let m = rspirv::dr::load_bytes(output).unwrap();
+        let access = m.functions[0].blocks[0].instructions.iter().find(|i| i.class.opcode == Op::AccessChain).unwrap();
+        let index = id(&access.operands[2]).unwrap();
+        assert!(m.types_global_values.iter().any(|i| i.result_id == Some(index)
+            && i.class.opcode == Op::Constant && i.operands == [Operand::LiteralBit32(338)]));
+    }
+
+    #[test]
+    fn float_words_can_introduce_an_unsigned_index_type() {
+        let mut m = module(true);
+        m.types_global_values[1].operands[1] = Operand::LiteralBit32(1);
+        let (output, extent) = promote(&bytes(&m), 7, 65536).unwrap();
+        assert_eq!(extent, 16);
+        let m = rspirv::dr::load_bytes(output).unwrap();
+        assert_eq!(m.types_global_values.iter().filter(|i| i.class.opcode == Op::TypeInt
+            && i.operands == [Operand::LiteralBit32(32), Operand::LiteralBit32(0)]).count(), 1);
+    }
+
+    #[test]
+    fn unknown_indices_keep_the_original_path() {
+        let mut m = module(false);
+        m.types_global_values.push(inst(Op::Undef, Some(2), Some(22), vec![]));
+        m.functions[0].blocks[0].instructions[0].operands[2] = Operand::IdRef(22);
+        assert!(promote(&bytes(&m), 7, 65536).unwrap_err().contains("dynamically indexed"));
+    }
+
+    #[test]
+    fn global_pointer_initializers_keep_the_original_path() {
+        let mut m = module(false);
+        m.capabilities.push(inst(Op::Capability, None, None,
+            vec![Operand::Capability(Capability::VariablePointers)]));
+        m.types_global_values.push(inst(Op::TypePointer, None, Some(22),
+            vec![Operand::StorageClass(StorageClass::Private), Operand::IdRef(6)]));
+        m.types_global_values.push(inst(Op::Variable, Some(22), Some(23),
+            vec![Operand::StorageClass(StorageClass::Private), Operand::IdRef(15)]));
+        assert!(promote(&bytes(&m), 7, 65536).unwrap_err().contains("pointer escapes through Variable"));
+    }
+
+    #[test]
+    fn names_and_entry_point_interfaces_do_not_escape_the_pointer() {
+        let mut m = module(false);
+        m.header.as_mut().unwrap().version = 0x00010500;
+        m.debug_names.push(inst(Op::Name, None, None,
+            vec![Operand::IdRef(15), Operand::LiteralString("gl_uniforms".into())]));
+        m.entry_points[0].operands.push(Operand::IdRef(15));
+        assert_eq!(promote(&bytes(&m), 7, 65536).unwrap().1, 16);
+    }
+
+    #[test]
+    fn short_ranges_are_refused() {
+        assert!(promote(&bytes(&module(false)), 7, 12).unwrap_err().contains("range"));
+    }
+
+    #[test]
+    fn writes_and_volatile_loads_are_refused() {
+        let mut m = module(false);
+        m.functions[0].blocks[0].instructions.insert(2, inst(Op::Store, None, None,
+            vec![Operand::IdRef(20), Operand::IdRef(21)]));
+        assert!(promote(&bytes(&m), 7, 65536).unwrap_err().contains("Store"));
+        let mut m = module(false);
+        m.functions[0].blocks[0].instructions[1].operands.push(Operand::MemoryAccess(MemoryAccess::VOLATILE));
+        assert!(promote(&bytes(&m), 7, 65536).unwrap_err().contains("memory operands"));
+    }
+
+    #[test]
+    fn readonly_metadata_is_required() {
+        let mut m = module(false);
+        m.annotations.retain(|i| i.operands != [Operand::IdRef(15), Operand::Decoration(Decoration::NonWritable)]);
+        assert!(promote(&bytes(&m), 7, 65536).unwrap_err().contains("read-only"));
+    }
+
+    #[test]
+    fn invalid_slots_are_refused() {
+        assert!(promote(&bytes(&module(false)), 32, 65536).is_err());
+        assert!(promote(&bytes(&module(false)), 8, 65536).is_err());
+    }
 }
