@@ -61,8 +61,29 @@ headers. Their source snapshots match the resolved merge. The translator exports
 `nvmtl_table_to_uniform` fallback. Framebuffer imports add `OSString::metaClass` for display-audio
 metadata and remove the old delayed-connect entry point; no unexported cancel/wait call is imported.
 This integration does not stage/install or run automated tests, kernel-collection checks or GPU/runtime
-measurements. Previous boots and performance results do not qualify this combination. The separate,
-uncommitted uniform-cbuf experiment remains outside this main branch.
+measurements. Previous boots and performance results do not qualify this combination. The subsequent
+local uniform-cbuf and shadow translation integration is documented below.
+
+## GL uniform buffers and shadow translation follow-up
+
+The previously separate uniform-cbuf source is now integrated locally on the 2.5.2 base,
+including bounded integer-expression folding and the float32 stride-4 word extension.
+Retain AIR name/access/address-space eligibility, fixed-range proof, supported-device limits,
+separate binding-641 layouts, descriptor-layout/buffer/range cache identity and per-draw
+alignment/range fallback to the original physical-address pipeline. Preserve the GL slot through
+sampler specialization without replacing its specialized SPIR-V or attaching unspecialized AIR.
+Keep both the promotion export and upstream's `nvmtl_table_to_uniform` export and fallback;
+one does not replace the other. Keep release per-process disable/diagnostic switches.
+
+The shadow repair targets the inliner's renamed actual first block. Retry-only sampler-phi
+splitting is limited to sample/gather reads in the same block with dominating inputs, bounded
+sampler fan-out and distinct generated names. Do not broaden this to arbitrary AIR calls or
+duplicate texture writes/atomics. Shaders that translate as written keep their existing path.
+
+Framebuffer, cursor drain, NVAccel, native NVK and completion/parking policy are unchanged.
+The user's other-machine success applies to the earlier uniform-cbuf build; the supplied shadow
+report used offline text rewrites, and does not establish hardware correctness or FPS for this
+integration. See [OpenGL performance](OPENGL-PERFORMANCE.md) for behavior, switches and limits.
 
 
 ## Historical upstream 2.4.3 integration

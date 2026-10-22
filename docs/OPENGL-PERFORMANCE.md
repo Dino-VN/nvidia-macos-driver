@@ -1,5 +1,53 @@
 # OpenGL performance changes
 
+## GL uniform buffers and BSL/Complementary shadows
+
+The local uniform-cbuf work was brought into the 2.5.2 fork from the separate
+`minecraft optimization fix/nvidia-macos-driver-uniform-cbuf` checkout. It identifies
+Apple's `vs_uniform_buffer` / `fs_uniform_buffer` by AIR name, constant address space
+and read-only reflection. Supported blocks use the GPU's uniform-buffer path rather
+than physical buffer reads. Promotion accepts scalar uint32 or float32 words at
+stride 4, with proven constant indices and a maximum range of 64 KiB or the smaller
+device limit. The bounded integer-expression evaluator includes the later constant
+folding repair; genuinely dynamic indices, unsupported layouts, pointer escapes
+and writes keep the original path.
+
+The original pipeline remains available. A separate layout adds dynamic uniform
+binding 641 per stage; each draw selects it only when the actual buffer is present,
+aligned and large enough. Descriptor reuse includes layout, buffer and range;
+offset-only changes reuse the set with updated dynamic offsets. Sampler-specialized
+functions inherit the checked GL slot without acquiring the source function's AIR
+or changing their reflection/linking path. Keep upstream's descriptor retention,
+pointer preflight and binding-640 Uniform-table fallback alongside this path.
+Ordinary Metal/MoltenVK pipelines keep their existing layouts and offset counts.
+
+`NVMTL_UNIFORM_CBUF=0` disables promotion for a newly launched application; the
+default enables it on supported NVIDIA devices. Release startup preserves this
+override and `NVMTL_UNIFORM_CBUF_STATS=1`. Optional statistics explain promotion
+refusals and count recorded draws using the optimized or fallback pipeline. They
+are not completed GPU draws or FPS, and default off. Eligible pipelines compile a
+second variant synchronously, so shader-pack loading and first use may take longer.
+
+The accompanying `nvmtl-bsl-shadow-fix` report identified two independent translator
+bugs. Inlined helpers with a named first block now branch to its renamed label.
+On translation retry, a sampler phi used by supported texture reads is replaced
+with an integer selector, one read per distinct incoming sampler and a result
+selection. All incoming samplers must dominate the reads; all uses must be in the
+phi's block. Only sample/gather intrinsics qualify, at most eight distinct samplers
+are accepted, and generated SSA names avoid collisions. A shader that translates
+as written never uses this retry repair. Extra sampling is a compatibility cost,
+not a shadow-rendering performance claim.
+
+The user reports the uniform-cbuf build works on another machine. The supplied
+shadow report describes successful offline translation of 26 formerly failing GL
+modules after equivalent text rewrites, but its Rust patches had not been built
+there. Those are external observations, not runtime validation of this combined
+2.5.2 source. The earlier two 60-second MakeUp runs (92.97 FPS enabled versus
+97.03 disabled) were uncontrolled and did not establish a performance gain.
+Only the plugin and translator need rebuilding for these changes; the framebuffer,
+accelerator and native NVK source are untouched. Fresh GPU correctness checks and
+matched gameplay measurements are still needed for the combined build.
+
 For future upstream merges, retain these changes and the later MoltenVK/NVMTL optimization as
 described in [Fork merge notes](FORK-MERGE-NOTES.md). Check for equivalent upstream implementations
 and overlapping changes before resolving conflicts.
