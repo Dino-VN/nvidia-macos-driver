@@ -1,7 +1,7 @@
 #!/bin/bash
 set -o pipefail
 SRC=$1; OUT=$2; mkdir -p "$OUT/NVAccel.kext/Contents/MacOS"
-OGKM=${OGKM:-$HOME/ogkm610}; RE=${RE:-$SRC/accel/re}   # the reconstructed IOGraphicsAccelerator2 / IOAccelerator headers ship in the repo
+OGKM=${OGKM:-$HOME/ogkm615}; RE=${RE:-$SRC/accel/re}   # NVIDIA 615.78.08; reconstructed accelerator headers ship in the repo
 SDK=$(xcrun --show-sdk-path); KHDR="$SDK/System/Library/Frameworks/Kernel.framework/Headers"; NV="$OGKM/src/nvidia"; KMS="$OGKM/src/nvidia-modeset"
 RMINC=( -I"$NV/arch/nvalloc/unix/include" -I"$NV/arch/nvalloc/common/inc" -I"$NV/arch/nvalloc/common/inc/gsp"
   -I"$OGKM/src/common/sdk/nvidia/inc" -I"$OGKM/src/common/sdk/nvidia/inc/hw" -I"$OGKM/src/common/inc"

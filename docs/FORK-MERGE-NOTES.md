@@ -16,10 +16,56 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.4.3 at `47f818b`**, from `upstream/main` and `v2.4.3`, integrated
-on 2026-10-20. The preceding base was 2.4.2 at `272ccd9`, integrated earlier that day.
+The current upstream base is **2.5.2 at `f2114ab`**, from `upstream/main`, integrated on
+2026-10-22. The preceding base was 2.4.3 at `47f818b`, integrated on 2026-10-20.
 
-## Upstream 2.4.3 integration
+## Upstream 2.5.2 integration
+
+Three files had textual conflicts: `CHANGELOG.md`, `kexts/NVRMFB/fb/nvrm-fb.cpp` and
+`translator/wrapper/src/buffer_addresses.rs`. Keep the fork history alongside upstream's new releases.
+
+The framebuffer keeps upstream's NVIDIA 615 output-LUT surfaces, hotplug/EDID/audio association,
+connection notifications and opt-in deferred flip verification. Preserve the fork's cursor allocation
+at kernel priority with ONCE, its stopping/gate checks, accepted-work counter and exported
+`thread_call_cancel` followed by explicit drain. Clean up `fConnectNotify` in the other worker list;
+keep `fCursorCall` out of that list because its dedicated drain already freed it. Failed starts free
+either allocated callback handle. Do not import `thread_call_cancel_wait`.
+
+Keep upstream's descriptor path for data-dependent runtime arrays and its Uniform-table conversion
+fallback when physical-address lowering is refused. Before mutating types, discover every supported
+pointer chain to a fixed point. Check every operand for pointer escapes; a pointer stored as a value
+must exclude its own root from logical retention even when the destination is another candidate root.
+Keep table-helper/control-flow/store/return escape refusal. Clone all proven logical pointers,
+independently of block order, after their pointee definitions and before their moved global variables.
+Unsupported uses retain the existing descriptor fallback or controlled refusal; this does not add
+helper-pointer support or general dynamic uniform-buffer promotion.
+
+Take the remaining rendering, completion-witness, headless/startup, temperature and installer changes.
+Keep upstream's default flip verification mode 1; mode 2 is opt-in and needs separate hardware testing.
+The native NVK/Mesa source is unchanged. `nvAccelRestoreParkedForDirty` and GPU-current publication
+are identical to upstream and must remain included once. The all-app ANGLE default, strict stencil
+detection, stronger badge mip tracking, committed GL resource snapshots, argument-buffer routing,
+guarded GL timing, submission-copy cache, MoltenVK binding/sampler caches and release `-O2` remain.
+The experimental framebuffer allocation policies and unconditional Dock wait stay retired.
+
+Use NVIDIA **615.78.08** headers. The fork build helpers now default to `~/ogkm615`; `OGKM` can name
+another checkout. Public sources have no Darwin compile metadata or prelinked RM/KMS archives.
+For packaging, use the official **2.5.2** RM, runtime, codecs, firmware and installer, preserve its
+version/dependency metadata, and rebuild the plugin, translator, NVRMFB and Tahoe NVAccel. Do not reuse
+the 2.4.3/610 RM or framebuffer as the new package base. The old 610-specific completion-archive
+helper and vendor patches are historical; the 615 viewport patch belongs in a full matching vendor KMS build.
+
+Compilation and source-retention records are identified by `out/upstream-merge-latest.json`.
+The release plugin, translator, framebuffer and Tahoe accelerator compile with the 615.78.08
+headers. Their source snapshots match the resolved merge. The translator exports the new
+`nvmtl_table_to_uniform` fallback. Framebuffer imports add `OSString::metaClass` for display-audio
+metadata and remove the old delayed-connect entry point; no unexported cancel/wait call is imported.
+This integration does not stage/install or run automated tests, kernel-collection checks or GPU/runtime
+measurements. Previous boots and performance results do not qualify this combination. The separate,
+uncommitted uniform-cbuf experiment remains outside this main branch.
+
+
+## Historical upstream 2.4.3 integration
 
 Two files had textual conflicts: `CHANGELOG.md` and the cursor allocation in
 `kexts/NVRMFB/fb/nvrm-fb.cpp`. Keep the fork history alongside upstream's release entry. Take upstream's
