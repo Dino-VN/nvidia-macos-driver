@@ -35,6 +35,17 @@ fn an_ivec3_uniform_at_offset_zero_of_a_float_gep_translates() {
 }
 
 #[test]
+fn an_ivec2_uniform_in_a_vec4_slot_translates() {
+    // BSL reads eyeBrightnessSmooth (ivec2) as `load <2 x i32>` through a GEP over the block's vec4 slots; it failed
+    // "reinterpret load bit width mismatch Vector(Float, 4) (128) vs Vector(Int(32), 2) (64)".
+    let ll = include_str!("fixtures/gl/ivec2_uniform_through_vec4_gep.ll");
+    let spv = translate_sanitized_native(ll, Stage::Vertex, &tmp()).expect("the ivec2 uniform load must translate");
+    let asm = disassemble(&spv).expect("disassemble");
+    assert!(asm.contains("OpBitcast") && asm.contains("OpConvertSToF"), "the lanes are reinterpreted as int:\n{asm}");
+    spirv_val(&spv);
+}
+
+#[test]
 fn a_sampler2d_parameter_chosen_by_a_constant_index_samples_that_pair() {
     let ll = include_str!("fixtures/gl/sampler2d_param_chosen_by_constant.ll");
     let spv = translate_sanitized_native(ll, Stage::Vertex, &tmp()).expect("the lightmap lookup must translate");

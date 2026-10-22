@@ -627,6 +627,77 @@ impl Emitter {
         Ok(true)
     }
 
+    /// The leading lanes of a 32-bit vector read as a shorter vector of the other 32-bit type, one
+    /// bitcast per lane. Apple's GL reads an ivec2 uniform (BSL's eyeBrightnessSmooth) as
+    /// `load <2 x i32>` through a GEP over the block's vec4 slots. Tried only after every other
+    /// width-changing load has declined, so a load that translated before keeps its instructions.
+    pub(in crate::native::emitter) fn emit_lane_prefix_bitcast_load(
+        &mut self,
+        result: Word,
+        pointee: &LlType,
+        result_ty: &LlType,
+        ptr: Word,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<bool, String> {
+        let (LlType::Vector(src_elem, src_lanes), LlType::Vector(dst_elem, dst_lanes)) =
+            (pointee, result_ty)
+        else {
+            return Ok(false);
+        };
+        let src_elem = self.resolve_type(src_elem)?;
+        let dst_elem = self.resolve_type(dst_elem)?;
+        // 32-bit words only: the float/int pair GL blocks hold, needing no 16-bit capability for the
+        // bitcast
+        let word = |ty: &LlType| matches!(ty, LlType::Float | LlType::Int(32));
+        if *dst_lanes < 2
+            || src_lanes <= dst_lanes
+            || !word(&src_elem)
+            || !word(&dst_elem)
+            || src_elem == dst_elem
+        {
+            return Ok(false);
+        }
+
+        let pointee_type = self.type_id(pointee)?;
+        let loaded = self.fresh();
+        instructions.push(Self::inst(
+            Op::Load,
+            Some(pointee_type),
+            Some(loaded),
+            vec![Operand::IdRef(ptr)],
+        ));
+
+        let src_elem_type = self.type_id(&src_elem)?;
+        let dst_elem_type = self.type_id(&dst_elem)?;
+        let mut lanes = Vec::with_capacity(*dst_lanes as usize);
+        for lane in 0..*dst_lanes {
+            let extracted = self.fresh();
+            instructions.push(Self::inst(
+                Op::CompositeExtract,
+                Some(src_elem_type),
+                Some(extracted),
+                vec![Operand::IdRef(loaded), Operand::LiteralBit32(lane)],
+            ));
+            let cast = self.fresh();
+            instructions.push(Self::inst(
+                Op::Bitcast,
+                Some(dst_elem_type),
+                Some(cast),
+                vec![Operand::IdRef(extracted)],
+            ));
+            lanes.push(Operand::IdRef(cast));
+        }
+
+        let result_type = self.type_id(result_ty)?;
+        instructions.push(Self::inst(
+            Op::CompositeConstruct,
+            Some(result_type),
+            Some(result),
+            lanes,
+        ));
+        Ok(true)
+    }
+
     pub(in crate::native::emitter) fn emit_scalar_narrowing_load(
         &mut self,
         result: Word,

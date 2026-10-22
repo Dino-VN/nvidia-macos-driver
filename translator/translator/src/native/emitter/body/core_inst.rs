@@ -2566,6 +2566,15 @@ impl Emitter {
                     )? {
                         return Ok(());
                     }
+                    if self.emit_lane_prefix_bitcast_load(
+                        result,
+                        &pointee,
+                        &result_ty,
+                        ptr,
+                        instructions,
+                    )? {
+                        return Ok(());
+                    }
                     if pointee == LlType::Int(8) {
                         return Err(format!(
                             "native emitter: cannot reinterpret load of byte pointer to {result_ty:?} without a logical-pointer bitcast"
