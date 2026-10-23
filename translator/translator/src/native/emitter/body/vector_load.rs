@@ -628,7 +628,7 @@ impl Emitter {
     }
 
     /// The leading lanes of a 32-bit vector read as a shorter vector of the other 32-bit type, one
-    /// bitcast per lane. Apple's GL reads an ivec2 uniform (BSL's eyeBrightnessSmooth) as
+    /// scalar load and bitcast per lane. Apple's GL reads an ivec2 uniform (BSL's eyeBrightnessSmooth) as
     /// `load <2 x i32>` through a GEP over the block's vec4 slots. Tried only after every other
     /// width-changing load has declined, so a load that translated before keeps its instructions.
     pub(in crate::native::emitter) fn emit_lane_prefix_bitcast_load(
@@ -636,6 +636,7 @@ impl Emitter {
         result: Word,
         pointee: &LlType,
         result_ty: &LlType,
+        ptr_value: &TypedValue,
         ptr: Word,
         instructions: &mut Vec<Instruction>,
     ) -> Result<bool, String> {
@@ -658,32 +659,39 @@ impl Emitter {
             return Ok(false);
         }
 
-        let pointee_type = self.type_id(pointee)?;
-        let loaded = self.fresh();
-        instructions.push(Self::inst(
-            Op::Load,
-            Some(pointee_type),
-            Some(loaded),
-            vec![Operand::IdRef(ptr)],
-        ));
-
+        let LlType::Ptr(addrspace) = self.resolve_type(&ptr_value.ty)? else {
+            return Ok(false);
+        };
+        let storage = self.pointer_storage_for(&ptr_value.value, addrspace)?;
+        let lane_ptr_type = self.ptr_type_id(storage, &src_elem)?;
         let src_elem_type = self.type_id(&src_elem)?;
         let dst_elem_type = self.type_id(&dst_elem)?;
         let mut lanes = Vec::with_capacity(*dst_lanes as usize);
+        // The GEP's vector type describes its stride, not the bytes that the
+        // LLVM load is allowed to read. Loading the full source vector could
+        // run past a buffer whose final slot contains only the requested prefix.
         for lane in 0..*dst_lanes {
-            let extracted = self.fresh();
+            let lane_index = self.const_uint(lane)?;
+            let lane_ptr = self.fresh();
             instructions.push(Self::inst(
-                Op::CompositeExtract,
+                Op::AccessChain,
+                Some(lane_ptr_type),
+                Some(lane_ptr),
+                vec![Operand::IdRef(ptr), Operand::IdRef(lane_index)],
+            ));
+            let loaded = self.fresh();
+            instructions.push(Self::inst(
+                Op::Load,
                 Some(src_elem_type),
-                Some(extracted),
-                vec![Operand::IdRef(loaded), Operand::LiteralBit32(lane)],
+                Some(loaded),
+                vec![Operand::IdRef(lane_ptr)],
             ));
             let cast = self.fresh();
             instructions.push(Self::inst(
                 Op::Bitcast,
                 Some(dst_elem_type),
                 Some(cast),
-                vec![Operand::IdRef(extracted)],
+                vec![Operand::IdRef(loaded)],
             ));
             lanes.push(Operand::IdRef(cast));
         }

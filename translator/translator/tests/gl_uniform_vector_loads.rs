@@ -10,6 +10,7 @@
 //! was not recovered").
 use metal2vulkan::passes::Stage;
 use metal2vulkan::{disassemble, translate_sanitized_native};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 fn tmp() -> PathBuf {
@@ -42,6 +43,57 @@ fn an_ivec2_uniform_in_a_vec4_slot_translates() {
     let spv = translate_sanitized_native(ll, Stage::Vertex, &tmp()).expect("the ivec2 uniform load must translate");
     let asm = disassemble(&spv).expect("disassemble");
     assert!(asm.contains("OpBitcast") && asm.contains("OpConvertSToF"), "the lanes are reinterpreted as int:\n{asm}");
+    spirv_val(&spv);
+}
+
+fn assert_prefix_load_width(spv: &[u8], lanes: usize) {
+    let words: Vec<u32> = spv.chunks_exact(4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+    let mut instructions = Vec::new();
+    let mut at = 5;
+    while at < words.len() {
+        let count = (words[at] >> 16) as usize;
+        assert!(count > 0 && at + count <= words.len());
+        instructions.push((words[at] & 0xffff, &words[at + 1..at + count]));
+        at += count;
+    }
+    let scalars: HashSet<_> = instructions.iter().filter_map(|(op, args)|
+        (matches!(*op, 21 | 22) && args.get(1) == Some(&32)).then(|| args[0])).collect();
+    let vec4: HashSet<_> = instructions.iter().filter_map(|(op, args)|
+        (*op == 23 && args.get(2) == Some(&4)).then(|| args[0])).collect();
+    assert!(!instructions.iter().any(|(op, args)| *op == 61 && vec4.contains(&args[0])),
+        "an 8/12-byte prefix must not load a full 16-byte vec4");
+    let loads: HashSet<_> = instructions.iter().filter_map(|(op, args)|
+        (*op == 61 && scalars.contains(&args[0])).then(|| args[1])).collect();
+    assert_eq!(loads.len(), lanes);
+    assert_eq!(instructions.iter().filter(|(op, args)| *op == 124 && loads.contains(&args[2])).count(), lanes,
+        "each loaded lane keeps its bits, rather than being numerically converted");
+}
+
+#[test]
+fn vector_prefix_loads_do_not_read_past_the_buffer_tail() {
+    let fixture = include_str!("fixtures/gl/ivec2_uniform_through_vec4_gep.ll");
+    for lanes in [2, 3] {
+        // The GEP starts at byte 16. Only the 8/12 bytes requested by the LLVM
+        // load remain; reading the source vector's last lanes would over-read.
+        let ll = fixture.replace("<2 x i32>", &format!("<{lanes} x i32>"))
+            .replace("!\"air.buffer_size\", i32 32,", &format!("!\"air.buffer_size\", i32 {},", 16 + lanes * 4));
+        let spv = translate_sanitized_native(&ll, Stage::Vertex, &tmp()).expect("bounded prefix load");
+        assert_prefix_load_width(&spv, lanes);
+        spirv_val(&spv);
+    }
+}
+
+#[test]
+fn integer_vector_prefixes_can_be_reinterpreted_as_float_lanes() {
+    let fixture = include_str!("fixtures/gl/ivec2_uniform_through_vec4_gep.ll");
+    let ll = fixture.replace("getelementptr <4 x float>", "getelementptr <4 x i32>")
+        .replace("<2 x i32>", "<2 x float>")
+        .replace("%7 = call reassoc nsz arcp contract afn float @air.convert.f.f32.s.i32(i32 %6)",
+            "%7 = fadd float %6, 0.000000e+00")
+        .replace("!\"air.buffer_size\", i32 32,", "!\"air.buffer_size\", i32 24,");
+    let spv = translate_sanitized_native(&ll, Stage::Vertex, &tmp()).expect("integer prefix as floats");
+    assert_prefix_load_width(&spv, 2);
     spirv_val(&spv);
 }
 

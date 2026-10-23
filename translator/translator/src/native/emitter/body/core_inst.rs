@@ -2570,6 +2570,7 @@ impl Emitter {
                         result,
                         &pointee,
                         &result_ty,
+                        &load.ptr,
                         ptr,
                         instructions,
                     )? {

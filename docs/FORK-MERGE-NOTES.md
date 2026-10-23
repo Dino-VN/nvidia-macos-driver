@@ -80,6 +80,22 @@ splitting is limited to sample/gather reads in the same block with dominating in
 sampler fan-out and distinct generated names. Do not broaden this to arbitrary AIR calls or
 duplicate texture writes/atomics. Shaders that translate as written keep their existing path.
 
+The BSL/Complementary follow-up accepts 2 through 16 distinct incoming samplers on that retry;
+17 stays refused. Preserve the same dominance, call-kind and use-site guards. For a shorter
+32-bit float/int vector load through a wider vector GEP, load and bitcast only the requested
+scalar lanes. The GEP's vector stride does not prove that the full vector is readable: an
+8-byte prefix at offset 16 must work with a 24-byte buffer without reading to byte 32.
+Keep this fallback after the earlier load handlers, including the reverse int-to-float case.
+Preserve sampler/A8/threadgroup options across the pointer retry and refuse global pointer
+captures before cbuf promotion, as established by the preceding translator repair.
+
+The follow-up release translator compiles. CPU checks cover the prefix bounds, 9/16-sampler
+translation, the 17-sampler refusal and retained specialization/cbuf behavior. An 84-module
+public-input comparison retained identical bytes for all 68 previously translated inputs,
+added one translated fixture and kept 15 controlled refusals. One descriptor-array assertion
+also fails on the parent because this fork routes those textures through the heap; it is not
+counted as a new regression. This does not qualify shader-pack visuals or FPS on hardware.
+
 Framebuffer, cursor drain, NVAccel, native NVK and completion/parking policy are unchanged.
 The user's other-machine success applies to the earlier uniform-cbuf build; the supplied shadow
 report used offline text rewrites, and does not establish hardware correctness or FPS for this
