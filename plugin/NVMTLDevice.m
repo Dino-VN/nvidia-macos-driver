@@ -260,6 +260,20 @@ static const char *nvmtl_nvenc_library_for_this_gpu(void)
     if (nvmtl_gen_is(gen, "Turing")) return "libnvenc_h264_tu10x.dylib";
     return NULL;
 }
+static bool nvmtl_is_sandboxed(void)
+{
+    typedef int (*sandbox_check_fn)(pid_t, const char *, int, ...);
+    static sandbox_check_fn sbc = NULL;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sbc = (sandbox_check_fn)dlsym(RTLD_DEFAULT, "sandbox_check");
+    });
+    return sbc ? (sbc(getpid(), NULL, 0) != 0) : false;
+}
+static bool nvmtl_is_decode_service(const char *me)
+{
+    return me && strncmp(me, "VTDecoderXPCService", 19) == 0;
+}
 static void nvmtl_nvdec_register(void)
 {
     static dispatch_once_t once;
@@ -267,6 +281,10 @@ static void nvmtl_nvdec_register(void)
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVDEC")) { nvlog("nvdec: NVMTL_NO_NVDEC set - not registering in %s", me); return; }
         if (!strcmp(me, "WindowServer")) return;
+        if (nvmtl_is_sandboxed() && !nvmtl_is_decode_service(me)) {
+            nvlog("nvdec: %s is sandboxed - not registering in-process H.264 decoder (delegates to VTDecoderXPCService)", me);
+            return;
+        }
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoDecoderWithInfo");
         if (!reg) { nvlog("nvdec: VideoToolbox is not loaded in %s - not registering", me); return; }
@@ -379,6 +397,10 @@ static void nvmtl_nvdec_hevc_register(void)
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVDEC_HEVC")) { nvlog("nvdec: NVMTL_NO_NVDEC_HEVC set - not registering HEVC in %s", me); return; }
         if (!strcmp(me, "WindowServer")) return;
+        if (nvmtl_is_sandboxed() && !nvmtl_is_decode_service(me)) {
+            nvlog("nvdec: %s is sandboxed - not registering in-process HEVC decoder (delegates to VTDecoderXPCService)", me);
+            return;
+        }
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
         RegFn reg = (RegFn)dlsym(RTLD_DEFAULT, "VTRegisterVideoDecoderWithInfo");
         if (!reg) { nvlog("nvdec: VideoToolbox is not loaded in %s - not registering HEVC", me); return; }
@@ -408,7 +430,7 @@ static void nvmtl_nvdec_hevc_register(void);
 __attribute__((constructor)) static void nvmtl_nvdec_in_decode_service(void)
 {
     const char *me = getprogname();
-    if (!me || strcmp(me, "VTDecoderXPCService") || getenv("NVMTL_NO_NVDEC")) return;
+    if (!nvmtl_is_decode_service(me) || getenv("NVMTL_NO_NVDEC")) return;
     // off the loader's thread: the registration dlopens the decoder library
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         uint32_t dev = 0;

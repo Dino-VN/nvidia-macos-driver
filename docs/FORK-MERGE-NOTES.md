@@ -16,8 +16,49 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.5.2 at `f2114ab`**, from `upstream/main`, integrated on
-2026-10-22. The preceding base was 2.4.3 at `47f818b`, integrated on 2026-10-20.
+The current upstream base is **2.5.4 at `4677905`**, from `upstream/main`, integrated on
+2026-10-24. The preceding base was 2.5.2 at `f2114ab`, integrated on 2026-10-22.
+
+## Upstream 2.5.4 integration
+
+Two files had textual conflicts: `CHANGELOG.md` and the ANGLE policy in `plugin/NVMTLDevice.m`.
+Keep the fork history and upstream release entries. Upstream adds Discord to its browser-name allowlist;
+the fork already covers Discord through its all-app default. Keep the broader default and
+`NVMTL_ANGLE_METAL=0` opt-out once, without introducing a second constructor or a name filter.
+
+Take upstream's sandbox checks for H.264 and HEVC registration. Sandboxed clients leave decoding to
+VideoToolbox's decoding service; the service and its suffixed process names can still register NVDEC.
+Keep the existing decoder disable switches and asynchronous service registration.
+
+Take upstream's headless deadline check: if no NVIDIA head has published and no other GPU or
+`NMIntelFB` owns the display, leave `MetalPluginName` withheld so WindowServer can use the firmware
+framebuffer without acceleration. Existing early handover and Intel-panel handling remain. This
+does not change normal display arming, parking, scanout allocation or flip verification.
+
+Take the `nv_parms` repair as a null-terminated data table rather than a function stub. Its name/data
+layout matches NVIDIA 615.78.08's registry-option parser. This changes the main RM and needs the
+matching 2.5.4 RM binary when packaging; a plugin or accelerator rebuild alone does not include it.
+Take the installer deny-only ACL handling, third-party kext failure diagnostics and installed licence texts.
+
+No new equivalents of the remaining local fixes were added. The framebuffer, cursor shutdown/drain,
+translator, native NVK, GL/MoltenVK caches, uniform-buffer promotion, bounded vector-prefix loads,
+16-way sampler retry, specialization/pointer-escape guards, stencil and badge repairs, submission-copy
+cache and release `-O2` are unchanged from the preceding fork. Parked-backing restoration and
+upstream's conditional completion/capture synchronization remain included once. Keep the retired
+experimental framebuffer policies and unconditional Dock wait removed.
+
+Build/source-retention records are identified by `out/upstream-merge-latest.json`. Use NVIDIA
+615.78.08 headers and matching official **2.5.4** RM, runtime, codecs, firmware, installer, licence
+directory and version/dependency metadata for a subsequent package. This source merge does not
+update `~/Downloads/pkgroot` or the installed driver. Earlier hardware results do not validate
+sandboxed video, headless fallback, boot options or performance for this combined build.
+
+The release plugin (`-O2`) and Tahoe accelerator compile. The changed RM OS-interface file also
+compiles as an object using the public headers' `NV_KERNEL_INTERFACE_LAYER` branch, and `nv_parms`
+is emitted as data; this is not a linked RM or a vendor ABI check. Seven focused CPU checks cover
+ANGLE defaults/overrides, headless conditions, the parameter-table walk, installer ACLs, third-party
+kext diagnostics and licence inclusion. Installer/build shell syntax checks pass. No kernel-collection,
+boot, sandboxed-video, GPU or performance test was run for this integration.
 
 ## Upstream 2.5.2 integration
 

@@ -4,7 +4,7 @@ Before merging a newer upstream revision, read [Fork merge notes](docs/FORK-MERG
 Retain the Tahoe fixes, existing performance optimizations and the OpenGL/Minecraft and MoltenVK
 changes, checking for conflicts and equivalent upstream implementations first.
 
-This guide targets upstream **2.5.2 at `f2114ab`**, using NVIDIA **615.78.08**. It includes surface
+This guide targets upstream **2.5.4 at `4677905`**, using NVIDIA **615.78.08**. It includes surface
 uploads from imported pages, extended-range/sRGB rendering repairs, descriptor fallback, display/audio
 and startup changes. The earlier parked-VRAM and OpenGL/Minecraft optimizations are covered upstream
 and included once. The fork retains its cursor shutdown accounting, pointer safety guards and the
@@ -31,18 +31,21 @@ explicit mip-write detection, including views, resolves and storage bindings. Th
 and is retained alongside it. The user reported working badge digits on the preceding fork; this combined build
 still needs checking after installation.
 
-## Building and testing the upstream 2.5.2 integration
+## Building and testing the upstream 2.5.4 integration
 
 The source merge alone does not update the running driver or `~/Downloads/pkgroot`. Use the official
-**2.5.2 package** for its matching main RM, firmware, runtime, codecs, installer and version metadata.
+**2.5.4 package** for its matching main RM, firmware, runtime, codecs, installer, licence texts and version metadata.
 Do not combine the 615 framebuffer with the old 610 RM/firmware package. Main RM source remains
 upstream's, except for the local source-path default in its build helper. The kernel still validates
 firmware under `/Library/NullMoth/nvfw` and preserves the firmware-backup fallback.
 
-Rebuild the release plugin, translator, NVRMFB and Tahoe NVAccel. All four components changed since
-2.4.3. Use OGKM 615.78.08 headers (`~/ogkm615`, or set `OGKM` explicitly); the public checkout does not
+Rebuild the release plugin and Tahoe NVAccel for the 2.5.4 changes. The translator and NVRMFB source
+are unchanged from the preceding fork; reuse their fork outputs only after checking source and artifact
+identity. A full build of all four components is also supported. Use OGKM 615.78.08 headers
+(`~/ogkm615`, or set `OGKM` explicitly); the public checkout does not
 include Darwin RM/KMS archives or compile metadata for a complete main RM link. Reuse the matching
-official NVRM and runtime. Native NVK/Mesa source is unchanged in this update.
+official NVRM and runtime. The new main-RM parameter-table repair is not included by rebuilding the
+accelerator alone. Native NVK/Mesa source is unchanged in this update.
 
 The staging helper below replaces the framebuffer plist only. Include the rebuilt framebuffer
 executable separately, preserve the official package's dependency/version plists, and regenerate both
@@ -51,8 +54,8 @@ comparison; upstream's mode 2 defers the check to the next present and needs sep
 
 The release plugin uses `-O2`; userland and Tahoe kernel builds target x86_64 with a macOS 15.0 minimum.
 Compilation and source-retention records are identified by `out/upstream-merge-latest.json`.
-This integration does not stage or install a package and does not run automated tests or runtime/GPU
-checks. After installation and reboot, check icons/Settings glyphs, fresh Dock previews/badges,
+This source merge does not stage or install a package. Compilation and focused CPU checks do not
+qualify runtime/GPU behavior. After installation and reboot, check icons/Settings glyphs, fresh Dock previews/badges,
 Terminal redraw, window dragging, OpenGL/MoltenVK, display modes and cursor/shutdown behavior.
 Gamma/hotplug, temperature reporting and sleep/wake also need runtime coverage. Earlier measurements
 in [OpenGL performance](docs/OPENGL-PERFORMANCE.md) apply to their original builds.
@@ -122,7 +125,7 @@ Restore and minimize the affected window to regenerate its thumbnail. This setti
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-Use the official **2.5.2 package** as the staging base for its matching RM, runtime, codecs, installer and 615.78.08 firmware. Rebuild the fork plugin, translator, framebuffer and Tahoe accelerator; all four changed in this integration. The commands below do not build the main RM, framebuffer binary or NVK. Include the separately rebuilt framebuffer executable as described above. Preserve the 2.5.2 package's dependency/version plists instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
+Use the official **2.5.4 package** as the staging base for its matching RM, runtime, codecs, installer, licence texts and 615.78.08 firmware. Rebuild the fork plugin and Tahoe accelerator; retain the verified fork translator and framebuffer or rebuild them from the unchanged source. The commands below do not build the main RM, framebuffer binary or NVK. Include the fork framebuffer executable as described above. Preserve the 2.5.4 package's dependency/version plists instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 

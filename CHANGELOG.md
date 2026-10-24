@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork integration with upstream 2.5.4
+
+- Merge the headless-desktop startup fallback, sandboxed H.264/HEVC decoding, `nvregdwords` parameter-table repair and installer diagnostics. Keep the fork's all-app ANGLE Metal default, which already includes Discord.
+- Preserve parked-VRAM restoration, serialized cursor shutdown, Tahoe rendering repairs, OpenGL/MoltenVK caches, uniform-buffer promotion, BSL/Complementary shader repairs and release `-O2`. Package against the matching 2.5.4 RM and release files; see [Fork merge notes](docs/FORK-MERGE-NOTES.md) for validation limits.
+
 ## Fork integration with upstream 2.5.2
 
 - Integrate NVIDIA 615.78.08, surface-upload and rendering repairs, display/audio changes and the opt-in deferred flip wait. Keep the existing flip-wait default.
@@ -43,7 +48,21 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.5.2 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.5.4 build; comparative desktop performance remains unmeasured.
+
+## 2.5.4
+
+- Desktops whose only graphics card is the NVIDIA card no longer loop on a black screen when the card's display does not come up: WindowServer used to stop at start with "Failed to create MetalDevice" every ten seconds until the startup guard switched the driver off. It now starts on the firmware's framebuffer, the desktop appears without acceleration, and the first-login report sends the logs that show why the display did not come up.
+- Discord gets Metal through ANGLE the way Chrome does (PR #348, thanks lukeitsback).
+- Safari, QuickTime, Preview and other sandboxed apps decode H.264 and HEVC through macOS's video decoding service instead of failing inside their sandbox (PR #349, thanks lukeitsback).
+- The installer accepts a /Library folder whose access-control list only takes access away, and names any entry that would let another account write there.
+- When a kext you added to /Library/Extensions stops macOS from building its kernel collection, the installer names that kext and says how to move it, instead of only "test kernel collection build failed".
+- The package carries the licence texts of everything in it (NVIDIA's firmware licence, the open kernel modules' licence and Mesa's), installed to /Library/NullMoth/licenses; the uninstaller removes them.
+
+## 2.5.3
+
+- NVIDIA's driver options given as `nvregdwords=` no longer stop the startup. From 2.5.0 to 2.5.2 any option set this way ended the boot with a kernel panic in the driver; the options now reach NVIDIA's registry, as the 2.5.0 notes describe.
+- HDMI and DisplayPort audio, stated precisely: on macOS 15 the driver gives AppleHDA the display's audio link, and the display shows up under Sound > Output. macOS 26 removed AppleHDA, so on macOS 26 this package does not provide display audio by itself.
 
 ## 2.5.2
 
@@ -54,6 +73,8 @@ The release entries below describe upstream releases. Earlier hardware and bench
 - The system log is quiet again: the driver logs failed GPU allocations, not every successful one (#242).
 - Apps using Vision barcode detection (QQ and others) and Geekbench's Background Blur no longer sit at full CPU for minutes compiling one MPS kernel (#334, #111). That kernel still does not run on the GPU yet.
 
+
+## 2.5.1
 
 - Apple TV plays video again, and dragging windows no longer kills apps like Telegram: CoreAnimation's extended-range video formats (BGRA10_XR / PBGRAXb and BGR10_XR) are supported; the driver refused them, so video and some window pipelines failed (#309, #280).
 - Shader writes to sRGB textures land, encoded as on a real Mac; they were silently dropped, which broke Blender's edit-mode viewport (#321).
