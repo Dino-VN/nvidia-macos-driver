@@ -1,5 +1,9 @@
 # Changelog
 
+## Fork video playback repair
+
+- Restore local H.264/HEVC registration in sandboxed clients that can open both accelerator RM bridge connections. Keep restricted clients on the decoding-service path. This repairs Chromium's H.264 capability check without disabling its GPU sandbox; encoder and rendering policies are unchanged. Rebuild the plugin only.
+
 ## Fork display rotation on Tahoe
 
 - Add 90°, 180° and 270° rotation with desktop/cursor alignment, enabled by default on Tahoe. Preserve native timings and Standard's normal path; `nvrmrotation=0` disables it.

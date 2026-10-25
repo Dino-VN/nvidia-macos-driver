@@ -61,9 +61,21 @@ Keep the fork history and upstream release entries. Upstream adds Discord to its
 the fork already covers Discord through its all-app default. Keep the broader default and
 `NVMTL_ANGLE_METAL=0` opt-out once, without introducing a second constructor or a name filter.
 
-Take upstream's sandbox checks for H.264 and HEVC registration. Sandboxed clients leave decoding to
-VideoToolbox's decoding service; the service and its suffixed process names can still register NVDEC.
-Keep the existing decoder disable switches and asynchronous service registration.
+Keep the H.264/HEVC registration access check, but do not restore upstream's blanket sandbox refusal.
+Chromium checks local VideoToolbox hardware support before creating a decoder: suppressing registration
+can reject H.264 without ever reaching the decoding service. In a sandboxed client, register only after
+both accelerator RM bridge client types can be opened; close both probe connections immediately and
+cache the decision across codecs. Clients denied access still defer to the decoding service. Preserve
+the service/suffixed-name exception, decoder disable switches, WindowServer exclusion and asynchronous
+service registration. Encoder registration and the ANGLE policy remain independent.
+
+On RTX 2060 Super / Tahoe 26.7.1, an isolated copy of Discord's Electron 42.11.15 reproduced
+`kUnsupportedConfig` with zero H.264 frames before the repair. With the rebuilt plugin and no
+diagnostic shim, generated H.264 and HEVC clips decoded 642 and 702 frames respectively, with zero
+reported drops. Discord's restarted GPU process retained its sandbox and mapped the repaired plugin;
+the user confirmed that uploaded chat videos played with picture and sound. CPU checks cover denied
+or missing clients, connection cleanup, cached decisions and the service exception
+(`tools/test_video_registration.py`). Other GPUs and sandbox profiles have not been tested.
 
 Take upstream's headless deadline check: if no NVIDIA head has published and no other GPU or
 `NMIntelFB` owns the display, leave `MetalPluginName` withheld so WindowServer can use the firmware

@@ -274,6 +274,33 @@ static bool nvmtl_is_decode_service(const char *me)
 {
     return me && strncmp(me, "VTDecoderXPCService", 19) == 0;
 }
+static bool nvmtl_can_register_decoder(const char *me)
+{
+    if (nvmtl_is_decode_service(me) || !nvmtl_is_sandboxed()) return true;
+    // Chromium checks local VideoToolbox hardware support before it creates a decoder. Skipping registration
+    // makes H.264 disappear from that check; it does not send the query to VTDecoderXPCService. A sandboxed GPU
+    // process can already use our accelerator's RM bridge. Check both client types used by the decoder libraries
+    // under the actual sandbox, and leave restricted clients on the service path. No decoder session is created.
+    static bool allowed;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("NVAccel"));
+        io_connect_t control = IO_OBJECT_NULL, gpu = IO_OBJECT_NULL;
+        IOReturn cr = kIOReturnNotFound, gr = kIOReturnNotFound;
+        if (service) {
+            cr = IOServiceOpen(service, mach_task_self(), 0x4E560000u, &control);
+            if (cr == kIOReturnSuccess)
+                gr = IOServiceOpen(service, mach_task_self(), 0x4E560001u, &gpu);
+            if (gpu) IOServiceClose(gpu);
+            if (control) IOServiceClose(control);
+            IOObjectRelease(service);
+        }
+        allowed = cr == kIOReturnSuccess && gr == kIOReturnSuccess && control && gpu;
+        nvlog("nvdec: sandboxed %s: accelerator RM bridge %s (control 0x%x, GPU 0x%x)",
+              me, allowed ? "available" : "unavailable", cr, gr);
+    });
+    return allowed;
+}
 static void nvmtl_nvdec_register(void)
 {
     static dispatch_once_t once;
@@ -281,8 +308,8 @@ static void nvmtl_nvdec_register(void)
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVDEC")) { nvlog("nvdec: NVMTL_NO_NVDEC set - not registering in %s", me); return; }
         if (!strcmp(me, "WindowServer")) return;
-        if (nvmtl_is_sandboxed() && !nvmtl_is_decode_service(me)) {
-            nvlog("nvdec: %s is sandboxed - not registering in-process H.264 decoder (delegates to VTDecoderXPCService)", me);
+        if (!nvmtl_can_register_decoder(me)) {
+            nvlog("nvdec: %s cannot access the accelerator RM bridge - leaving H.264 to VTDecoderXPCService", me);
             return;
         }
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
@@ -397,8 +424,8 @@ static void nvmtl_nvdec_hevc_register(void)
         const char *me = getprogname();
         if (getenv("NVMTL_NO_NVDEC_HEVC")) { nvlog("nvdec: NVMTL_NO_NVDEC_HEVC set - not registering HEVC in %s", me); return; }
         if (!strcmp(me, "WindowServer")) return;
-        if (nvmtl_is_sandboxed() && !nvmtl_is_decode_service(me)) {
-            nvlog("nvdec: %s is sandboxed - not registering in-process HEVC decoder (delegates to VTDecoderXPCService)", me);
+        if (!nvmtl_can_register_decoder(me)) {
+            nvlog("nvdec: %s cannot access the accelerator RM bridge - leaving HEVC to VTDecoderXPCService", me);
             return;
         }
         typedef int32_t (*RegFn)(uint32_t, CFDictionaryRef, void *);
