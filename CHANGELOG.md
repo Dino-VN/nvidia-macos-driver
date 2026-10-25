@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork display rotation on Tahoe
+
+- Add 90°, 180° and 270° rotation with desktop/cursor alignment, enabled by default on Tahoe. Keep Standard's normal presentation path and native display timings; `nvrmrotation=0` disables rotation support.
+- Rotated frames use a checked CPU copy into existing scanout. Tested on RTX 2060 Super at 1920×1080/75 Hz; other hardware and sleep/wake remain unqualified. Rebuild both NVRMFB and Tahoe NVAccel. See [Display rotation](docs/DISPLAY-ROTATION.md) for costs, checks and the GPU follow-up.
+
 ## Fork integration with upstream 2.5.4
 
 - Merge the headless-desktop startup fallback, sandboxed H.264/HEVC decoding, `nvregdwords` parameter-table repair and installer diagnostics. Keep the fork's all-app ANGLE Metal default, which already includes Discord.

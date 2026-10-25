@@ -19,6 +19,34 @@ Before each merge:
 The current upstream base is **2.5.4 at `4677905`**, from `upstream/main`, integrated on
 2026-10-24. The preceding base was 2.5.2 at `f2114ab`, integrated on 2026-10-22.
 
+## Tahoe display rotation
+
+Retain the checked rotation presenter, cursor-direction correction and Tahoe-only default
+when merging newer framebuffer/accelerator code. Standard keeps its normal zero-copy path;
+rotated frames wait for GPU completion/page-off on the existing presentation thread, then
+copy into existing owned scanout under the display gate. Do not restore the failed separate
+GPU importer or change physical timing/pitch to fabricate portrait modes.
+
+The quarter-turn mode-backing flag, exact full-plane rectangle/scaler validation and
+180-degree correction of the preoriented image are one contract. The cursor already follows
+IOFramebuffer's low-bit transform: do not transform it again. Keep normalized transforms,
+epoch/mode/head checks, bounds/format/layout guards, rejected asynchronous stale flips and
+accelerator-independent return to Standard. No display gate may be held across the family's
+reconnect request, and no helper may reacquire the family lock from its presentation callback.
+
+Enable the UI by default only on Darwin 25, preserve property/`nvrmrotation=0` opt-outs and
+require copy protocol 9 from the matching GPU's Tahoe accelerator before nonzero rotation.
+The implementation marker is 10 while the request ABI remains 9; do not equate them. Rebuild
+both kexts when incorporating this feature. Preserve source-probe root-only/one-frame limits;
+it must remain explicitly armed and separate from presentation acceptance.
+
+The user confirmed output and cursor alignment on RTX 2060 Super, 8 GiB BAR1,
+1920×1080/75 Hz and Tahoe 26.7.1. Host pixel/mapping tests through 8K do not qualify those
+resolutions on hardware. The CPU copy/page-off cost and potential tearing remain; other GPUs,
+multiple displays, HDR, hotplug and sleep/wake need testing. Keep these limits in the
+[rotation guide](DISPLAY-ROTATION.md). A GPU path inside the existing compositor submission
+is a future investigation, not part of this commit.
+
 ## Upstream 2.5.4 integration
 
 Two files had textual conflicts: `CHANGELOG.md` and the ANGLE policy in `plugin/NVMTLDevice.m`.

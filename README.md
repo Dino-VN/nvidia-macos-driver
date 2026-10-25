@@ -12,6 +12,7 @@ testing is done on an RTX 5060, so other cards may have problems that haven't be
 - Problems: [troubleshooting](docs/TROUBLESHOOTING.md), then Send logs from the 1401 app
 - Installing macOS from Windows: [1401](https://github.com/nullmoth/1401)
 - How it works: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)
+- Fork display rotation on Tahoe: [support, costs and testing](docs/DISPLAY-ROTATION.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 If your PC doesn't boot macOS with OpenCore yet, set that up first with the

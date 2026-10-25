@@ -38,6 +38,9 @@ static inline thread_call_t nvrmfbCall(thread_call_func_t fn, thread_call_param_
 }
 #include "nvrm-hud.h"
 #include "nvrm-fb-safety.h"
+#include "nvrm-rotation.h"
+#include "../../../tools/rotation/copy_request.h"
+#include <libkern/version.h>
 #include "nvrm-allocation-table.h"
 static IORecursiveLock *startLock();
 class NVRMCallReference {
@@ -261,6 +264,14 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     // IODisplayModeInformation.imageWidth/imageHeight; see nvrmEdidPanelSizeMm().
     NvU16 fEdidMmW = 0, fEdidMmH = 0;
     bool fModeSet = false;
+    bool fRotationPrototype = false;
+    volatile SInt32 fRotationRequesting = 0, fRotationRequestedBits = 0;
+    volatile SInt64 fRotationEpoch = 1;
+    void configureRotationPrototype();
+    void rotationModeFlags(IODisplayModeInformation *info);
+    bool rotationPending();
+    IOReturn rotationMode(NMRotationMode *out);
+    IOReturn rotationCopy(const NMRotationCopyRequest *request);
     unsigned fHomePure = 0;
     IODetailedTimingInformationV2 fDT[128]; unsigned fNDT = 0;
     IODisplayModeID fCurId = 1;
@@ -441,6 +452,7 @@ public:
     void stop(IOService *provider) override;
     void free() override;
     IOReturn enableController() override;
+    IOReturn requestProbe(IOOptionBits options) override;
     const char *getPixelFormats() override { return kPixelFormats; }
     // macOS builds its mode list from getDisplayModes BEFORE it calls setDetailedTimings, and never re-reads it: a
     // mode added only in setDetailedTimings never reached WindowServer (36 added, 0 shown). So the
@@ -2518,6 +2530,7 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
         return false;
     }
     setName("NVRMFramebuffer");
+    configureRotationPrototype();
     if (fInternal) publishBacklight();   // before super::start(): IOFramebuffer::open looks for "backlight"
     if (!super::start(provider)) {
         NVRMDisplayGate gate; if (gate.valid() && fOwnsHead) { gHeadsTaken &= ~(1u << fHead); fOwnsHead = false; }
@@ -2939,6 +2952,146 @@ IOReturn NVRMNVDAFramebuffer::switchMode(IODisplayModeID id, const struct NvKmsK
     setProperty("NVRMModeSwitches", (unsigned long long)fModeSwitches, 32);
     return kIOReturnSuccess;
 }
+void NVRMNVDAFramebuffer::configureRotationPrototype()
+{
+    // The quarter-turn transaction layout and compositor contract are qualified
+    // on Tahoe only. A missing property enables the UI there; an explicit false
+    // property or nvrmrotation=0 keeps the original path. Do not key off the SDK.
+    OSObject *configured = getProperty("NVRMRotationPrototype");
+    int enabled = configured ? (configured == kOSBooleanTrue ? 1 : 0) : 1;
+    PE_parse_boot_argn("nvrmrotation", &enabled, sizeof enabled);
+    if (!nvrmRotationSupportedKernel(version_major) || enabled != 1) {
+        setProperty("NVRMRotationPrototype", kOSBooleanFalse);
+        return;
+    }
+    UInt32 probes = kIOFBUserRequestProbe;
+    if (OSNumber *old = OSDynamicCast(OSNumber, getProperty(kIOFBProbeOptionsKey)))
+        probes |= old->unsigned32BitValue();
+    fRotationPrototype = setProperty(kIOFBProbeOptionsKey,
+        (unsigned long long)(probes | kNVRMSetTransform), 32);
+    setProperty("NVRMRotationPrototype", fRotationPrototype ? kOSBooleanTrue : kOSBooleanFalse);
+    if (!fRotationPrototype) return;
+    setProperty("NVRMRotationPrototypeVersion", (unsigned long long)NM_ROTATION_PROTOTYPE_VERSION, 32);
+    setProperty("NVRMRotationPath", "cursor-map pixel copy (prototype v10, portrait cursor alignment)");
+    setProperty("NVRMRotationRequestedTransform", 0ULL, 32);
+    FBLOG("fb%u cursor-map prototype enabled; normal timing/scaler/cursor, 180 permutation and portrait direction repair", fIndex);
+}
+
+void NVRMNVDAFramebuffer::rotationModeFlags(IODisplayModeInformation *info)
+{
+    // This same public flag is tested by CoreDisplay::AreOperationsSupportedInHW
+    // for rotation. The live v8 capture shows this produces a complete, already
+    // oriented physical image for quarter turns. The presenter aligns its
+    // observed opposite direction with IOFramebuffer's cursor-coordinate map.
+    // Standard, 180 degrees and disabled prototypes keep their original flags.
+    if (info && nvrmRotationDriverBacked(fRotationPrototype, (UInt32)OSAddAtomic(0, &fRotationRequestedBits)))
+        info->flags |= kDisplayModeAcceleratorBackedFlag;
+}
+
+bool NVRMNVDAFramebuffer::rotationPending()
+{
+    if (!fRotationPrototype) return false;
+    if (OSAddAtomic(0, &fRotationRequesting) || OSAddAtomic(0, &fRotationRequestedBits)) return true;
+    OSObject *value = copyProperty("IOFBTransform");
+    OSNumber *number = OSDynamicCast(OSNumber, value);
+    const bool rotated = number && (number->unsigned32BitValue() & 0xffu);
+    OSSafeReleaseNULL(value);
+    return rotated;
+}
+
+IOReturn NVRMNVDAFramebuffer::rotationMode(NMRotationMode *out)
+{
+    if (!out || out->version != NM_ROTATION_VERSION) return kIOReturnBadArgument;
+    NVRMDisplayGate gate;
+    if (!gate.valid() || !fRotationPrototype || OSAddAtomic(0, &fStopping) || fHeadSlept || fSysSlept ||
+        fDpyLost || fSubmissionFaulted || !fModeSet || !fKva || !fSurf || !fMem ||
+        OSAddAtomic(0, &fRotationRequesting)) return kIOReturnNotReady;
+    const UInt64 epoch = (UInt64)OSAddAtomic64(0, &fRotationEpoch);
+    OSObject *value = copyProperty("IOFBTransform");
+    OSNumber *number = OSDynamicCast(OSNumber, value);
+    const UInt32 bits = number ? number->unsigned32BitValue() & 0xffu : UINT32_MAX;
+    OSSafeReleaseNULL(value);
+    const unsigned degrees = nvrmRotationDegrees(bits);
+    // No high scaler transform and no transition can be mistaken for a ready image.
+    if (degrees == UINT32_MAX || bits > 7 || bits != (UInt32)OSAddAtomic(0, &fRotationRequestedBits))
+        return kIOReturnNotReady;
+    nvu_zero(out, sizeof *out); out->version = NM_ROTATION_VERSION;
+    out->degrees = degrees; out->epoch = epoch; out->head = fIndex;
+    out->outputWidth = fW; out->outputHeight = fH; out->outputPitch = fPitch;
+    out->logicalWidth = nmRotationSwaps(degrees) ? fH : fW;
+    out->logicalHeight = nmRotationSwaps(degrees) ? fW : fH;
+    out->modeSequence = fModeSwitches;
+    out->ready = epoch == (UInt64)OSAddAtomic64(0, &fRotationEpoch) && !OSAddAtomic(0, &fRotationRequesting);
+    return nmRotationModeValid(out) ? kIOReturnSuccess : kIOReturnNotReady;
+}
+
+// Apply the original permutation for 180 and correct the compositor's opposite
+// quarter-turn direction. The display gate keeps native scanout alive. No allocation,
+// mode change, GPU import, extra worker or userspace callback is possible in this method.
+IOReturn NVRMNVDAFramebuffer::rotationCopy(const NMRotationCopyRequest *request)
+{
+    NVRMDisplayGate gate;
+    NMRotationMode current = {}; current.version = NM_ROTATION_VERSION;
+    if (!gate.valid() || !request || rotationMode(&current) != kIOReturnSuccess || !current.degrees ||
+        !nmRotationSameMode(request->mode, current)) return kIOReturnNotReady;
+    uint32_t copyDegrees = UINT32_MAX;
+    if (request->format != 0x42475241u || request->reserved ||
+        !nmRotationCopyAngle(current, request->sourceLayout, request->width, request->height, &copyDegrees) ||
+        !nmRotationCopy32(request->source, request->sourceBytes, request->width, request->height, request->pitch,
+            (volatile uint32_t *)fKva, fMemBytes, fW, fH, fPitch, copyDegrees)) return kIOReturnBadArgument;
+    __asm__ volatile("sfence" ::: "memory");
+    NMRotationMode after = {}; after.version = NM_ROTATION_VERSION;
+    if (rotationMode(&after) != kIOReturnSuccess || !nmRotationSameMode(current, after)) return kIOReturnNotReady;
+    if (fFrontSurf != fSurf) {
+        int rc = -1;
+        if (!flipToMemory(nullptr, 0, 0, 0, &rc, true))
+            return rc == (int)NV_KMS_FLIP_RESULT_IN_PROGRESS ? kIOReturnBusy : kIOReturnIOError;
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn NVRMNVDAFramebuffer::requestProbe(IOOptionBits options)
+{
+    if (!fRotationPrototype || !(options & kNVRMSetTransform)) return super::requestProbe(options);
+    uint32_t normalized = 0;
+    if (!nvrmRotationNormalizeProbe(options, &normalized)) return kIOReturnBadArgument;
+    if (OSAddAtomic(0, &fStopping)) return kIOReturnNotReady;
+    if (nvrmRotationDegrees(normalized >> kNVRMTransformShift)) {
+        bool ready = false;
+        OSDictionary *matching = serviceMatching("IOGraphicsAccelerator2");
+        OSIterator *iter = matching ? getMatchingServices(matching) : nullptr;
+        if (matching) matching->release();
+        if (iter) {
+            while (IOService *service = OSDynamicCast(IOService, iter->getNextObject())) {
+                OSNumber *protocol = OSDynamicCast(OSNumber, service->getProperty("NVAccelRotationCopyProtocol"));
+                if (service->getProvider() == pciNub() && protocol &&
+                    protocol->unsigned32BitValue() == NM_ROTATION_COPY_PROTOCOL) ready = true;
+            }
+            iter->release();
+        }
+        if (!ready) return kIOReturnNotReady;
+    }
+    if (!OSCompareAndSwap(0, 1, &fRotationRequesting)) return kIOReturnBusy;
+    const SInt32 previous = OSAddAtomic(0, &fRotationRequestedBits);
+    const SInt32 target = (SInt32)(normalized >> kNVRMTransformShift);
+    OSAddAtomic64(1, &fRotationEpoch);
+    __atomic_store_n(&fRotationRequestedBits, target, __ATOMIC_RELEASE);
+    setProperty("NVRMRotationRequestedTransform", (unsigned long long)target, 32);
+    // Never hold the display gate while asking the family to reconnect: a mode change
+    // may wait for the transaction whose copy needs that gate. IOGraphics owns the
+    // logical axes and cursor. Existing native timing, pitch and mode IDs remain intact.
+    const IOReturn result = super::requestProbe(normalized);
+    if (result != kIOReturnSuccess) {
+        __atomic_store_n(&fRotationRequestedBits, previous, __ATOMIC_RELEASE);
+        setProperty("NVRMRotationRequestedTransform", (unsigned long long)previous, 32);
+    }
+    OSAddAtomic64(1, &fRotationEpoch);
+    __atomic_store_n(&fRotationRequesting, 0, __ATOMIC_RELEASE);
+    FBLOG("fb%u cursor-map rotation request %u degrees: 0x%x -> 0x%x, result 0x%x",
+          fIndex, nvrmRotationDegrees(normalized >> kNVRMTransformShift), options, normalized, result);
+    return result;
+}
+
 IOReturn NVRMNVDAFramebuffer::validateDetailedTiming(void *description, IOByteCount descripSize)
 {
     if (!description) return kIOReturnBadArgument;
@@ -2983,6 +3136,7 @@ IOReturn NVRMNVDAFramebuffer::validateDetailedTiming(void *description, IOByteCo
         info->nominalWidth = scaled ? d->horizontalScaled : d->horizontalActive;
         info->nominalHeight = scaled ? d->verticalScaled : d->verticalActive;
         info->refreshRate = tot ? (UInt32)((d->pixelClock << 16) / tot) : 0;
+        rotationModeFlags(info);
     }
     return kIOReturnSuccess;
 }
@@ -3074,6 +3228,7 @@ IOReturn NVRMNVDAFramebuffer::getInformationForDisplayMode(IODisplayModeID mode,
         info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | (scaled ? kDisplayModeNotPresetFlag : 0);
         if (!scaled && d.horizontalActive == fBootW && d.verticalActive == fBootH) info->flags |= kDisplayModeNativeFlag;
         info->imageWidth = fEdidMmW; info->imageHeight = fEdidMmH;
+        rotationModeFlags(info);
         return kIOReturnSuccess;
     }
     nvu_zero(info, sizeof *info);
@@ -3082,6 +3237,7 @@ IOReturn NVRMNVDAFramebuffer::getInformationForDisplayMode(IODisplayModeID mode,
     info->refreshRate = rr ? (UInt32)(((UInt64)rr << 16) / 1000) : (60u << 16);
     info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | kDisplayModeDefaultFlag;
     info->imageWidth = fEdidMmW; info->imageHeight = fEdidMmH;
+    rotationModeFlags(info);
     return kIOReturnSuccess;
 }
 IOReturn NVRMNVDAFramebuffer::getTimingInfoForDisplayMode(IODisplayModeID mode, IOTimingInformation *info)
@@ -3481,6 +3637,10 @@ bool NVRMNVDAFramebuffer::vramRelease(struct NVRMVramRequest *r)
 IOReturn NVRMNVDAFramebuffer::callPlatformFunction(const OSSymbol *functionName, bool waitForFunction,
                                                void *param1, void *param2, void *param3, void *param4)
 {
+    if (functionName && functionName->isEqualTo(NM_ROTATION_INFO))
+        return rotationMode((NMRotationMode *)param1);
+    if (functionName && functionName->isEqualTo(NM_ROTATION_COPY))
+        return rotationCopy((const NMRotationCopyRequest *)param1);
     bool isAlloc = functionName && functionName->isEqualTo(NVRM_VRAM_FN_ALLOC);
     bool isFree  = functionName && functionName->isEqualTo(NVRM_VRAM_FN_FREE);
     if (functionName && functionName->isEqualTo("NVRMGpuPower")) {   // from NVRM: 0 standby, 1 resumed, 2 lost
@@ -3564,6 +3724,12 @@ bool NVRMNVDAFramebuffer::flipToMemory(struct NvKmsKapiMemory *mem, unsigned w, 
                                    unsigned pitch, int *rcOut, bool pure, UInt64 cookie)
 {
     NVRMDisplayGate gate; if (!gate.valid() || fSubmissionFaulted) return false;
+    // Drain old unrotated asynchronous presents, without putting one back over a
+    // rotated home image. Standard still uses the original zero-copy flip path.
+    if (mem && rotationPending()) {
+        if (rcOut) *rcOut = (int)NV_KMS_FLIP_RESULT_IN_PROGRESS;
+        return false;
+    }
     if (mem) {
         const UInt64 bytes = gAllocations.size(mem, cookie);
         if (!bytes || !w || !h || w > 65535 || h > 65535 || (UInt64)w * 4 > pitch || (UInt64)pitch * h > bytes) return false;

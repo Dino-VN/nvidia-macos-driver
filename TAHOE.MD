@@ -10,6 +10,13 @@ and startup changes. The earlier parked-VRAM and OpenGL/Minecraft optimizations 
 and included once. The fork retains its cursor shutdown accounting, pointer safety guards and the
 other behavior described in the [merge notes](docs/FORK-MERGE-NOTES.md).
 
+The fork also adds [display rotation](docs/DISPLAY-ROTATION.md), enabled by default on Tahoe
+with matching NVRMFB and Tahoe NVAccel. Standard retains its normal presentation path;
+90°, 180° and 270° use a checked CPU copy into existing scanout. `nvrmrotation=0` disables
+rotation support. Rebuild both kexts for this addition; the pre-rotation framebuffer and
+accelerator pair does not include it. Output/cursor alignment was tested on RTX 2060 Super
+at 1920×1080/75 Hz; other hardware, sleep/wake and hotplug remain unqualified.
+
 ANGLE Metal remains enabled by default for all apps loading this plugin, including Chrome, Chromium, Edge and
 Electron. `NVMTL_ANGLE_METAL=0` skips the automatic workaround for an application. The user reconfirmed this
 broader default on 2026-10-19.
@@ -39,9 +46,10 @@ Do not combine the 615 framebuffer with the old 610 RM/firmware package. Main RM
 upstream's, except for the local source-path default in its build helper. The kernel still validates
 firmware under `/Library/NullMoth/nvfw` and preserves the firmware-backup fallback.
 
-Rebuild the release plugin and Tahoe NVAccel for the 2.5.4 changes. The translator and NVRMFB source
-are unchanged from the preceding fork; reuse their fork outputs only after checking source and artifact
-identity. A full build of all four components is also supported. Use OGKM 615.78.08 headers
+Rebuild the release plugin and Tahoe NVAccel for the 2.5.4 changes, and rebuild NVRMFB for the
+fork's display-rotation addition. The translator source is unchanged from the preceding fork;
+reuse its fork output only after checking source and artifact identity. A full build of all
+four components is also supported. Use OGKM 615.78.08 headers
 (`~/ogkm615`, or set `OGKM` explicitly); the public checkout does not
 include Darwin RM/KMS archives or compile metadata for a complete main RM link. Reuse the matching
 official NVRM and runtime. The new main-RM parameter-table repair is not included by rebuilding the
@@ -125,7 +133,7 @@ Restore and minimize the affected window to regenerate its thumbnail. This setti
 
 None of the four additional PRs changes the main `NVRM.kext` binary. PR #171 needs the plugin and translator rebuilt; PRs #136 and #147 need the plugin rebuilt. PR #131 changes framebuffer bundle metadata and requires reinstalling that bundle and refreshing the Auxiliary Kernel Collection, rather than recompiling its binary. The kexts in this Tahoe test workflow do not require code signing; signing would not grant kext loading approval.
 
-Use the official **2.5.4 package** as the staging base for its matching RM, runtime, codecs, installer, licence texts and 615.78.08 firmware. Rebuild the fork plugin and Tahoe accelerator; retain the verified fork translator and framebuffer or rebuild them from the unchanged source. The commands below do not build the main RM, framebuffer binary or NVK. Include the fork framebuffer executable as described above. Preserve the 2.5.4 package's dependency/version plists instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
+Use the official **2.5.4 package** as the staging base for its matching RM, runtime, codecs, installer, licence texts and 615.78.08 firmware. Rebuild the fork plugin, Tahoe accelerator and rotation-capable framebuffer; retain the verified fork translator or rebuild it from the unchanged source. The commands below do not build the main RM, framebuffer binary or NVK. Build the framebuffer using the [rotation guide](docs/DISPLAY-ROTATION.md) and include its executable separately. Preserve the 2.5.4 package's dependency/version plists instead of replacing them with the source templates' `0.1` versions. The prebuilt runtime includes upstream's [NVK changes in 2.0.5](nvk/2.0.5/README.md).
 
 PR #136 was adapted to preserve upstream's standard sample-position fallback when programmable positions are unavailable, while treating 1x rendering as a fixed center. Both upstream framebuffer plist copies retain the NVIDIA display-class claim and the `NVRMBootFB` personality.
 
@@ -343,7 +351,7 @@ By default, this stages the Tahoe PR changes using these exact paths in the chec
 
 The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. The helper itself retains plugin resources, prebuilt NVRM/NVRMAGDC/framebuffer binaries, NVK, firmware and the Sequoia accelerator from the base package. For the current fork, also include the rebuilt framebuffer executable and regenerate checksums before using the package; the helper does not copy that executable.
 
-The four historical PRs do not themselves require rebuilding NVAccel. Testing the current merge uses the matching 2.5.2 RM, rebuilt framebuffer and Tahoe accelerator with upstream's parked-backing repair and plane bounds. Preserve the package version in the accelerator's plist, then include it explicitly:
+The four historical PRs do not themselves require rebuilding NVAccel. Testing the current fork uses the matching 2.5.4 RM, rebuilt framebuffer and Tahoe accelerator with upstream's parked-backing repair and plane bounds, plus the fork's rotation path. Preserve the package version in the accelerator's plist, then include it explicitly:
 
 ```bash
 python3 build/stage_package.py "/path/to/upstream/pkgroot" \
