@@ -63,19 +63,27 @@ the fork already covers Discord through its all-app default. Keep the broader de
 
 Keep the H.264/HEVC registration access check, but do not restore upstream's blanket sandbox refusal.
 Chromium checks local VideoToolbox hardware support before creating a decoder: suppressing registration
-can reject H.264 without ever reaching the decoding service. In a sandboxed client, register only after
-both accelerator RM bridge client types can be opened; close both probe connections immediately and
-cache the decision across codecs. Clients denied access still defer to the decoding service. Preserve
-the service/suffixed-name exception, decoder disable switches, WindowServer exclusion and asynchronous
+can reject H.264 without ever reaching the decoding service. Limit this exception to sandboxed Chromium
+GPU processes, identified by the exact `--type=gpu-process` argument, without an app-name allowlist.
+Respect the `--` terminator and the last process-type switch. Register only after both accelerator RM
+bridge client types can be opened; close both probe connections immediately and cache the decision
+across codecs. QuickTime and other native sandboxed clients keep upstream's service path even when
+they could open the bridge. Checking driver access alone was too broad: QuickTime used local NVDEC and
+froze its picture near three seconds while the playback clock continued. Clients denied access also
+defer to the decoding service. Preserve the service/suffixed-name exception, decoder disable switches,
+WindowServer exclusion and asynchronous
 service registration. Encoder registration and the ANGLE policy remain independent.
 
 On RTX 2060 Super / Tahoe 26.7.1, an isolated copy of Discord's Electron 42.11.15 reproduced
-`kUnsupportedConfig` with zero H.264 frames before the repair. With the rebuilt plugin and no
-diagnostic shim, generated H.264 and HEVC clips decoded 642 and 702 frames respectively, with zero
-reported drops. Discord's restarted GPU process retained its sandbox and mapped the repaired plugin;
-the user confirmed that uploaded chat videos played with picture and sound. CPU checks cover denied
-or missing clients, connection cleanup, cached decisions and the service exception
-(`tools/test_video_registration.py`). Other GPUs and sandbox profiles have not been tested.
+`kUnsupportedConfig` with zero H.264 frames before the initial repair. Restarting Discord confirmed
+uploaded chat videos played with picture and sound, with its GPU sandbox still active. After narrowing
+the exception, generated H.264 and HEVC clips decoded 642 and 644 frames respectively in the isolated
+Electron test, with zero reported drops or playback errors and no diagnostic shim. The user confirmed
+normal QuickTime playback of a 1920x1080 H.264/Opus clip that had frozen with the broader check; its
+restarted process no longer loaded local NVDEC libraries. CPU checks cover
+denied or missing clients, connection cleanup, cached decisions, the service exception, native clients,
+custom helper names and exact process-type parsing (`tools/test_video_registration.py`). Other GPUs
+and sandbox profiles have not been tested.
 
 Take upstream's headless deadline check: if no NVIDIA head has published and no other GPU or
 `NMIntelFB` owns the display, leave `MetalPluginName` withheld so WindowServer can use the firmware

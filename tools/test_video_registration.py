@@ -15,6 +15,7 @@ HARNESS = r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 typedef uint32_t io_service_t, io_connect_t;
 typedef int IOReturn;
@@ -23,6 +24,11 @@ typedef int IOReturn;
 #define kIOReturnSuccess 0
 #define kIOReturnNotFound 1
 static int scenario, queries, opens, closes, releases, matches, logs;
+static int program_argc = 2;
+static char *argument_storage[4] = {"VideoApp", "--type=gpu-process", NULL, NULL};
+static char **program_argv = argument_storage;
+static int *_NSGetArgc(void) { return &program_argc; }
+static char ***_NSGetArgv(void) { return &program_argv; }
 static bool nvmtl_is_sandboxed(void) { queries++; return scenario != 0; }
 static void nvlog(const char *fmt, ...) { logs++; }
 #undef mach_task_self
@@ -54,12 +60,28 @@ int main(int argc, char **argv) {
     const char *name = scenario == 1 ? "VTDecoderXPCService.arm64" : "Discord Helper";
     if (scenario == 7) name = "VTDecoderXPCServic";
     if (scenario == 8) name = NULL;
-    bool expected = scenario == 0 || scenario == 1 || scenario == 5 || scenario >= 7;
+    if (scenario == 0 || scenario == 1 || scenario == 9 || scenario == 10) program_argc = 1;
+    if (scenario == 9) name = "QuickTime Player";
+    if (scenario == 10) name = "Safari";
+    if (scenario == 11) argument_storage[1] = "--type=renderer";
+    if (scenario == 12) argument_storage[1] = "--type=gpu-process-extra";
+    if (scenario == 13) argument_storage[1] = "--other=--type=gpu-process";
+    if (scenario == 14) { program_argc = 0; program_argv = NULL; }
+    if (scenario == 15) argument_storage[1] = NULL;
+    if (scenario == 16) { program_argc = 3; argument_storage[1] = "--"; argument_storage[2] = "--type=gpu-process"; }
+    if (scenario == 17) { program_argc = 1; argument_storage[0] = "--type=gpu-process"; }
+    if (scenario == 18) name = "Custom Browser Helper";
+    if (scenario == 19) { program_argc = 3; argument_storage[1] = "--other=1"; argument_storage[2] = "--type=gpu-process"; }
+    if (scenario == 20) program_argc = -1;
+    if (scenario == 21) { program_argc = 3; argument_storage[2] = "--type=renderer"; }
+    if (scenario == 22) { program_argc = 3; argument_storage[1] = "--type=renderer"; argument_storage[2] = "--type=gpu-process"; }
+    bool expected = scenario == 0 || scenario == 1 || scenario == 5 || scenario == 7 ||
+                    scenario == 8 || scenario == 18 || scenario == 19 || scenario == 22;
     assert(nvmtl_can_register_decoder(name) == expected);
     assert(nvmtl_can_register_decoder(name) == expected); // both codec registrations share one check
-    if (scenario <= 1) {
+    if (scenario <= 1 || (scenario >= 9 && scenario <= 17) || scenario == 20 || scenario == 21) {
         assert(!opens && !closes && !matches && !releases && !logs);
-        assert(queries == (scenario == 0 ? 2 : 0));
+        assert(queries == (scenario == 1 ? 0 : 2));
     } else {
         assert(matches == 1 && logs == 1);
         if (scenario == 2) assert(!opens && !closes && !releases);
@@ -84,6 +106,20 @@ def main():
         "success without connection handles is refused",
         "partial service name does not bypass the access check",
         "null process name still requires bridge access",
+        "QuickTime keeps service decoding even when the bridge would be accessible",
+        "native sandboxed apps keep service decoding",
+        "Chromium renderer receives no GPU-process exception",
+        "GPU process type must match the full value",
+        "GPU type text inside another argument does not qualify",
+        "missing process arguments do not qualify",
+        "null argument does not qualify",
+        "a positional GPU type after -- does not qualify",
+        "an executable name is not a process-type argument",
+        "custom Chromium helper names still qualify",
+        "other arguments may precede the GPU process type",
+        "invalid argument count does not qualify",
+        "last process-type switch wins when it selects a renderer",
+        "last process-type switch wins when it selects the GPU process",
     )
     with tempfile.TemporaryDirectory(prefix="nvmtl-video-registration-") as tmp:
         src, exe = Path(tmp) / "test.m", Path(tmp) / "test"

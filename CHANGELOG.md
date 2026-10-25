@@ -2,7 +2,7 @@
 
 ## Fork video playback repair
 
-- Restore local H.264/HEVC registration in sandboxed clients that can open both accelerator RM bridge connections. Keep restricted clients on the decoding-service path. This repairs Chromium's H.264 capability check without disabling its GPU sandbox; encoder and rendering policies are unchanged. Rebuild the plugin only.
+- Restore local H.264/HEVC registration in sandboxed Chromium GPU processes that can open both accelerator RM bridge connections. Keep QuickTime and other native sandboxed clients on the decoding-service path, preventing the frozen-picture regression from the broader access check. The GPU sandbox stays enabled; encoder and rendering policies are unchanged. Rebuild the plugin only.
 
 ## Fork display rotation on Tahoe
 

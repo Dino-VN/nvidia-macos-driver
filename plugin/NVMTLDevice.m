@@ -184,6 +184,7 @@ static bool nvmtl_accel_armed(void)
 }
 #include <dlfcn.h>
 #include <libgen.h>
+#include <crt_externs.h>
 // The video libraries tile and untile frames in the Blackwell (GB20x) layout. Earlier GPUs' NVDEC/NVENC use the classic
 // one: on an RTX 3070 Laptop (issue #65, measured against Apple's software codecs) H.264 decode showed shifted macroblock
 // rows and a green stripe, and both encoders produced torn pictures. The decoder's only difference is its untiling mode
@@ -274,9 +275,25 @@ static bool nvmtl_is_decode_service(const char *me)
 {
     return me && strncmp(me, "VTDecoderXPCService", 19) == 0;
 }
+static bool nvmtl_is_chromium_gpu_process(void)
+{
+    int argc = *_NSGetArgc();
+    char **argv = *_NSGetArgv();
+    bool gpu = false;
+    for (int i = 1; argv && i < argc; i++) {
+        if (!argv[i]) continue;
+        if (!strcmp(argv[i], "--")) break;
+        if (!strncmp(argv[i], "--type=", 7)) gpu = !strcmp(argv[i] + 7, "gpu-process");
+    }
+    return gpu;
+}
 static bool nvmtl_can_register_decoder(const char *me)
 {
     if (nvmtl_is_decode_service(me) || !nvmtl_is_sandboxed()) return true;
+    // Native sandboxed players keep upstream's service delegation even if they can open the bridge. QuickTime's
+    // in-process NVDEC path can freeze its picture while the playback clock advances. Only Chromium's GPU process
+    // needs the local capability registration below; identify the process type rather than an app-name allowlist.
+    if (!nvmtl_is_chromium_gpu_process()) return false;
     // Chromium checks local VideoToolbox hardware support before it creates a decoder. Skipping registration
     // makes H.264 disappear from that check; it does not send the query to VTDecoderXPCService. A sandboxed GPU
     // process can already use our accelerator's RM bridge. Check both client types used by the decoder libraries
