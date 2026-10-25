@@ -1,8 +1,8 @@
-/* Local cursor-map rotation trial. Native physical modes remain unchanged. */
+/* Display rotation contract. Native physical modes remain unchanged. */
 #pragma once
 #include <stdint.h>
 
-#define NM_ROTATION_PROTOTYPE_VERSION 10u
+#define NM_ROTATION_IMPLEMENTATION_VERSION 12u
 enum { kNVRMSetTransform = 0x00000400u, kNVRMTransformShift = 16 };
 
 static inline bool nvrmRotationSupportedKernel(int major)
@@ -13,9 +13,9 @@ static inline bool nvrmRotationSupportedKernel(int major)
 // The v8 live capture shows this contract yields a complete preoriented physical
 // image for quarter turns, rather than v7's cropped landscape image. V10 corrects
 // its opposite direction to align with the cursor. No NVKMS rotation is claimed.
-static inline bool nvrmRotationDriverBacked(bool prototype, uint32_t requestedBits)
+static inline bool nvrmRotationDriverBacked(bool rotationEnabled, uint32_t requestedBits)
 {
-    return prototype && (requestedBits == 3u || requestedBits == 5u);
+    return rotationEnabled && (requestedBits == 3u || requestedBits == 5u);
 }
 
 static inline bool nvrmRotationBits(unsigned degrees, uint32_t *bits)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that the trial retains production modes, cursor lifecycle and GPU work."""
+"""Verify that rotation retains production modes, cursor lifecycle and GPU work."""
 from pathlib import Path
 import re
 import subprocess
@@ -18,7 +18,7 @@ checked=0
 for found in re.finditer(r'(?m)^.*\bNVRMNVDAFramebuffer::(\w+)\([^;\n]*',old):
     name=found[1];signature='NVRMNVDAFramebuffer::'+name+'('
     before,after=method(old,signature),method(new,signature)
-    if name=='start': after=after.replace('    configureRotationPrototype();\n','')
+    if name=='start': after=after.replace('    configureRotation();\n','')
     if name in ['getInformationForDisplayMode','validateDetailedTiming']:
         after=after.replace('        rotationModeFlags(info);\n','').replace('    rotationModeFlags(info);\n','')
     if name=='callPlatformFunction':
@@ -26,10 +26,12 @@ for found in re.finditer(r'(?m)^.*\bNVRMNVDAFramebuffer::(\w+)\([^;\n]*',old):
             '        return rotationMode((NMRotationMode *)param1);\n'
             '    if (functionName && functionName->isEqualTo(NM_ROTATION_COPY))\n'
             '        return rotationCopy((const NMRotationCopyRequest *)param1);\n','')
+        after=after.replace('    if (functionName && functionName->isEqualTo(NM_ROTATION_GPU_FLIP))\n'
+            '        return rotationGPUFlip((NMRotationGPUFlip *)param1);\n','')
     if name=='flipToMemory':
         after=after.replace('    // Drain old unrotated asynchronous presents, without putting one back over a\n'
             '    // rotated home image. Standard still uses the original zero-copy flip path.\n'
-            '    if (mem && rotationPending()) {\n'
+            '    if (mem && rotationPending() && !fRotationGPUFlipActive) {\n'
             '        if (rcOut) *rcOut = (int)NV_KMS_FLIP_RESULT_IN_PROGRESS;\n'
             '        return false;\n'
             '    }\n','')
@@ -45,7 +47,7 @@ for signature in protected:
     def body(text):
         a=text.rindex(signature);return method(text[a:],signature)
     assert body(old)==body(new),signature
-for name in ['plugin','translator','runtime','kexts/NVRMAGDC','kexts/NVRMFB/fb/nvrm-fb-safety.h']:
+for name in ['translator','runtime','kexts/NVRMAGDC','kexts/NVRMFB/fb/nvrm-fb-safety.h']:
     assert not subprocess.check_output(['git','diff',base,'--',name],cwd=root),name
 print(f'PASS: {checked} framebuffer methods retain production bodies after opt-in dispatch guards; '
-    f'{len(protected)} resource/wait/presentation helpers unchanged; native modes/pitch/apertures/cursor and plugin/runtime retained')
+    f'{len(protected)} resource/wait/presentation helpers unchanged; native modes/pitch/apertures/cursor and runtime retained; producer changes are checked separately')

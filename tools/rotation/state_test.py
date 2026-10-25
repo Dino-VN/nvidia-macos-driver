@@ -30,7 +30,7 @@ struct OSNumber:OSObject{UInt32 value=0;UInt32 unsigned32BitValue(){return value
 #define OSSafeReleaseNULL(p) do{if(p){p->release();p=nullptr;}}while(0)
 struct NVRMDisplayGate{bool valid(){return true;}};
 struct NVRMNVDAFramebuffer{
-    bool fRotationPrototype=true,fHeadSlept=false,fSysSlept=false,fDpyLost=false,fSubmissionFaulted=false,fModeSet=true;
+    bool fRotationEnabled=true,fHeadSlept=false,fSysSlept=false,fDpyLost=false,fSubmissionFaulted=false,fModeSet=true;
     volatile SInt32 fStopping=0,fRotationRequesting=0,fRotationRequestedBits=0;
     volatile SInt64 fRotationEpoch=1;
     void *fKva=this,*fSurf=this,*fMem=this;
@@ -68,7 +68,7 @@ int main(){
         *memory=nullptr;assert(snapshot()==kIOReturnNotReady);*memory=&fb;
     }
     fb.missingTransform=true;assert(snapshot()==kIOReturnNotReady);fb.missingTransform=false;
-    fb.fRotationPrototype=false;assert(!fb.rotationPending()&&snapshot()==kIOReturnNotReady);
+    fb.fRotationEnabled=false;assert(!fb.rotationPending()&&snapshot()==kIOReturnNotReady);
     assert(fb.rotationMode(nullptr)==kIOReturnBadArgument);
     puts("PASS: production rotation snapshots; native physical geometry, low-bit logical axes, pending/high-bit transitions, epoch changes, mode sequence, stop/sleep/lost display and missing resources");
 }

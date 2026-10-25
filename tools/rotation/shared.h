@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define NM_ROTATION_VERSION 9u
+#define NM_ROTATION_VERSION 10u
 #define NM_ROTATION_INFO "nvRotationMode"
 #define NM_ROTATION_MAX_DIM 16384u
 

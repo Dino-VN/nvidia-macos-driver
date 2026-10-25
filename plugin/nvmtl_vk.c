@@ -1948,6 +1948,12 @@ int nvmtl_vk_accel_surface_wait(void)
     IOObjectRelease(s);
     return on == 1;
 }
+uint32_t nvmtl_vk_rotation_control(uint32_t surface,uint32_t operation)
+{
+    if(!pnvk_surface_dirty||!g_dev)return 0x80000002u;
+    return pnvk_surface_dirty(g_dev,surface,operation);
+}
+
 int nvmtl_vk_surface_vram(uint32_t surfaceID, uint32_t plane, size_t need, nvk_buffer *out)
 {
     memset(out, 0, sizeof *out);
@@ -8160,6 +8166,98 @@ int nvmtl_vk_srgb_format(uint32_t fmt)
     default: return 0;
     }
 }
+#include "../tools/rotation/gpu_shader.h"
+static pthread_mutex_t g_rotation_pipeline_lock=PTHREAD_MUTEX_INITIALIZER;
+static VkPipeline g_rotation_pipeline;
+static VkPipelineLayout g_rotation_layout;
+static VkDescriptorSetLayout g_rotation_set_layout;
+static int nvmtl_rotation_pipeline(void)
+{
+    pthread_mutex_lock(&g_rotation_pipeline_lock);
+    if(!g_rotation_pipeline) {
+        const VkDescriptorSetLayoutBinding bindings[2]={{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,NULL},
+            {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,NULL}};
+        VkDescriptorSetLayoutCreateInfo sci={VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,NULL,0,2,bindings};
+        VkDescriptorSetLayout set=VK_NULL_HANDLE;VkPipelineLayout layout=VK_NULL_HANDLE;VkShaderModule shader=VK_NULL_HANDLE;VkPipeline pipeline=VK_NULL_HANDLE;
+        VkResult r=pvkCreateDescriptorSetLayout(g_dev,&sci,NULL,&set);
+        VkPushConstantRange push={VK_SHADER_STAGE_COMPUTE_BIT,0,16};
+        VkPipelineLayoutCreateInfo lci={VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,NULL,0,1,&set,1,&push};
+        if(r==VK_SUCCESS)r=pvkCreatePipelineLayout(g_dev,&lci,NULL,&layout);
+        VkShaderModuleCreateInfo mci={VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,NULL,0,sizeof(nmRotationGPUShader),nmRotationGPUShader};
+        if(r==VK_SUCCESS)r=pvkCreateShaderModule(g_dev,&mci,NULL,&shader);
+        VkComputePipelineCreateInfo pci={VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,NULL,0,
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,NULL,0,VK_SHADER_STAGE_COMPUTE_BIT,shader,"main",NULL},layout,VK_NULL_HANDLE,0};
+        if(r==VK_SUCCESS)r=pvkCreateComputePipelines(g_dev,VK_NULL_HANDLE,1,&pci,NULL,&pipeline);
+        if(shader)pvkDestroyShaderModule(g_dev,shader,NULL);
+        if(r==VK_SUCCESS){g_rotation_pipeline=pipeline;g_rotation_layout=layout;g_rotation_set_layout=set;}
+        else {if(layout)pvkDestroyPipelineLayout(g_dev,layout,NULL);if(set)pvkDestroyDescriptorSetLayout(g_dev,set,NULL);nvlog("rotation GPU pipeline refused (%d)",r);}
+    }
+    const int ready=g_rotation_pipeline!=VK_NULL_HANDLE;
+    pthread_mutex_unlock(&g_rotation_pipeline_lock);return ready?0:-1;
+}
+int nvmtl_vk_rotation_buffer_alias(const nvk_buffer *owner,nvk_buffer *alias)
+{
+    if(!owner||!alias||!owner->buf||!owner->mem||!owner->size||owner->sparse)return -1;
+    memset(alias,0,sizeof *alias);
+    VkBufferCreateInfo bci={VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,NULL,0,owner->size,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_SHARING_MODE_EXCLUSIVE,0,NULL};
+    VkBuffer buffer=VK_NULL_HANDLE;
+    VkResult r=pvkCreateBuffer(g_dev,&bci,NULL,&buffer);if(r!=VK_SUCCESS)return -1;
+    VkMemoryRequirements requirements,original;
+    pvkGetBufferMemoryRequirements(g_dev,buffer,&requirements);
+    pvkGetBufferMemoryRequirements(g_dev,(VkBuffer)owner->buf,&original);
+    // The owner's buffer is already bound: its requirements prove the available
+    // allocation span, including padding beyond its logical byte size. Do not
+    // assume a larger span or a different compatible memory type for the alias.
+    if((requirements.alignment&&owner->moff%requirements.alignment)||requirements.size>original.size||
+       (requirements.memoryTypeBits&original.memoryTypeBits)!=original.memoryTypeBits)r=VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    else r=pvkBindBufferMemory(g_dev,buffer,(VkDeviceMemory)owner->mem,owner->moff);
+    if(r!=VK_SUCCESS){pvkDestroyBuffer(g_dev,buffer,NULL);return -1;}
+    alias->buf=buffer;alias->mem=owner->mem;alias->moff=owner->moff;alias->size=owner->size;alias->placed=1;
+    return 0;
+}
+void nvmtl_vk_rotation_buffer_release(nvk_buffer *alias)
+{
+    if(alias&&alias->buf)pvkDestroyBuffer(g_dev,(VkBuffer)alias->buf,NULL);
+    if(alias)memset(alias,0,sizeof *alias);
+}
+int nvmtl_vk_cmd_rotation_180(nvk_cmdbuf *c,nvk_buffer *src,nvk_buffer *dst,
+    uint32_t width,uint32_t height,uint32_t sourcePitch,uint32_t destinationPitch)
+{
+    if(!c||!c->cb||!src||!dst||!src->buf||!dst->buf||!src->mem||!dst->mem||src->buf==dst->buf||
+       !width||!height||width>16384||height>16384||(sourcePitch&3u)||(destinationPitch&3u)||
+       sourcePitch<(uint64_t)width*4||destinationPitch<(uint64_t)width*4||
+       (uint64_t)sourcePitch*height>src->size||(uint64_t)destinationPitch*height>dst->size||
+       src->size>g_lim.maxStorageBufferRange||dst->size>g_lim.maxStorageBufferRange)return -1;
+    // Distinct imported memory or proven disjoint offsets only; never rotate in place.
+    if(src->mem==dst->mem&&(src->moff>SIZE_MAX-src->size||dst->moff>SIZE_MAX-dst->size||
+       !(src->moff+src->size<=dst->moff||dst->moff+dst->size<=src->moff)))return -1;
+    if(nvmtl_rotation_pipeline())return -1;
+    if(c->nsets==c->capsets){unsigned n=c->capsets?c->capsets*2:8;nvk_setref *sets=realloc(c->sets,n*sizeof *sets);if(!sets)return -1;c->sets=sets;c->capsets=n;}
+    VkDescriptorSet set=VK_NULL_HANDLE;VkDescriptorPool pool=VK_NULL_HANDLE;VkResult result=VK_ERROR_OUT_OF_POOL_MEMORY;
+    pthread_mutex_lock(&g_desc_lock);
+    for(unsigned attempt=0;attempt<2&&result!=VK_SUCCESS;++attempt) {
+        if(!g_ndescPools||attempt)if(nvmtl_desc_pool_open())break;
+        pool=g_descPools[g_ndescPools-1];
+        VkDescriptorSetAllocateInfo ai={VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,NULL,pool,1,&g_rotation_set_layout};
+        result=pvkAllocateDescriptorSets(g_dev,&ai,&set);
+    }
+    pthread_mutex_unlock(&g_desc_lock);if(result!=VK_SUCCESS)return -1;
+    c->sets[c->nsets++]=(nvk_setref){pool,set};
+    const VkDescriptorBufferInfo buffers[2]={{(VkBuffer)src->buf,0,src->size},{(VkBuffer)dst->buf,0,dst->size}};
+    VkWriteDescriptorSet writes[2]={};
+    for(unsigned i=0;i<2;++i){writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;writes[i].dstSet=set;writes[i].dstBinding=i;
+        writes[i].descriptorCount=1;writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i];}
+    pvkUpdateDescriptorSets(g_dev,2,writes,0,NULL);
+    const uint32_t params[4]={width,height,sourcePitch/4,destinationPitch/4};
+    nvmtl_vk_cmd_barrier(c);
+    pvkCmdBindPipeline(c->cb,VK_PIPELINE_BIND_POINT_COMPUTE,g_rotation_pipeline);
+    pvkCmdBindDescriptorSets(c->cb,VK_PIPELINE_BIND_POINT_COMPUTE,g_rotation_layout,0,1,&set,0,NULL);
+    pvkCmdPushConstants(c->cb,g_rotation_layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof params,params);
+    pvkCmdDispatch(c->cb,(width+7)/8,(height+7)/8,1);
+    nvmtl_vk_cmd_barrier(c);return 0;
+}
+
 int nvmtl_vk_cmd_blit_image_2d(nvk_cmdbuf *c, nvk_image *src, nvk_image *dst, uint32_t w, uint32_t h)
 {
     if (!c || !src || !dst || !src->img || !dst->img || !w || !h || w > src->w || h > src->h || w > dst->w || h > dst->h

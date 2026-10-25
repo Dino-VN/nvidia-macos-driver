@@ -1,8 +1,8 @@
-/* Local prototype: exact BGRA pixel permutation, without allocation or GPU calls. */
+/* Exact BGRA pixel permutation, without allocation or GPU calls. */
 #pragma once
 #include "shared.h"
 
-#define NM_ROTATION_COPY_PROTOCOL 9u
+#define NM_ROTATION_COPY_PROTOCOL 10u
 #define NM_ROTATION_COPY "nvRotationCopy"
 
 static inline int nmRotationCopyBounds(const volatile uint32_t *source, uint64_t sourceBytes,

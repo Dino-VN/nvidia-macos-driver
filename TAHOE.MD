@@ -10,12 +10,14 @@ and startup changes. The earlier parked-VRAM and OpenGL/Minecraft optimizations 
 and included once. The fork retains its cursor shutdown accounting, pointer safety guards and the
 other behavior described in the [merge notes](docs/FORK-MERGE-NOTES.md).
 
-The fork also adds [display rotation](docs/DISPLAY-ROTATION.md), enabled by default on Tahoe
-with matching NVRMFB and Tahoe NVAccel. Standard retains its normal presentation path;
-90°, 180° and 270° use a checked CPU copy into existing scanout. `nvrmrotation=0` disables
-rotation support. Rebuild both kexts for this addition; the pre-rotation framebuffer and
-accelerator pair does not include it. Output/cursor alignment was tested on RTX 2060 Super
-at 1920×1080/75 Hz; other hardware, sleep/wake and hotplug remain unqualified.
+The fork adds [display rotation](docs/DISPLAY-ROTATION.md), enabled by default on Tahoe
+with matching NVRMFB, Tahoe NVAccel and NVMTLDriver. Standard keeps its normal path;
+90°, 180° and 270° use GPU output when a matching completed result is available and
+a checked CPU copy otherwise. Rotation state and buffers are independent per display.
+`nvrmrotation=0` disables rotation. Rebuild all three components together for the
+renamed interfaces and per-display GPU protocol; preserve official version/dependency
+metadata. RTX 2060 Super output/cursor alignment was tested at native resolution/75 Hz.
+Physical multi-monitor testing, other hardware, sleep/wake and hotplug remain unqualified.
 
 ANGLE Metal remains enabled by default for all apps loading this plugin, including Chrome, Chromium, Edge and
 Electron. `NVMTL_ANGLE_METAL=0` skips the automatic workaround for an application. The user reconfirmed this
@@ -330,7 +332,7 @@ This produces `out/accel/15/NVAccel.kext` and `out/accel/26/NVAccel.kext`. It ca
 
 ## 7. Stage the Tahoe PR outputs in an upstream package
 
-Extract the official 2.5.2 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
+Extract the official 2.5.4 prebuilt driver archive into a separate directory. Use its unmodified `pkgroot` as the base; the helper verifies its existing `SHA256SUMS` before copying anything. Run on macOS with Python 3 and Apple's command line tools installed:
 
 ```bash
 cd "$HOME/nvmtl-build/LIVE"
@@ -349,20 +351,20 @@ By default, this stages the Tahoe PR changes using these exact paths in the chec
 | `out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib` | `Library/GPUBundles/nvmtl/libnvmtl_translate.dylib` and the plugin's separate translator copy, if present |
 | `kexts/NVRMFB/fb/Info.plist` | `Library/Extensions/NVRMFB.kext/Contents/Info.plist` |
 
-The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. The helper itself retains plugin resources, prebuilt NVRM/NVRMAGDC/framebuffer binaries, NVK, firmware and the Sequoia accelerator from the base package. For the current fork, also include the rebuilt framebuffer executable and regenerate checksums before using the package; the helper does not copy that executable.
+The loader prefers a translator beside the plugin executable. The helper updates that separate copy, or preserves its relative symlink to the canonical `nvmtl` translator, so an older copy cannot take precedence. The helper retains plugin resources, NVRM/NVRMAGDC, NVK, firmware and the Sequoia accelerator from the base package. By default it keeps the framebuffer executable too. For display rotation, pass `--framebuffer` with the complete rebuilt NVRMFB.kext so its executable and matching plist are copied together; the helper removes the older bundle and regenerates all affected checksums.
 
 The four historical PRs do not themselves require rebuilding NVAccel. Testing the current fork uses the matching 2.5.4 RM, rebuilt framebuffer and Tahoe accelerator with upstream's parked-backing repair and plane bounds, plus the fork's rotation path. Preserve the package version in the accelerator's plist, then include it explicitly:
 
 ```bash
 python3 build/stage_package.py "/path/to/upstream/pkgroot" \
   "$HOME/nvmtl-build/tahoe-package/pkgroot" \
-  --framebuffer-plist "/path/to/upstream/pkgroot/Library/Extensions/NVRMFB.kext/Contents/Info.plist" \
+  --framebuffer out/rotation-fb/NVRMFB.kext \
   --accel-26 out/tahoe/NVAccel.kext
 ```
 
-This replaces `Library/NullMoth/kexts/26/NVAccel.kext` and refreshes its nested `SHA256SUMS`. With `accel_build_all.sh`, the corresponding input is `out/accel/26/NVAccel.kext`. Both prebuilt OS variants must be present because upstream's installer requires them; this helper updates only the Tahoe accelerator when requested.
+This replaces `Library/NullMoth/kexts/26/NVAccel.kext`, mirrors it into `Library/Extensions/NVAccel.kext` when that active copy exists, and refreshes the nested `SHA256SUMS`. With `accel_build_all.sh`, the corresponding input is `out/accel/26/NVAccel.kext`. Both prebuilt OS variants must be present because upstream's installer requires them; this helper updates only the Tahoe accelerator when requested.
 
-For outputs in other locations, use `--plugin /path/to/NVMTLDriver`, `--translator /path/to/libnvmtl_translate.dylib`, and optionally `--framebuffer-plist /path/to/Info.plist`. The helper checks that replacement binaries contain x86_64 code. It copies finalized binaries byte-for-byte and performs no signing or install-name edits. Complete the translator build steps in section 5 first.
+For outputs in other locations, use `--plugin /path/to/NVMTLDriver`, `--translator /path/to/libnvmtl_translate.dylib`, `--framebuffer /path/to/NVRMFB.kext`, and optionally `--framebuffer-plist /path/to/Info.plist`. The complete framebuffer supplies its own matching plist unless explicitly overridden. The helper checks that replacement binaries contain x86_64 code. It copies finalized binaries byte-for-byte and performs no signing or install-name edits. Complete the translator build steps in section 5 first.
 
 The package's upstream `install.sh`, `uninstall.sh`, supporting tools, and `VERSION` are preserved. The helper makes the two scripts executable, regenerates the root `SHA256SUMS` over the final package, and verifies every generated checksum. These are packaging checks; they do not establish compatibility between a newer source build and an older prebuilt framebuffer or NVK. This stages the Tahoe PR outputs, not every component changed by the upstream merge described at the top of this guide.
 

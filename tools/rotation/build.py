@@ -68,6 +68,10 @@ commands = {
                     str(root / 'tools/rotation/resolution_test.cpp'), '-o', str(output / 'resolution-test')],
     'physical-plane-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
                     str(root / 'tools/rotation/physical_plane_test.cpp'), '-o', str(output / 'physical-plane-test')],
+    'gpu-state-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
+                    str(root / 'tools/rotation/gpu_state_test.cpp'), '-o', str(output / 'gpu-state-test')],
+    'multidisplay-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
+                    str(root / 'tools/rotation/multidisplay_test.cpp'), '-o', str(output / 'multidisplay-test')],
 }
 (output / 'COMMANDS.json').write_text(json.dumps(commands, indent=2) + '\n')
 results = {}
@@ -88,7 +92,13 @@ if args.package_base:
 info = plistlib.loads(template.read_bytes())
 assert info['CFBundleIdentifier'] == 'com.nullmoth.NVRMFB'
 assert info['IOKitPersonalities']['NVRMFB']['IOClass'] == 'NVRMNVDAFramebuffer'
-info['IOKitPersonalities']['NVRMFB']['NVRMRotationPrototype'] = True
+personality = info['IOKitPersonalities']['NVRMFB']
+# Runtime rotation properties are published by the new driver. Preserve only
+# the supported configuration key when importing older release metadata.
+for key in list(personality):
+    if key.startswith('NVRMRotation') and key != 'NVRMRotationEnabled':
+        del personality[key]
+personality.setdefault('NVRMRotationEnabled', True)
 (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps(info, sort_keys=False))
 
 files = [p for p in (root / 'kexts/NVRMFB').rglob('*') if p.is_file()]
@@ -98,7 +108,7 @@ hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() f
           if '__pycache__' not in p.parts and p.suffix != '.pyc'}
 (output / 'SOURCE-HASHES.json').write_text(json.dumps(hashes, indent=2) + '\n')
 artifacts = {}
-for p in [bundle / 'Contents/MacOS/NVRMFB', output / 'nv-rotate', output / 'protocol-test', output / 'resolution-test', output / 'copy-test', output / 'cursor-map-test', output / 'copy-bench', output / 'source-probe-test', output / 'physical-plane-test']:
+for p in [bundle / 'Contents/MacOS/NVRMFB', output / 'nv-rotate', output / 'protocol-test', output / 'resolution-test', output / 'copy-test', output / 'cursor-map-test', output / 'copy-bench', output / 'source-probe-test', output / 'physical-plane-test', output / 'gpu-state-test', output / 'multidisplay-test']:
     artifacts[p.name] = {'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
                          'uuid': subprocess.check_output(['dwarfdump', '--uuid', str(p)], text=True).split()[1]}
 (output / 'ARTIFACTS.json').write_text(json.dumps(artifacts, indent=2) + '\n')

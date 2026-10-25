@@ -2,8 +2,9 @@
 
 ## Fork display rotation on Tahoe
 
-- Add 90°, 180° and 270° rotation with desktop/cursor alignment, enabled by default on Tahoe. Keep Standard's normal presentation path and native display timings; `nvrmrotation=0` disables rotation support.
-- Rotated frames use a checked CPU copy into existing scanout. Tested on RTX 2060 Super at 1920×1080/75 Hz; other hardware and sleep/wake remain unqualified. Rebuild both NVRMFB and Tahoe NVAccel. See [Display rotation](docs/DISPLAY-ROTATION.md) for costs, checks and the GPU follow-up.
+- Add 90°, 180° and 270° rotation with desktop/cursor alignment, enabled by default on Tahoe. Preserve native timings and Standard's normal path; `nvrmrotation=0` disables it.
+- Rotate shared VRAM on WindowServer's producer queue with a bounded completion handoff and checked CPU fallback. Keep source/mode/ticket/output state independent per display, including shared sources and different resolutions/angles.
+- Use `NVRMRotationEnabled` and `NVRMRotationImplementationVersion`. Rebuild NVRMFB, Tahoe NVAccel and NVMTLDriver together. Single-monitor alignment and GPU handoff were tested on RTX 2060 Super at native resolution/75 Hz; the final multi-display changes need hardware testing. See [Display rotation](docs/DISPLAY-ROTATION.md) for results and limitations.
 
 ## Fork integration with upstream 2.5.4
 

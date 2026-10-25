@@ -168,7 +168,12 @@ def stage(args):
     commit = run("git", "-C", REPO, "rev-parse", "--short", "HEAD").stdout.strip()
     plugin = args.plugin or REPO / ("out/plugin-" + commit + "-release/NVMTLDriver")
     translator = args.translator or REPO / "out/translator/x86_64-apple-darwin/release/libnvmtl_translate.dylib"
-    plist = args.framebuffer_plist or REPO / "kexts/NVRMFB/fb/Info.plist"
+    framebuffer = getattr(args, "framebuffer", None)
+    if framebuffer:
+        bundle(framebuffer, "NVRMFB")
+        validate_links(framebuffer.resolve())
+        run("lipo", framebuffer / "Contents/MacOS/NVRMFB", "-verify_arch", "x86_64")
+    plist = args.framebuffer_plist or (framebuffer / "Contents/Info.plist" if framebuffer else REPO / "kexts/NVRMFB/fb/Info.plist")
     for path in (plugin, translator, plist):
         regular(path)
     with plist.open("rb") as stream:
@@ -189,6 +194,15 @@ def stage(args):
             destination = work / ACCEL["26"]
             shutil.rmtree(destination)
             shutil.copytree(args.accel_26, destination, symlinks=True)
+            active = work / "Library/Extensions/NVAccel.kext"
+            if active.exists():
+                bundle(active, "NVAccel")
+                shutil.rmtree(active)
+                shutil.copytree(args.accel_26, active, symlinks=True)
+        if framebuffer:
+            destination = work / FRAMEBUFFER
+            shutil.rmtree(destination)
+            shutil.copytree(framebuffer, destination, symlinks=True)
         replace_file(plist, work / FRAMEBUFFER / "Contents/Info.plist")
         for source, relative in replacements:
             replace_file(source, work / relative)
@@ -212,7 +226,7 @@ def stage(args):
         require(not output.exists() and not output.is_symlink(), "output appeared while staging; refusing to replace it")
         work.rename(output)
     print("Package ready: " + str(output))
-    print("Updated: NVMTLDriver, translator, NVRMFB Info.plist" + (", Tahoe NVAccel" if args.accel_26 else ""))
+    print("Updated: NVMTLDriver, translator, " + ("NVRMFB" if framebuffer else "NVRMFB Info.plist") + (", Tahoe NVAccel" if args.accel_26 else ""))
     print("SHA256SUMS verified. Install on Tahoe using install.sh.")
     return output
 
@@ -224,6 +238,7 @@ def main():
     parser.add_argument("--plugin", type=Path, help="NVMTLDriver executable (default: current-commit release output)")
     parser.add_argument("--translator", type=Path, help="libnvmtl_translate.dylib (default: out/translator Intel release)")
     parser.add_argument("--framebuffer-plist", type=Path, help="NVRMFB Info.plist (default: this checkout's PR #131 plist)")
+    parser.add_argument("--framebuffer", type=Path, help="optional complete rebuilt NVRMFB.kext; uses its plist unless overridden")
     parser.add_argument("--accel-26", type=Path, help="optional complete rebuilt Tahoe NVAccel.kext")
     try:
         stage(parser.parse_args())

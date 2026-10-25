@@ -21,31 +21,38 @@ The current upstream base is **2.5.4 at `4677905`**, from `upstream/main`, integ
 
 ## Tahoe display rotation
 
-Retain the checked rotation presenter, cursor-direction correction and Tahoe-only default
-when merging newer framebuffer/accelerator code. Standard keeps its normal zero-copy path;
-rotated frames wait for GPU completion/page-off on the existing presentation thread, then
-copy into existing owned scanout under the display gate. Do not restore the failed separate
-GPU importer or change physical timing/pitch to fabricate portrait modes.
+Retain GPU rotation on WindowServer's producer queue, the bounded 1-ms metadata
+handoff and the checked CPU fallback into each display's owned scanout. Standard
+keeps its normal presentation path. Do not restore a separate GPU-import worker,
+reacquire the family lock from a presentation callback, or hold a display gate
+across the family's reconnect request. Imports stay outside completion/pool locks
+and ahead of pending marks; GPU completion stays after normal surface publication.
 
-The quarter-turn mode-backing flag, exact full-plane rectangle/scaler validation and
-180-degree correction of the preoriented image are one contract. The cursor already follows
-IOFramebuffer's low-bit transform: do not transform it again. Keep normalized transforms,
-epoch/mode/head checks, bounds/format/layout guards, rejected asynchronous stale flips and
-accelerator-independent return to Standard. No display gate may be held across the family's
-reconnect request, and no helper may reacquire the family lock from its presentation callback.
+Keep the quarter-turn mode-backing flag, exact full-plane/scaler validation and
+180-degree correction of the preoriented image together. Cursor transformation is
+already performed by IOFramebuffer. Preserve normalized transforms, per-display
+mode/epoch/framebuffer-owner checks, input/output bounds/format/layout guards,
+allocation cookies, pin/latch lifetime and stale asynchronous-flip rejection.
 
-Enable the UI by default only on Darwin 25, preserve property/`nvrmrotation=0` opt-outs and
-require copy protocol 9 from the matching GPU's Tahoe accelerator before nonzero rotation.
-The implementation marker is 10 while the request ABI remains 9; do not equate them. Rebuild
-both kexts when incorporating this feature. Preserve source-probe root-only/one-frame limits;
-it must remain explicitly armed and separate from presentation acceptance.
+Route BEGIN to an explicit display index. Source IDs can occur on multiple displays;
+never restore a global first-match lookup. Keep each display's source records,
+nonwrapping nonce and three output buffers independent. A shared-source write
+invalidates all consumers; completion/scanout and reconnect invalidation remain
+scoped to their owner. Never reuse another display's source or output buffer.
+Standard on one display must not disable rotation on another.
 
-The user confirmed output and cursor alignment on RTX 2060 Super, 8 GiB BAR1,
-1920×1080/75 Hz and Tahoe 26.7.1. Host pixel/mapping tests through 8K do not qualify those
-resolutions on hardware. The CPU copy/page-off cost and potential tearing remain; other GPUs,
-multiple displays, HDR, hotplug and sleep/wake need testing. Keep these limits in the
-[rotation guide](DISPLAY-ROTATION.md). A GPU path inside the existing compositor submission
-is a future investigation, not part of this commit.
+Enable rotation only on Darwin 25 with property/`nvrmrotation=0` opt-outs. Preserve
+`NVRMRotationEnabled`, implementation 12, mode/copy interface 10 and per-display
+GPU protocol 12. These checks reject partial component upgrades. Package matching
+NVRMFB, Tahoe NVAccel and plugin while keeping official versions/dependencies.
+Retain per-display GPU/CPU counters and bounded root-only source diagnostics.
+
+Single-monitor RTX 2060 Super tests confirmed all three angles at native 75 Hz.
+The GPU handoff repair presented 322/324 completed jobs in two trials; 1,069 CPU
+copies remained. These counters are not an FPS benchmark. Final multi-display
+routing, other GPUs, sleep/wake, HDR, mirroring and hotplug still need hardware
+testing. Preserve the known stale-DVI/shared-controller transition limitation and
+the nonwrapping per-display nonce fallback in the [rotation guide](DISPLAY-ROTATION.md).
 
 ## Upstream 2.5.4 integration
 

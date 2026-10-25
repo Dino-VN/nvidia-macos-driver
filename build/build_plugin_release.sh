@@ -10,9 +10,14 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 R=/Volumes/MiniData/build/plugin-release
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-git -C "$HERE" archive "$REV" plugin | tar x -C "$TMP"
-ssh mini "rm -rf $R/src $R/out && mkdir -p $R/src $R/out"
+ARCHIVE=(plugin)
+for header in tools/rotation/gpu_protocol.h tools/rotation/gpu_shader.h; do
+  if git -C "$HERE" cat-file -e "$REV:$header" 2>/dev/null; then ARCHIVE+=("$header"); fi
+done
+git -C "$HERE" archive "$REV" "${ARCHIVE[@]}" | tar x -C "$TMP"
+ssh mini "rm -rf $R/src $R/out $R/tools && mkdir -p $R/src $R/out"
 rsync -a "$TMP/plugin/" "mini:$R/src/"
+if [ -d "$TMP/tools" ]; then rsync -a "$TMP/tools/" "mini:$R/tools/"; fi
 ssh mini "cd $R/src && xcrun clang -arch x86_64 -mmacosx-version-min=15.0 -bundle -fobjc-arc -O2 -DNVMTL_RELEASE=1 \
   -Wno-protocol -Wno-incomplete-implementation -Werror=unguarded-availability-new \
   -I/Volumes/MiniData/build/gpu-src/mesa/include -o ../out/NVMTLDriver NVMTLDevice.m \

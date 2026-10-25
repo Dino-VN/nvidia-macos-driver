@@ -10,7 +10,7 @@ def method(signature):
     while depth:
         depth+=(text[end]=='{')-(text[end]=='}');end+=1
     return text[start:end]
-methods=method('void NVRMNVDAFramebuffer::configureRotationPrototype(')+'\n'+method('IOReturn NVRMNVDAFramebuffer::requestProbe(')
+methods=method('void NVRMNVDAFramebuffer::configureRotation(')+'\n'+method('IOReturn NVRMNVDAFramebuffer::requestProbe(')
 fixture=r'''
 #include <cassert>
 #include <cstdint>
@@ -54,12 +54,12 @@ struct Base:IOService{
 };
 struct NVRMNVDAFramebuffer:Base{
     using super=Base;
-    bool fRotationPrototype=false;volatile SInt32 fRotationRequesting=0,fRotationRequestedBits=0,fStopping=0;
+    bool fRotationEnabled=false;volatile SInt32 fRotationRequesting=0,fRotationRequestedBits=0,fStopping=0;
     volatile SInt64 fRotationEpoch=1;unsigned fIndex=0;IOService pci;
     IOService *pciNub(){return &pci;}
     OSDictionary *serviceMatching(const char *){return &match;}
     OSIterator *getMatchingServices(OSDictionary *){iterator.at=0;return &iterator;}
-    void configureRotationPrototype();IOReturn requestProbe(IOOptionBits);
+    void configureRotation();IOReturn requestProbe(IOOptionBits);
 };
 @@METHODS@@
 int main(){
@@ -67,19 +67,19 @@ int main(){
     for(int os:{24,25,26})for(int property:{-1,0,1})for(int argument:{-1,0,1,2}){
         NVRMNVDAFramebuffer fb;version_major=os;bootArg=argument;
         fb.setProperty(kIOFBProbeOptionsKey,0x200ULL,32);
-        if(property!=-1)fb.setProperty("NVRMRotationPrototype",property?kOSBooleanTrue:kOSBooleanFalse);
-        fb.configureRotationPrototype();
+        if(property!=-1)fb.setProperty("NVRMRotationEnabled",property?kOSBooleanTrue:kOSBooleanFalse);
+        fb.configureRotation();
         const int selected=argument!=-1?argument:(property==-1?1:property);
         const bool wanted=os==25&&selected==1;
-        assert(fb.fRotationPrototype==wanted);
-        assert(fb.getProperty("NVRMRotationPrototype")== (wanted?kOSBooleanTrue:kOSBooleanFalse));
+        assert(fb.fRotationEnabled==wanted);
+        assert(fb.getProperty("NVRMRotationEnabled")== (wanted?kOSBooleanTrue:kOSBooleanFalse));
         const auto flags=OSDynamicCast(OSNumber,fb.getProperty(kIOFBProbeOptionsKey))->unsigned32BitValue();
         assert(flags==(wanted?0x601u:0x200u));
-        assert((fb.getProperty("NVRMRotationPrototypeVersion")!=nullptr)==wanted);
+        assert((fb.getProperty("NVRMRotationImplementationVersion")!=nullptr)==wanted);
         ++configs;
     }
-    version_major=25;bootArg=-1;NVRMNVDAFramebuffer fb;fb.configureRotationPrototype();
-    assert(fb.fRotationPrototype);
+    version_major=25;bootArg=-1;NVRMNVDAFramebuffer fb;fb.configureRotation();
+    assert(fb.fRotationEnabled);
     assert(fb.requestProbe(0x300400)==kIOReturnNotReady&&!fb.calls); // no matching accelerator
     IOService accel;OSNumber protocol;protocol.value=8;accel.setProperty("NVAccelRotationCopyProtocol",&protocol);accel.provider=fb.pciNub();
     iterator.services={&accel};assert(fb.requestProbe(0x300400)==kIOReturnNotReady&&!fb.calls);
@@ -97,7 +97,7 @@ int main(){
     assert(fb.requestProbe(0x400400)==kIOReturnBadArgument&&fb.calls==count);
     iterator.services.clear(); // restoring Standard never depends on a matching accelerator
     assert(fb.requestProbe(0x400)==0&&fb.last==0x400&&!fb.fRotationRequestedBits);
-    fb.fRotationPrototype=false;
+    fb.fRotationEnabled=false;
     assert(fb.requestProbe(0x300400)==0&&fb.last==0x300400); // original family dispatch
     printf("PASS: %u production enablement cases; Tahoe default and property/boot opt-outs; OS gate, matching GPU/protocol, normalized transforms, failed/busy/stopping requests, accelerator-independent Standard restore\n",configs);
 }

@@ -13,6 +13,7 @@
 #include <IOKit/IOLib.h>
 #include "../../../tools/rotation/copy_request.h"
 #include "../../../tools/rotation/source_probe.h"
+#include "../../../tools/rotation/gpu_state.h"
 #include <IOKit/pci/IOPCIDevice.h>
 #include <pexpert/pexpert.h>
 #include <libkern/OSKextLib.h>
@@ -36,6 +37,8 @@ static void               nvAccelGpuVaFree(IOAccelMemoryMap *map);
 static bool               nvAccelFlipTo(IOAccelResource2 *res);
 static bool               nvAccelCopyToScanout(IOAccelResource2 *res);
 static bool               nvRotationRequested(IOService *fb);
+static unsigned nvRotationGPUEscape(const struct NVRMSurfShareEsc *,task_t);
+static void nvRotationGPUPending(unsigned);
 void                      nvAccelSwapProbe(IOAccelResource2 *a1, IOAccelResource2 *a2);
 bool                      nvAccelResHasContent(IOAccelResource2 *res);
 static void               nvAccelWriteStamp(int index, unsigned int value);
@@ -713,6 +716,8 @@ public:
             setProperty("NVAccelSurfaceWait", 1ULL, 32);
 #ifdef NM_TAHOE
             setProperty("NVAccelRotationCopyProtocol", (unsigned long long)NM_ROTATION_COPY_PROTOCOL, 32);
+            setProperty("NVAccelRotationGPUProtocol", (unsigned long long)NM_ROTATION_GPU_PROTOCOL, 32);
+            setProperty("NVAccelRotationGPURevision", 13ULL, 32);
 #endif
             registerService(); ALOG("registerService() called — Metal can now find MetalPluginName=%s", "NVMTLDriver");
             gAccel = this; gEnableAccel = &NVAccel::enableFromHook;
@@ -1088,7 +1093,19 @@ static int    gNvIop = 0;
 static SInt64 gCntIopOk, gCntIopFail, gCntIopEmpty, gCntIopSrcRes, gCntIopSrcSurf, gCntIopBlank;
 static SInt64 gCntIopOkHead[kNvMaxFB];
 static SInt64 gCntRotationCopy, gCntRotationSkip, gCntRotationBadGeometry;
+static SInt64 gCntRotationCopyHead[kNvMaxFB], gCntRotationGPUFlipHead[kNvMaxFB];
 static SInt64 gRotationCopyUs, gRotationCopyMaxUs;
+static int gRotationGPUOn=1;
+static SInt64 gCntRotationGPUFlip,gCntRotationGPUReady,gCntRotationGPUHeld;
+static int gRotationGPUWaitUs=1000;
+static SInt64 gCntRotationGPUMetadataWait,gCntRotationGPUMetadataTimeout,gCntRotationGPUNoReady;
+static SInt64 gCntRotationGPUSourceStale,gCntRotationGPUOutputRefused,gCntRotationGPUFlipRefused;
+static IOLock *volatile gRotationGPULock;
+static NMRotationGPUState gRotationGPUState;
+static_assert(kNvMaxFB==NM_ROTATION_GPU_HEADS,"rotation and display-pipe capacities must match");
+static IOSurface *gRotationGPUSources[NM_ROTATION_GPU_HEADS][NM_ROTATION_GPU_SOURCES];
+static IOSurface *gRotationGPUOutputs[NM_ROTATION_GPU_HEADS][NM_ROTATION_GPU_SLOTS];
+static IOService *gRotationGPUFB[NM_ROTATION_GPU_HEADS];
 #define NVIOP_LOG_MAX 40
 static unsigned gIopLogs = 0;
 #define NVIOPLOG(fmt, ...) do { if (gIopLogs < NVIOP_LOG_MAX) { gIopLogs++; ALOG("iop: " fmt, ##__VA_ARGS__); } } while (0)
@@ -1284,11 +1301,33 @@ SYSCTL_PROC(_debug, OID_AUTO, nvaccelfb, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCK
             NULL, 0, nvaccelfb_sysctl, "I",
             "register the NVIDIA framebuffer with the accelerator display machine (1 = found_framebuffer, 2 = family sweep)");
 #define NVACCEL_CNT(nm, var, desc) SYSCTL_QUAD(_debug, OID_AUTO, nm, CTLFLAG_RD | CTLFLAG_LOCKED, (SInt64 *)&var, desc)
-NVACCEL_CNT(nvaccel_rotation_copy_frames, gCntRotationCopy, "prototype frames permuted into the existing scanout");
-NVACCEL_CNT(nvaccel_rotation_skips, gCntRotationSkip, "prototype rotated frames kept due to pending work or a changed mode");
-NVACCEL_CNT(nvaccel_rotation_bad_geometry, gCntRotationBadGeometry, "prototype frames refused for source geometry mismatch");
-NVACCEL_CNT(nvaccel_rotation_copy_us, gRotationCopyUs, "prototype framebuffer copy time, cumulative microseconds");
-NVACCEL_CNT(nvaccel_rotation_copy_max_us, gRotationCopyMaxUs, "prototype longest framebuffer copy, microseconds");
+SYSCTL_INT(_debug,OID_AUTO,nvaccel_rotation_gpu_on,CTLFLAG_RW|CTLFLAG_LOCKED,&gRotationGPUOn,0,"producer GPU rotation with CPU fallback");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips,gCntRotationGPUFlip,"completed GPU rotation outputs presented without CPU readback/copy");
+NVACCEL_CNT(nvaccel_rotation_gpu_ready,gCntRotationGPUReady,"GPU rotation completions published by the owning producer");
+NVACCEL_CNT(nvaccel_rotation_gpu_held,gCntRotationGPUHeld,"GPU flips kept while prior latch is busy");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips_h0,gCntRotationGPUFlipHead[0],"GPU rotated frames presented on display 0");
+NVACCEL_CNT(nvaccel_rotation_copy_frames_h0,gCntRotationCopyHead[0],"CPU rotated frames copied on display 0");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips_h1,gCntRotationGPUFlipHead[1],"GPU rotated frames presented on display 1");
+NVACCEL_CNT(nvaccel_rotation_copy_frames_h1,gCntRotationCopyHead[1],"CPU rotated frames copied on display 1");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips_h2,gCntRotationGPUFlipHead[2],"GPU rotated frames presented on display 2");
+NVACCEL_CNT(nvaccel_rotation_copy_frames_h2,gCntRotationCopyHead[2],"CPU rotated frames copied on display 2");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips_h3,gCntRotationGPUFlipHead[3],"GPU rotated frames presented on display 3");
+NVACCEL_CNT(nvaccel_rotation_copy_frames_h3,gCntRotationCopyHead[3],"CPU rotated frames copied on display 3");
+NVACCEL_CNT(nvaccel_rotation_gpu_flips_h4,gCntRotationGPUFlipHead[4],"GPU rotated frames presented on display 4");
+NVACCEL_CNT(nvaccel_rotation_copy_frames_h4,gCntRotationCopyHead[4],"CPU rotated frames copied on display 4");
+
+SYSCTL_INT(_debug,OID_AUTO,nvaccel_rotation_gpu_wait_us,CTLFLAG_RW|CTLFLAG_LOCKED,&gRotationGPUWaitUs,0,"completed rotation metadata handoff budget, clamped to 0..1000 us");
+NVACCEL_CNT(nvaccel_rotation_gpu_metadata_waits,gCntRotationGPUMetadataWait,"presenter waited for a registered rotation job after its source-ready mark");
+NVACCEL_CNT(nvaccel_rotation_gpu_metadata_timeouts,gCntRotationGPUMetadataTimeout,"registered rotation jobs missed the bounded metadata handoff");
+NVACCEL_CNT(nvaccel_rotation_gpu_no_ready,gCntRotationGPUNoReady,"CPU fallbacks with no matching completed GPU rotation result");
+NVACCEL_CNT(nvaccel_rotation_gpu_source_stale,gCntRotationGPUSourceStale,"completed rotation results refused because their source is no longer GPU-current");
+NVACCEL_CNT(nvaccel_rotation_gpu_output_refused,gCntRotationGPUOutputRefused,"completed rotation results refused by output cache/backing validation");
+NVACCEL_CNT(nvaccel_rotation_gpu_flip_refused,gCntRotationGPUFlipRefused,"completed rotation outputs refused by the framebuffer, excluding Busy");
+NVACCEL_CNT(nvaccel_rotation_copy_frames, gCntRotationCopy, "rotated frames permuted into the existing scanout");
+NVACCEL_CNT(nvaccel_rotation_skips, gCntRotationSkip, "rotated frames kept due to pending work or a changed mode");
+NVACCEL_CNT(nvaccel_rotation_bad_geometry, gCntRotationBadGeometry, "rotated frames refused for source geometry mismatch");
+NVACCEL_CNT(nvaccel_rotation_copy_us, gRotationCopyUs, "rotation-capable framebuffer copy time, cumulative microseconds");
+NVACCEL_CNT(nvaccel_rotation_copy_max_us, gRotationCopyMaxUs, "longest rotation framebuffer copy, microseconds");
 NVACCEL_CNT(nvaccel_vm_alloc,         gCntVmAlloc,        "NVVidMemory::allocPhysical successes");
 NVACCEL_CNT(nvaccel_vm_alloc_bytes,   gCntVmAllocBytes,   "bytes of VRAM granted to NVVidMemory");
 NVACCEL_CNT(nvaccel_vm_dealloc,       gCntVmDealloc,      "NVVidMemory::deallocPhysical calls with a handle");
@@ -1438,7 +1477,7 @@ SYSCTL_INT(_debug, OID_AUTO, nvaccel_crc_head, CTLFLAG_RW | CTLFLAG_LOCKED, &gCr
 static int nvaccel_crc_sysctl SYSCTL_HANDLER_ARGS;
 SYSCTL_PROC(_debug, OID_AUTO, nvaccel_crc, CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_LOCKED, 0, 0, nvaccel_crc_sysctl, "I",
             "b85k-crc: display CRC32 of what head nvaccel_crc_head is showing (0 = unavailable)");
-// Prototype-only source inspection. A root request preallocates one bounded
+// Root-only source inspection. A root request preallocates one bounded
 // buffer. The existing presenter fills it only after GPU completion/page-off,
 // using the source's actual stride, including when presentation rejects its
 // geometry. No worker imports a surface and no diagnostic frame is displayed.
@@ -1465,8 +1504,14 @@ static int nvRotationProbeArmSysctl SYSCTL_HANDLER_ARGS
     IOLockLock(lock); int angle = (int)gRotationProbeAngle; IOLockUnlock(lock);
     int error = sysctl_handle_int(oidp,&angle,0,req);
     if (error || !req->newptr) return error;
-    if (angle && (!nmRotationValid((unsigned)angle) || !NVAccel::gAccel || !NVAccel::gAccel->fFB ||
-        NVAccel::gAccel->fFB->getProperty("NVRMRotationPrototype") != kOSBooleanTrue)) return EINVAL;
+    bool displayEnabled = false;
+    if (angle && NVAccel::gAccel) {
+        for (unsigned head = 0; head < kNvMaxFB; ++head) {
+            IOService *fb = NVAccel::gAccel->fFBs[head];
+            if (fb && fb->getProperty("NVRMRotationEnabled") == kOSBooleanTrue) displayEnabled = true;
+        }
+    }
+    if (angle && (!nmRotationValid((unsigned)angle) || !displayEnabled)) return EINVAL;
     OSData *buffer = angle ? OSData::withCapacity(NM_ROTATION_PROBE_CAPACITY) : nullptr;
     if (angle && (!buffer || !buffer->appendBytes(nullptr,NM_ROTATION_PROBE_CAPACITY))) {
         if (buffer) buffer->release();
@@ -1503,7 +1548,7 @@ static int nvRotationProbeReadSysctl SYSCTL_HANDLER_ARGS
 SYSCTL_PROC(_debug,OID_AUTO,nvaccel_rotation_probe_arm,CTLTYPE_INT|CTLFLAG_RW|CTLFLAG_LOCKED,
     nullptr,0,nvRotationProbeArmSysctl,"I","root: capture one rotated source in the next 20s (90/180/270); 0 discards it");
 SYSCTL_PROC(_debug,OID_AUTO,nvaccel_rotation_probe,CTLTYPE_OPAQUE|CTLFLAG_RD|CTLFLAG_LOCKED,
-    nullptr,0,nvRotationProbeReadSysctl,"S,NMRotationSourceProbe","root: one bounded prototype source image with geometry/plane rectangles");
+    nullptr,0,nvRotationProbeReadSysctl,"S,NMRotationSourceProbe","root: one bounded rotation source image with geometry/plane rectangles");
 
 static void nvRotationProbeCapture(const NMRotationMode &mode, IOSurface *surface,
     IOAccelDisplayPipeTransaction2 *transaction, const void *source, uint64_t bytes)
@@ -1562,6 +1607,28 @@ static void nvaccelInstallSysctl(void)
     sysctl_register_oid(&sysctl__debug_nmxaccel_headless);
     gSysctlInstalled = true;
 #else
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_on);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_ready);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_held);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips_h0);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames_h0);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips_h1);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames_h1);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips_h2);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames_h2);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips_h3);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames_h3);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flips_h4);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames_h4);
+
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_wait_us);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_metadata_waits);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_metadata_timeouts);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_no_ready);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_source_stale);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_output_refused);
+    sysctl_register_oid(&sysctl__debug_nvaccel_rotation_gpu_flip_refused);
     sysctl_register_oid(&sysctl__debug_nvaccel_rotation_copy_frames);
     sysctl_register_oid(&sysctl__debug_nvaccel_rotation_skips);
     sysctl_register_oid(&sysctl__debug_nvaccel_rotation_bad_geometry);
@@ -1802,11 +1869,17 @@ static unsigned nvSurfGpuEscape(const struct NVRMSurfShareEsc *p)
     char nm[32] = { 0 };
     proc_selfname(nm, sizeof nm);
     if (strcmp(nm, "WindowServer")) return NVRM_SS_OFF;
+    if (p->surfaceID && (p->plane & 1u)) nvRotationGPUPending(p->surfaceID);
     if (p->surfaceID) nvSurfMark(p->surfaceID, (p->plane & 1u) != 0);
     return 0;
 }
 static IOReturn nvAccelSurfVram(struct NVRMSurfShareEsc *p, task_t task, unsigned cmd)
 {
+    const unsigned gpuOp=p->plane&~NM_ROTATION_GPU_PAYLOAD;
+    if(p->version==NVRM_SURFSHARE_VERSION && cmd==NVRM_ESC_SURF_DIRTY &&
+       (gpuOp==NM_ROTATION_GPU_BEGIN||gpuOp==NM_ROTATION_GPU_BIND||gpuOp==NM_ROTATION_GPU_DONE||gpuOp==NM_ROTATION_GPU_CANCEL)) {
+        p->hSrcClient=p->hSrcMemory=0;p->status=nvRotationGPUEscape(p,task);return kIOReturnSuccess;
+    }
     if (p->version == NVRM_SURFSHARE_VERSION && cmd == NVRM_ESC_SURF_DIRTY && (p->plane & NVRM_SS_PLANE_GPU_MARK)) {
         p->hSrcClient = p->hSrcMemory = 0;
         p->status = nvSurfGpuEscape(p);
@@ -2615,9 +2688,11 @@ static bool nvAccelFlipTo(IOAccelResource2 *res)
     return true;
 }
 
+#include "nvrm-rotation-gpu.h"
+
 static bool nvRotationRequested(IOService *fb)
 {
-    if (!fb || fb->getProperty("NVRMRotationPrototype") != kOSBooleanTrue) return false;
+    if (!fb || fb->getProperty("NVRMRotationEnabled") != kOSBooleanTrue) return false;
     OSObject *property = fb->copyProperty("IOFBTransform");
     OSNumber *number = OSDynamicCast(OSNumber, property);
     bool rotated = number && (number->unsigned32BitValue() & 0xffu);
@@ -2687,7 +2762,8 @@ static IOReturn nvRotationCopyPresent(NVDisplayPipe *pipe, IOService *fb, unsign
     const OSSymbol *info = OSSymbol::withCStringNoCopy(NM_ROTATION_INFO);
     IOReturn result = info ? fb->callPlatformFunction(info, false, &mode, nullptr, nullptr, nullptr) : kIOReturnNoMemory;
     if (info) info->release();
-    if (result != kIOReturnSuccess || !mode.degrees || !nmRotationModeValid(&mode) || nvAccelIopAsyncBusy(pipe)) {
+    if (result != kIOReturnSuccess || !mode.degrees || !nmRotationModeValid(&mode) ||
+        head >= kNvMaxFB || mode.head != head || nvAccelIopAsyncBusy(pipe)) {
         OSAddAtomic64(1, &gCntRotationSkip); return kIOReturnSuccess;
     }
     const uint64_t width=surface ? surface->getWidth() : 0,height=surface ? surface->getHeight() : 0;
@@ -2709,9 +2785,17 @@ static IOReturn nvRotationCopyPresent(NVDisplayPipe *pipe, IOService *fb, unsign
         if (!safe || !probe || !nmRotationProbeGeometry(width,height,pitch,pitch*height)) return kIOReturnSuccess;
     }
     const unsigned sid = surface->getSurfaceID();
+    const bool sourceReady = nvSurfWaitReady(sid);
+    if(expected) {
+        nvRotationGPUObserve(fb,surface,mode);
+        if(sourceReady) {
+            const int gpu=nvRotationGPUTry(fb,head,surface,mode);
+            if(gpu>=0)return kIOReturnSuccess;
+        }
+    }
     // The ordinary fallback eventually copies after four failed page-offs.
     // Rotation must not inherit that escape: its source must actually be ready.
-    if (!nvSurfWaitReady(sid) || !nvRotationCopySourceReady(surface) || nvSVPend(sid, 2)) {
+    if (!sourceReady || !nvRotationCopySourceReady(surface) || nvSVPend(sid, 2)) {
         OSAddAtomic64(1, &gCntRotationSkip); return kIOReturnSuccess;
     }
     const uint64_t bytes = pitch * height;
@@ -2736,6 +2820,7 @@ static IOReturn nvRotationCopyPresent(NVDisplayPipe *pipe, IOService *fb, unsign
     if (copy) copy->release();
     if (result == kIOReturnSuccess) {
         gIopFlipped[head] = false; // framebuffer confirmed the owned home surface is on the head.
+        OSAddAtomic64(1, &gCntRotationCopyHead[head]);
         const SInt64 n = OSAddAtomic64(1, &gCntRotationCopy);
         if (n < 4) ALOG("rotation copy: %ux%u -> %ux%u, %u degrees, source pitch %u output pitch %u",
             request.width, request.height, mode.outputWidth, mode.outputHeight, mode.degrees, request.pitch, mode.outputPitch);

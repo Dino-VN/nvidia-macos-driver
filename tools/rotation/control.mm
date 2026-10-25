@@ -47,9 +47,9 @@ static NSDictionary *properties(io_service_t entry)
 
 static bool enabled(NSDictionary *p)
 {
-    id marker = p[@"NVRMRotationPrototype"], probe = p[@"IOFBProbeOptions"];
+    id marker = p[@"NVRMRotationEnabled"], probe = p[@"IOFBProbeOptions"];
     return [marker isKindOfClass:NSNumber.class] && [marker boolValue] &&
-           [p[@"NVRMRotationPrototypeVersion"] unsignedIntValue] == NM_ROTATION_PROTOTYPE_VERSION &&
+           [p[@"NVRMRotationImplementationVersion"] unsignedIntValue] == NM_ROTATION_IMPLEMENTATION_VERSION &&
            [probe isKindOfClass:NSNumber.class] && ([probe unsignedIntValue] & kNVRMSetTransform);
 }
 
@@ -75,10 +75,10 @@ static int printDisplays()
             @"width": @(CGDisplayPixelsWide(id)), @"height": @(CGDisplayPixelsHigh(id)),
             @"bounds_width": @(bounds.size.width), @"bounds_height": @(bounds.size.height),
             @"rotation": @(CGDisplayRotation(id)), @"nvrm_framebuffer": @(fb != IO_OBJECT_NULL),
-            @"prototype_enabled": @(enabled(p))
+            @"rotation_enabled": @(enabled(p))
         } mutableCopy];
         for (NSString *key in @[@"IOFBTransform", @"IOFBProbeOptions", @"NVRMNativeRotationMask",
-                                 @"NVRMRotationRequestedTransform", @"NVRMRotationPath", @"NVRMRotationPrototypeVersion"])
+                                 @"NVRMRotationRequestedTransform", @"NVRMRotationPath", @"NVRMRotationImplementationVersion"])
             if (p[key]) row[key] = p[key];
         if (fb && enabled(p))
             row[@"NVRMRotationActiveDegrees"] = @(nvrmRotationDegrees([p[@"IOFBTransform"] unsignedIntValue] & 0xffu));
@@ -153,7 +153,11 @@ static bool preserveResolution(CGDirectDisplayID display, uint64_t expectedID, u
         }
         const unsigned active = nvrmRotationDegrees([properties(fb)[@"IOFBTransform"] unsignedIntValue] & 0xffu);
         IOObjectRelease(fb);
-        if (active != degrees || fabs(CGDisplayRotation(display) - degrees) > 0.1) { usleep(100000); continue; }
+        // CGDisplayRotation can retain the old angle after a direct framebuffer
+        // probe, even after the physical output and cursor returned to Standard.
+        // The applied framebuffer transform is authoritative; keep the independent
+        // pixel resolution, density and refresh checks below unchanged.
+        if (active != degrees) { usleep(100000); continue; }
         CGDisplayModeRef current = CGDisplayCopyDisplayMode(display);
         NMRotationResolution actual = {};
         const bool matched = resolution(current,&actual) && nmRotationResolutionMatches(wanted,actual);
@@ -211,7 +215,7 @@ static int usage()
     fprintf(stderr, "Usage: nv-rotate --list\n"
                     "       nv-rotate --modes <display-ID>\n"
                     "       nv-rotate --display <decimal-or-hex-ID> --set <0|90|180|270> [--seconds <5..60>]\n"
-                    "A timed trial preserves resolution/refresh and restores the original display mode automatically. Requires the prototype framebuffer.\n");
+                    "A timed trial preserves resolution/refresh and restores the original display mode automatically. Requires the rotation-capable framebuffer.\n");
     return 2;
 }
 
@@ -266,7 +270,7 @@ int main(int argc, char **argv)
         NSDictionary *p = properties(fb);
         if (!enabled(p)) {
             IOObjectRelease(fb);
-            fprintf(stderr, "Prototype is not active on this display; no rotation requested.\n");
+            fprintf(stderr, "Rotation is not active on this display; no rotation requested.\n");
             return 2;
         }
         id transform = p[@"IOFBTransform"];

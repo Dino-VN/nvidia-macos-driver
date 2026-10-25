@@ -38,8 +38,8 @@ static void IOLockUnlock(IOLock *l){l->mutex.unlock();}
 static uint64_t now=100;static uint64_t mach_absolute_time(){return now;}
 enum{kSecondScale=1};static void clock_interval_to_deadline(unsigned n,unsigned,uint64_t *out){*out=now+n;}
 static thread_local bool rootUser=true;static int kauth_cred_get(){return rootUser?1:0;}static bool kauth_cred_issuser(int c){return c;}
-struct IOService{bool prototype=true;OSObject *getProperty(const char *){return prototype?kOSBooleanTrue:nullptr;}};
-struct NVAccel{IOService *fFB;static NVAccel *gAccel;};static IOService fb;static NVAccel accel{&fb};NVAccel *NVAccel::gAccel=&accel;
+struct IOService{bool rotationEnabled=true;OSObject *getProperty(const char *){return rotationEnabled?kOSBooleanTrue:nullptr;}};
+static const unsigned kNvMaxFB=5;struct NVAccel{IOService *fFB;IOService *fFBs[kNvMaxFB];static NVAccel *gAccel;};static IOService fb;static NVAccel accel{&fb,{&fb}};NVAccel *NVAccel::gAccel=&accel;
 struct IOSurface{unsigned getSurfaceID(){return 9;}unsigned getPixelFormat(){return 0x42475241u;}
     uint64_t getWidth(){return 7;}uint64_t getHeight(){return 5;}uint64_t getBytesPerRow(){return 32;}};
 struct NVResource:OSObject{unsigned char bytes[256]={};};static NVResource resource;
@@ -75,7 +75,7 @@ static void capture(){
 int main(){
     Request read;
     rootUser=false;assert(arm(90)==EPERM);assert(nvRotationProbeReadSysctl(nullptr,nullptr,0,&read)==EPERM);rootUser=true;
-    fb.prototype=false;assert(arm(90)==EINVAL);fb.prototype=true;assert(arm(45)==EINVAL);
+    fb.rotationEnabled=false;assert(arm(90)==EINVAL);fb.rotationEnabled=true;assert(arm(45)==EINVAL);
     assert(nvRotationProbeReadSysctl(nullptr,nullptr,0,&read)==EAGAIN);
     assert(arm(90)==0&&nvRotationProbeArmed(90)&&!nvRotationProbeArmed(180)&&live==1);
     capture();assert(!nvRotationProbeArmed(90)&&live==1);
@@ -100,6 +100,7 @@ int main(){
     while(!dataEntered)std::this_thread::yield();
     assert(arm(0)==0);dataResume=true;copying.join();assert(live==0);
     assert(nvRotationProbeReadSysctl(nullptr,nullptr,0,&read)==EAGAIN);
+    fb.rotationEnabled=false;IOService secondary;accel.fFBs[1]=&secondary;assert(arm(90)==0&&arm(0)==0&&live==0);
     puts("PASS: production probe handlers; root-only access, single-frame/expiry, real source stride and rect metadata, no locks across copyout, retained reader/discard/rearm, cancel during capture, no leaked buffers");
 }
 '''

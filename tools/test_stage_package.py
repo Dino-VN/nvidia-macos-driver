@@ -152,6 +152,31 @@ class StagePackage(unittest.TestCase):
         self.assert_manifest(self.output / STAGE.ACCEL["26"].parent)
         self.assert_manifest(self.output)
 
+    def test_complete_framebuffer_and_accelerator_keep_matching_metadata(self):
+        self.args.framebuffer = self.make_bundle(self.build / "NVRMFB.kext", "NVRMFB", b"rotation framebuffer")
+        self.args.framebuffer_plist = None
+        self.args.accel_26 = self.make_bundle(self.build / "26/NVAccel.kext", "NVAccel", b"rotation accelerator")
+        active = Path("Library/Extensions/NVAccel.kext")
+        self.make_bundle(self.base / active, "NVAccel", b"old active accelerator")
+        self.put(self.base / STAGE.FRAMEBUFFER / "Contents/obsolete-signature", b"old seal")
+        self.seal_base()
+        self.stage()
+        self.assert_unchanged()
+        self.assertEqual(self.snapshot(self.output / STAGE.FRAMEBUFFER), self.snapshot(self.args.framebuffer))
+        self.assertEqual((self.output / STAGE.ACCEL["26"] / "Contents/MacOS/NVAccel").read_bytes(), b"rotation accelerator")
+        self.assertEqual(self.snapshot(self.output / active), self.snapshot(self.output / STAGE.ACCEL["26"]))
+        self.assertEqual(self.snapshot(self.output / STAGE.ACCEL["15"]), self.snapshot(self.base / STAGE.ACCEL["15"]))
+        self.assert_manifest(self.output / STAGE.ACCEL["26"].parent)
+        self.assert_manifest(self.output)
+
+    def test_wrong_framebuffer_architecture_is_rejected_before_copying(self):
+        self.args.framebuffer = self.make_bundle(self.build / "NVRMFB.kext", "NVRMFB", b"ARM64-only framebuffer")
+        self.seal_base()
+        with self.assertRaisesRegex(ValueError, "lipo failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
     def test_package_without_bundled_translator_uses_the_canonical_library(self):
         (self.base / STAGE.BUNDLED_TRANSLATOR).unlink()
         self.seal_base()

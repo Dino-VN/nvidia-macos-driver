@@ -1,102 +1,142 @@
 # Display rotation on Tahoe
 
-The fork supports Standard, 90°, 180° and 270° in System Settings → Displays →
-Rotation on macOS Tahoe. The option is enabled by default on Darwin 25 with the
-matching Tahoe NVAccel. `nvrmrotation=0` disables it at the next boot. An explicit
-false `NVRMRotationPrototype` framebuffer property also disables it; the boot
-argument takes precedence. Other macOS versions keep the existing behavior.
+Standard, 90°, 180° and 270° are available in System Settings → Displays → Rotation
+on macOS Tahoe (Darwin 25). Rotation is enabled by default. `nvrmrotation=0`
+disables it at the next boot. An explicit false `NVRMRotationEnabled` framebuffer
+property also disables it; the boot argument takes precedence. Other macOS
+versions retain their existing behavior.
 
-Rebuild **both NVRMFB and Tahoe NVAccel** when packaging this change. A framebuffer
-alone cannot rotate the desktop: the accelerator must advertise copy protocol 9
-on the same GPU. The framebuffer reports implementation version 10. Those are
-different version numbers by design. The `NVRMRotationPrototype*` registry names
-are retained for compatibility with the tested implementation and controller.
-Preserve the official package's bundle versions and dependencies when replacing
-the two binaries. Rebuilding the source does not update installed files or a
-package automatically.
+Build and install matching **NVRMFB, Tahoe NVAccel and NVMTLDriver**. The mode/copy
+interface is version 10, the per-display GPU protocol is 12, and the framebuffer
+implementation marker is `NVRMRotationImplementationVersion=12`. These versions
+are checked independently. Older accelerator/framebuffer pairs cannot enable the
+renamed rotation interface. Preserve the official package's bundle versions and
+dependencies when replacing components.
 
-## How it works
+## Presentation and cursor alignment
 
-IOFramebuffer rotates cursor coordinates and the cursor bitmap independently of
-the desktop. The driver normalizes the requested transform to those low-bit
-cursor rules and leaves native physical timings, pitch and resolution enumeration
-intact. There is no hardcoded 1080p mode.
+IOFramebuffer rotates cursor coordinates and its bitmap independently of the
+desktop. The driver normalizes rotation requests to those low-bit cursor rules
+and preserves native physical timings, resolution enumeration and pitch. There
+is no fixed 1080p mode, filtering or rescaling in the pixel correction.
 
-For 90°/270°, the mode information also publishes
-`kDisplayModeAcceleratorBackedFlag`. On the tested Tahoe compositor, this yields a
-complete portrait desktop already laid out in a physical-sized BGRA surface.
-Its direction is opposite to the cursor's, so the framebuffer applies an exact
-180° pixel permutation to align them. For 180°, it applies that permutation to
-the unrotated logical source. Standard retains the normal zero-copy presentation
-path. No filtering or rescaling is performed by the copy.
+For 90°/270°, `kDisplayModeAcceleratorBackedFlag` lets the tested Tahoe compositor
+produce a complete portrait desktop in a physical-sized BGRA surface. That image
+has the opposite direction to the cursor, so the presenter reverses its pixels
+by 180° to align them. Logical 180° uses the same exact permutation. Standard
+uses the normal presentation path and does not allocate rotation outputs.
 
-The existing presentation thread waits for the source's GPU work, pages it off
-when needed, then maps it for a CPU copy into the existing owned scanout. There
-is no additional framebuffer, surface-import worker or userspace rendering
-service. The display gate protects destination lifetime; epoch, mode sequence,
-head, format, layout, dimensions, pitch, allocation bounds and non-overlap checks
-reject stale or invalid copies. Quarter turns additionally require exact full
-source/destination rectangles and no scaling. The read-only transaction layout
-used for those checks is restricted to the Tahoe accelerator build.
+WindowServer appends a compute pass to its existing producer queue. It reads the
+original shared VRAM and writes a dedicated output, preserving every BGRA/alpha
+bit. There is no additional IOFramebuffer, import worker or rendering service.
+Surface creation/import happens outside the command-buffer and pool monitors,
+before pending GPU marks. Other applications do not run this rotation hook.
 
-## Costs and validation
+A result becomes eligible after its GPU fence and normal surface publication.
+The source-ready mark must clear before publication so a page-off holding the
+surface lock can progress. The presenter bridges the gap to the completed
+rotation result with a metadata wait capped at 1 ms, releasing its metadata
+mutex while asleep. The completion path does not acquire the family lock. Only
+an exact registered pending job can wait; unknown, stale or cancelled jobs do not.
+Command buffers with rotation work also wait for completion when their caller
+uses `commitAndWaitUntilSubmitted`.
 
-Rotation still uses a **synchronous CPU copy**, including GPU-to-CPU synchronization
-and readback when needed. Apps remain GPU accelerated. Higher resolutions,
-refresh rates or multiple rotated displays increase bandwidth and CPU cost.
-Copying into active scanout can tear; this implementation does not guarantee a
-new frame at every refresh. BGRA is the supported copy format; HDR/other formats
-and scaled transaction planes are not qualified.
+An accepted GPU output uses the framebuffer's existing allocation-cookie,
+duplicated-memory pin and flip-latch checks. Missing or refused results use the
+checked CPU copy into that display's owned scanout, including GPU readback when
+needed. Busy flips keep the prior image. Mode/epoch/head/owner, geometry, format,
+pitch, bounds, layout and non-overlap guards reject invalid work.
 
-The user confirmed 90°/270° output and cursor alignment on an RTX 2060 Super with
-8 GiB BAR1, a 1920×1080 75 Hz display and Tahoe 26.7.1. The preceding 180° path
-also worked on that setup. A whole-boot snapshot recorded 2,143 copied frames
-and approximately 1.45 ms per successful frame in the copy-call timer, with a
-12 ms maximum. That timer excludes GPU waits, page-off and CPU mapping; it is
-not an end-to-end frame benchmark or a guarantee for another setup.
+## Multiple displays
 
-Host checks cover exact pixels and cursor-coordinate composition through 8K,
-plane validation, source/destination bounds, GPU/page-off refusal, stale requests
-and concurrent teardown. They do not establish hardware support at those sizes.
-Other GPUs, BAR1 sizes, multiple displays, HDR, sleep/wake and hotplug still need
-hardware testing.
+Rotation jobs are addressed to an explicit display index. Each display has its
+own source records, mode, ticket sequence, current/previous output exclusions and
+three GPU output buffers. Different native resolutions and rotation angles can
+coexist, and a Standard display does not disable another display's rotation.
 
-## Timed checks and diagnostics
+A shared IOSurface can be registered on multiple displays without selecting the
+first match globally. One write invalidates every consumer, while completion and
+presentation remain scoped to the ticket's display. Outputs cannot alias another
+display's source, reserved buffer or scanout. Replacing a framebuffer invalidates
+only its source records and rejects late mode queries/completions from the old
+owner. Existing in-flight and scanout lifetime guards remain in force.
 
-`tools/rotation/build.py` builds NVRMFB and a controller without installing,
-signing or changing the display. For example:
+The implementation covers independent displays; physical testing with multiple
+working monitors is still pending. Shared-source routing tests do not qualify
+arbitrary mirroring/scaling combinations. Accepted quarter turns still require
+exact full source/destination rectangles and no scaling. HDR and other pixel
+formats remain unqualified.
+
+A test boot retained an unplugged DVI display as the unopened first framebuffer.
+Rotation requests reached the active second framebuffer but its transform did
+not advance. Rebooting with only the active monitor connected cleared that
+condition. This shared-controller/hotplug case remains unresolved; per-display
+GPU routing does not claim to repair the monitor's DVI no-signal problem. The
+upstream connection and display-enumeration behavior is retained.
+
+## Cost and validation
+
+The user confirmed sharp, aligned 180°, 90° and 270° on an RTX 2060 Super with
+8 GiB BAR1 and Tahoe 26.7.1. Native landscape/portrait remained 1920×1080 or
+1080×1920 at 75 Hz. After the handoff repair, two 15-second trials presented
+322 of 324 completed GPU jobs. They also made 1,069 CPU copies. These are
+activity-dependent presentation counters, not an FPS/latency benchmark, and
+CPU fallback still accounts for substantial work. One source-GPU wait timeout
+and one metadata timeout occurred in the 180° trial; the 90° trial had neither.
+No geometry, output/backing, flip, IOP failure/blank or flip-latch timeout counters
+rose. The final per-display routing changes still need hardware validation.
+
+Actual GPU compute checks passed 18 padded raw-buffer cases through 8K with zero
+pixel, source or padding mismatches. Host checks exercise the actual producer,
+GPU presenter and framebuffer methods, completion ordering, stale ownership,
+source publication, CPU fallback and mode/teardown races. Multi-display checks
+cover shared sources, mixed resolutions/angles, reverse-order completions,
+independent output pools, Standard plus rotated displays and 5,000 presentations.
+These checks do not establish hardware support on other GPUs or at those sizes.
+Sleep/wake, hotplug, multiple displays and long-running stability need testing.
+
+GPU outputs add up to three native-sized allocations per rotating display.
+Allocation refusal keeps the CPU fallback. Higher resolutions, refresh rates or
+more rotated displays increase GPU/CPU memory traffic. CPU copies into active
+scanout can tear; a new frame at every refresh is not guaranteed.
+
+Each display has a nonwrapping 24-bit ticket sequence. After 16,777,215 successful
+BEGIN requests on that display (about 62 hours at 75 requests/second), it uses
+CPU fallback until reboot. Another display does not consume that sequence.
+Source/output caches are bounded per display and retained for the boot.
+
+## Build and check
 
 ```sh
 python3 tools/rotation/build.py --output out/rotation-fb --package-base ~/Downloads/pkgroot
 NM_TAHOE=1 bash build/accel_build.sh kexts/NVRM out/rotation-accel-26
 ```
 
-Build into new output directories. Install the matching pair and refresh the
-Auxiliary Kernel Collection through the normal package workflow. After reboot,
-the controller can identify the display and perform a timed trial:
+Build the release plugin with the fork's normal build script too. Use new output
+directories and install all matching components through the package workflow;
+building does not update installed files or a package. The main RM, native NVK,
+translator and codecs do not need changes for rotation.
+
+The controller selects a specific display. Its independent restoration process
+starts before changing orientation and preserves pixel resolution, density and
+refresh. It checks the applied framebuffer transform because CoreDisplay's angle
+can lag behind a direct probe. It never changes another display to perform a
+trial. No timer can restore a machine whose OS is unresponsive.
 
 ```sh
 out/rotation-fb/nv-rotate --list
 out/rotation-fb/nv-rotate --display <display-ID> --set 90 --seconds 15
 ```
 
-The controller starts an independent restoration process before changing the
-transform, preserves pixel resolution/density/refresh and rejects fallback
-modes. The timer cannot restore a machine whose OS is unresponsive.
+`sudo sysctl debug.nvaccel_rotation_gpu_on=0` returns GPU rotation to CPU fallback.
+`NVMTL_ROTATION_GPU=0` disables the producer hook for that process. Setting
+`debug.nvaccel_rotation_gpu_wait_us=0` disables the short handoff wait for an A/B
+check; other values are clamped to 0–1000 µs.
 
-Read-only `debug.nvaccel_rotation_*` counters track accepted copies, skips,
-geometry refusals and copy-call time. The optional source probe is root-only,
-must be explicitly armed, and accepts one frame for up to 20 seconds. It never
-changes rotation or displays its capture. `tools/rotation/source_probe.py`
-supports arm/save/discard; saving also discards the kernel capture. The image
-can contain desktop content, so keep diagnostic files private.
-
-## GPU follow-up
-
-A future GPU implementation should produce the corrected image inside the
-existing compositor submission, then present a GPU-resident completed surface.
-It must preserve source ownership, fence/completion ordering and mode-change
-lifetime without waiting for an importing worker under display-family locks.
-The earlier independent GPU importer deadlocked during a display transition;
-do not reintroduce it. This remains a design direction, not an implemented
-replacement for the working CPU path.
+Read-only `debug.nvaccel_rotation_gpu_*` counters distinguish completed jobs,
+GPU flips, metadata waits/timeouts and missing/stale/refused results. Per-display
+`_gpu_flips_h0` through `_h4` and `_copy_frames_h0` through `_h4` distinguish GPU
+and CPU presentations by display index. The optional root-only source probe
+captures one bounded frame for up to 20 seconds without changing orientation.
+It can capture desktop content; keep captures private. It is unnecessary for
+normal rotation and never relaxes presentation guards.

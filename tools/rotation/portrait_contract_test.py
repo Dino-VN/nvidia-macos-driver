@@ -37,7 +37,7 @@ struct IODetailedTimingInformationV2{UInt32 horizontalActive,verticalActive,hori
 static void nvu_zero(void *p,size_t n){memset(p,0,n);}
 static SInt32 OSAddAtomic(SInt32 n,volatile SInt32 *p){auto before=*p;*p+=n;return before;}
 struct NVRMNVDAFramebuffer{
-    bool fRotationPrototype=true;volatile SInt32 fRotationRequestedBits=0;
+    bool fRotationEnabled=true;volatile SInt32 fRotationRequestedBits=0;
     UInt32 fBootW=0,fBootH=0,fW=0,fH=0;uint16_t fEdidMmW=480,fEdidMmH=270;
     struct Mode{struct{NvU32 refreshRate;}timings;}fBootMode{},fMode{};
     IODetailedTimingInformationV2 fDT[2]{};
@@ -50,15 +50,15 @@ struct NVRMNVDAFramebuffer{
 int main(){
     unsigned cases=0;
     const unsigned sizes[][2]={{1280,720},{1920,1080},{2560,1440},{3440,1440},{3840,2160},{5120,2880},{7680,4320}};
-    for(const auto &size:sizes)for(bool prototype:{false,true})for(unsigned bits:{0u,3u,5u,6u,0x30u,2u}){
+    for(const auto &size:sizes)for(bool rotationEnabled:{false,true})for(unsigned bits:{0u,3u,5u,6u,0x30u,2u}){
         NVRMNVDAFramebuffer fb;fb.fBootW=fb.fW=size[0];fb.fBootH=fb.fH=size[1];
-        fb.fRotationPrototype=prototype;fb.fRotationRequestedBits=bits;
+        fb.fRotationEnabled=rotationEnabled;fb.fRotationRequestedBits=bits;
         fb.fBootMode.timings.refreshRate=74974;
         for(unsigned i=0;i<2;i++)fb.fDT[i]={size[0],size[1],i?size[0]/2:0,i?size[1]/2:0,160,45,179800000};
         for(unsigned mode:{1u,10u,11u}){
             IODisplayModeInformation actual{},expected{};
             assert(fb.getInformationForDisplayMode(mode,&actual)==0&&fb.control(mode,&expected)==0);
-            if(prototype&&(bits==3||bits==5))expected.flags|=kDisplayModeAcceleratorBackedFlag;
+            if(rotationEnabled&&(bits==3||bits==5))expected.flags|=kDisplayModeAcceleratorBackedFlag;
             assert(memcmp(&actual,&expected,sizeof actual)==0);
             ++cases;
         }
@@ -67,7 +67,7 @@ int main(){
         assert(fb.getInformationForDisplayMode(99,&untouched)==kIOReturnBadArgument&&untouched.flags==0xabcdef12);
         for(unsigned flags:{0u,0x400000u,0x12345678u,0xffffffffu}){
             IODisplayModeInformation info{};info.flags=flags;fb.rotationModeFlags(&info);
-            const unsigned expected=flags|((prototype&&(bits==3||bits==5))?kDisplayModeAcceleratorBackedFlag:0u);
+            const unsigned expected=flags|((rotationEnabled&&(bits==3||bits==5))?kDisplayModeAcceleratorBackedFlag:0u);
             assert(info.flags==expected);
         }
         fb.rotationModeFlags(nullptr);

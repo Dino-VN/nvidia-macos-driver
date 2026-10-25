@@ -24,6 +24,7 @@ fixture = r'''
 #include <mutex>
 #include <chrono>
 #include "copy_request.h"
+#include "gpu_state.h"
 #include "source_probe.h"
 using IOReturn=int;using SInt64=int64_t;using UInt64=uint64_t;
 enum {kIOReturnSuccess=0,kIOReturnNotReady=-1,kIOReturnBadArgument=-2,kIOReturnBusy=-3,kIOReturnIOError=-4,kIOReturnNoMemory=-5,NV_KMS_FLIP_RESULT_IN_PROGRESS=5};
@@ -85,6 +86,8 @@ struct NVDisplayPipe {
     const void *iopMapSurface(unsigned,IOMemoryDescriptor *md,uint64_t bytes){assert(!gateDepth);++maps;return bytes<=md->bytes?md->data:nullptr;}
 };
 static bool nvAccelIopAsyncBusy(const void *){return asyncBusy;}
+static void nvRotationGPUObserve(IOService *,IOSurface *,const NMRotationMode &){}
+static int nvRotationGPUTry(IOService *,unsigned,IOSurface *,const NMRotationMode &){return -1;}
 struct IOAccelDisplayPipeTransaction2 {
     void *opaque[7]={};unsigned char *args;alignas(4) unsigned char storage[0x108]={};
     IOAccelDisplayPipeTransaction2():args(storage){}
@@ -99,6 +102,7 @@ static bool probeArmed=false;static unsigned probes=0;
 static bool nvRotationProbeArmed(unsigned){return probeArmed;}
 static void nvRotationProbeCapture(const NMRotationMode &,IOSurface *,IOAccelDisplayPipeTransaction2 *,const void *,uint64_t){++probes;probeArmed=false;}
 static bool gIopFlipped[5];static SInt64 gCntRotationCopy,gCntRotationSkip,gCntRotationBadGeometry;
+static const unsigned kNvMaxFB=5;static SInt64 gCntRotationCopyHead[kNvMaxFB];
 static SInt64 gRotationCopyUs,gRotationCopyMaxUs;
 static SInt64 OSAddAtomic64(SInt64 n,SInt64 *p){SInt64 old=*p;*p+=n;return old;}
 static bool OSCompareAndSwap64(UInt64 a,UInt64 b,volatile UInt64 *p){if(*p!=a)return false;*p=b;return true;}
@@ -106,18 +110,18 @@ static uint64_t mach_absolute_time(){static uint64_t now;return now+=1000;}
 static void absolutetime_to_nanoseconds(uint64_t t,uint64_t *n){*n=t;}
 struct NVRMNVDAFramebuffer:IOService {
     NMRotationMode mode={NM_ROTATION_VERSION,180,1,7,5,7,5,32,0,1,0};
-    bool prototype=true,ready=true,homeSucceeds=true;unsigned infoCalls=0,copyCalls=0,homeCalls=0;
+    bool rotationEnabled=true,ready=true,homeSucceeds=true,fRotationGPUFlipActive=false;unsigned infoCalls=0,copyCalls=0,homeCalls=0;
     void *fKva=nullptr,*fSurf=this,*fMem=this,*fFrontSurf=this;uint64_t fMemBytes=0;
     unsigned fW=7,fH=5,fPitch=32;OSNumber number;
     std::atomic<bool> pause{false},entered{false},resume{false};
-    OSObject *getProperty(const char *)override{return prototype?kOSBooleanTrue:nullptr;}
+    OSObject *getProperty(const char *)override{return rotationEnabled?kOSBooleanTrue:nullptr;}
     OSObject *copyProperty(const char *)override{number.value=mode.degrees;return &number;}
     IOReturn rotationMode(NMRotationMode *out){
         NVRMDisplayGate gate;
         if(pause){entered=true;while(!resume)std::this_thread::yield();}
         if(!ready)return kIOReturnNotReady;*out=mode;return kIOReturnSuccess;
     }
-    bool flipToMemory(void *,unsigned,unsigned,unsigned,int *rc,bool){
+    bool flipToMemory(void *,unsigned,unsigned,unsigned,int *rc,bool,uint64_t cookie=0){
         assert(gateDepth);++homeCalls;*rc=homeSucceeds?0:NV_KMS_FLIP_RESULT_IN_PROGRESS;
         if(homeSucceeds)fFrontSurf=fSurf;return homeSucceeds;
     }
@@ -136,8 +140,8 @@ int main(){
     fb.fKva=dst.data();fb.fMemBytes=dst.size()*4;source.descriptor={src.data(),src.size()*4};
     bool handled=false;
     auto run=[&]{return nvRotationCopyPresent(&pipe,&fb,0,&source,nullptr,&handled);};
-    fb.prototype=false;assert(run()==0&&!handled&&!fb.infoCalls&&!waits&&!maps);
-    fb.prototype=true;fb.mode.degrees=0;assert(run()==0&&!handled&&!fb.infoCalls&&!waits&&!maps);
+    fb.rotationEnabled=false;assert(run()==0&&!handled&&!fb.infoCalls&&!waits&&!maps);
+    fb.rotationEnabled=true;fb.mode.degrees=0;assert(run()==0&&!handled&&!fb.infoCalls&&!waits&&!maps);
     fb.mode.degrees=180;fb.ready=false;assert(run()==0&&handled&&!waits&&!maps&&!fb.copyCalls);
     fb.ready=true;asyncBusy=true;assert(run()==0&&handled&&!waits&&!maps&&!fb.copyCalls);asyncBusy=false;
     source.w=6;assert(run()==0&&handled&&!waits&&!maps&&gCntRotationBadGeometry==1);source.w=7;
@@ -221,7 +225,27 @@ int main(){
         request.sourceLayout=NM_ROTATION_SOURCE_LOGICAL;
         assert(portrait.rotationCopy(&request)==kIOReturnBadArgument&&panel==accepted);
     }
-    puts("PASS: actual presenter/FB methods; unchanged logical 180 permutation; exact quarter-turn direction correction with padding preserved; v7 clipped destinations, missing/NaN/scaled plane state, wrong geometry/layout/reserved, stale epochs, GPU/page-off waits, overlap, HOME busy and concurrent teardown rejected/serialized");
+    // The primary stays Standard while an independent secondary uses CPU
+    // fallback. Reject a misrouted display index before mapping or copying.
+    NVRMNVDAFramebuffer primary,secondary;NVDisplayPipe secondPipe;IOSurface secondSource;
+    primary.mode.degrees=0;secondary.mode={NM_ROTATION_VERSION,270,11,7,5,5,7,32,1,1,2};
+    secondary.fW=5;secondary.fH=7;
+    std::vector<uint32_t> idle(40,0x11223344),input(56),output(56,0x55667788);
+    for(unsigned y=0;y<7;++y)for(unsigned x=0;x<5;++x)input[y*8+x]=y*100+x;
+    primary.fKva=idle.data();primary.fMemBytes=idle.size()*4;
+    secondary.fKva=output.data();secondary.fMemBytes=output.size()*4;
+    secondSource.id=31;secondSource.w=5;secondSource.h=7;secondSource.pitch=32;secondSource.descriptor={input.data(),input.size()*4};
+    IOAccelDisplayPipeTransaction2 secondTransaction;secondTransaction.full(5,7);
+    gpuReady=cpuReady=haveCache=true;pending=asyncBusy=false;
+    assert(nvRotationCopyPresent(&pipe,&primary,0,&source,nullptr,&handled)==0&&!handled&&!primary.copyCalls);
+    assert(nvRotationCopyPresent(&secondPipe,&secondary,0,&secondSource,&secondTransaction,&handled)==0&&handled&&!secondary.copyCalls);
+    const auto firstCount=gCntRotationCopyHead[0],secondCount=gCntRotationCopyHead[1];
+    assert(nvRotationCopyPresent(&secondPipe,&secondary,1,&secondSource,&secondTransaction,&handled)==0&&handled&&secondary.copyCalls==1);
+    assert(gCntRotationCopyHead[0]==firstCount&&gCntRotationCopyHead[1]==secondCount+1);
+    for(auto pixel:idle)assert(pixel==0x11223344);
+    for(unsigned y=0;y<7;++y)for(unsigned x=0;x<8;++x)
+        assert(output[y*8+x]==(x<5?input[(6-y)*8+(4-x)]:0x55667788u));
+    puts("PASS: actual presenter/FB methods; exact 180 and quarter-turn pixels; independent Standard primary and rotated secondary; per-display counts and wrong-head refusal; geometry/layout/epoch/GPU/page-off/overlap guards and concurrent teardown");
 }
 '''
 with tempfile.TemporaryDirectory(prefix='nm-rotation-copy-') as directory:
