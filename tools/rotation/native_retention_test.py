@@ -2,29 +2,46 @@
 """Protect existing performance, decoder and cursor lifetime code during the rotation replacement."""
 import re
 import subprocess
+import tempfile
+from pathlib import Path
 from test_support import ROOT, FB, method
 
 base = '6d715894d05fca2a90f5886b1ac5f14fdc32a673'
+native = '6fc2b8101218b872dce8a723d86f865b09947259'
+upstream_base = '46779055f68208baa5ddfb9b2e9c77ed028e1d59'
+upstream = 'bf23ca740e55d86bac987fb68fb5164ac1237941'
 
 
 def historical(revision, path):
     return subprocess.check_output(['git', 'show', revision + ':' + path], cwd=ROOT)
 
 
-restored = ['plugin/NVMTLEventSync.m', 'plugin/NVMTLObjects.m', 'plugin/nvmtl_vk.c', 'plugin/nvmtl_vk.h']
-for path in restored:
-    assert (ROOT / path).read_bytes() == historical(base, path), path
-for path in subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', 'HEAD', 'plugin', 'translator', 'nvk', 'runtime', 'build'], cwd=ROOT, text=True).splitlines():
-    if path in restored or path == 'plugin/NVMTLRotationInline.m':
+def with_upstream_changes(path):
+    """Compare against the reviewed upstream delta without relaxing fork retention."""
+    with tempfile.TemporaryDirectory(prefix='native-rotation-retention-') as tmp:
+        files = [Path(tmp) / name for name in ('fork', 'base', 'upstream')]
+        for file, revision in zip(files, (native, upstream_base, upstream)):
+            file.write_bytes(historical(revision, path))
+        return subprocess.check_output(['git', 'merge-file', '-p', *map(str, files)])
+
+
+changed = ['plugin/NVMTLObjects.m', 'plugin/nvmtl_vk.c', 'plugin/nvmtl_vk.h']
+for path in changed:
+    assert (ROOT / path).read_bytes() == with_upstream_changes(path), path
+for path in subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', native, 'plugin', 'translator', 'nvk', 'runtime', 'build'], cwd=ROOT, text=True).splitlines():
+    if path in changed:
         continue
-    assert (ROOT / path).read_bytes() == historical('HEAD', path), path
+    assert (ROOT / path).read_bytes() == historical(native, path), path
+assert (ROOT / 'plugin/NVMTLEventSync.m').read_bytes() == historical(base, 'plugin/NVMTLEventSync.m')
 
 accel_path = 'kexts/NVRM/accel/nvrm-accel.cpp'
 accel = (ROOT / accel_path).read_text()
 marker = '            setProperty("NVAccelNativeRotationProtocol", (unsigned long long)NM_NATIVE_ROTATION_PROTOCOL, 32);\n'
 header = '#include "../../NVRMFB/fb/nvrm-rotation.h"\n'
 assert accel.count(marker) == 1 and accel.count(header) == 1
-assert accel.replace(marker, '').replace(header, '').encode() == historical(base, accel_path)
+assert accel.encode() == with_upstream_changes(accel_path)
+old_accel = historical(native, accel_path).decode()
+assert old_accel.replace(marker, '').replace(header, '').encode() == historical(base, accel_path)
 assert accel.count('static bool nvAccelRestoreParkedForDirty(') == 1
 assert not any(word in accel for word in ['nvRotationCopyPresent', 'nvRotationGPUTry', 'NVAccelRotationGPUProtocol'])
 assert not (ROOT / 'plugin/NVMTLRotationInline.m').exists()
@@ -42,4 +59,4 @@ assert 'notifyConnectionChanged(1);' in flip and 'fConnect.proc(' not in flip
 assert not re.search(r'\bthread_call_cancel_wait\s*\(', FB)
 assert 'THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE' in FB
 assert 'while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);' in FB
-print('PASS: full plugin/translator/NVK/decoder/ANGLE/-O2 retention; accelerator differs from pre-rotation fork only by native protocol marker; cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved')
+print('PASS: reviewed 2.5.5 texture-view/log-throttle changes only; native rotation, decoder/ANGLE/-O2, translator/NVK, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved')

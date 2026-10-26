@@ -17,6 +17,9 @@ def section(text, start, end):
 
 cache = section(vk, 'static VkDescriptorSet nvmtl_snapshot_set_c(', '\nint nvmtl_vk_bind_buffer(')
 macros = section(vk, '#define NVMTL_NBUF ', '#define NVMTL_DISPATCH_PC_BYTES')
+slot_type = re.search(r'typedef struct \{ uint8_t kind;.*?\} nvmtl_slot;', vk, re.S).group(0)
+table_type = re.search(r'typedef struct \{ nvmtl_slot s\[.*?\} nvmtl_bindtable;', vk, re.S).group(0)
+table_limit = re.search(r'#define NVMTL_EMB_KEYMAX \d+', vk).group(0)
 fixture = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -30,11 +33,9 @@ fixture = r'''
 #define NVMTL_E78_HAS(m,i) (!(m) || (((m)[(i)>>6] >> ((i)&63)) & 1))
 #define NVMTL_TABLES_PER_PAGE 256
 enum { NVMTL_E78_H3, E78C_SETREUSE, E78C_SETNEW };
-typedef struct {
-    uint8_t dirty[2]; VkDescriptorSet last[2]; unsigned last_idx[2]; uint32_t last_hi[2];
-    uint64_t lastw[2][4], chg[2][4], lasttb[2][4]; uint32_t lastdyn[2]; void *lasttab[2];
-} nvmtl_bindtable;
+''' + slot_type + '\n' + table_limit + '\n' + table_type + r'''
 typedef struct { nvk_buffer buffer; } nvmtl_address_page;
+static nvk_buffer g_dummyBuf;
 static int enabled=1, dynamic=1, snapshots, allocations, copies;
 static int nvmtl_enc78_on(int flag) { return enabled; }
 static int nvmtl_table_ubo(void) { return dynamic; }
@@ -48,7 +49,10 @@ static int nvmtl_address_snapshot(nvk_cmdbuf *c, uint32_t which, VkDescriptorBuf
     return 0;
 }
 static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint32_t hi,
-        const uint64_t *mask, const uint64_t *tb, VkDescriptorSet from, const uint64_t *cm) {
+        const uint64_t *mask, const uint64_t *tb, VkDescriptorSet from, const uint64_t *cm,
+        const VkDescriptorBufferInfo *uniform) {
+    // These cases exercise the original address-table pipeline; promotion has separate fixtures.
+    assert(!uniform);
     allocations++; copies += from != VK_NULL_HANDLE;
     c->dyn_out[which]=0; c->tab_out[which]=NULL;
     if (NVMTL_E78_HAS(mask,NVMTL_ADDRESS_BINDING)) {
@@ -60,7 +64,7 @@ static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint
     return set;
 }
 static VkDescriptorSet nvmtl_snapshot_set_t(nvk_cmdbuf *c, uint32_t which, uint32_t hi, const uint64_t *tb) {
-    return nvmtl_snapshot_set_md(c,which,hi,NULL,tb,VK_NULL_HANDLE,NULL);
+    return nvmtl_snapshot_set_md(c,which,hi,NULL,tb,VK_NULL_HANDLE,NULL,NULL);
 }
 '''
 mask = section(vk, 'static int nvmtl_spirv_bmask(', '\nenum { NVMTL_SLOT_NONE')

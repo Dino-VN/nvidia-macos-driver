@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork integration with upstream 2.5.5
+
+- Add same-size buffer-texture views for screen capture and throttle refused-VRAM allocation logs without changing allocation or parking behavior.
+- Preserve the tested Discord/QuickTime decoder policy and all-app ANGLE Metal default, which already cover upstream's Discord, Brave and Edge fixes. Retain native Tahoe rotation, cursor shutdown/drain and the existing rendering and performance repairs. Use the matching 2.5.5 release codecs for its encoder fixes; see [Fork merge notes](docs/FORK-MERGE-NOTES.md).
+
 ## Fork video playback repair
 
 - Restore local H.264/HEVC registration in sandboxed Chromium GPU processes that can open both accelerator RM bridge connections. Keep QuickTime and other native sandboxed clients on the decoding-service path, preventing the frozen-picture regression from the broader access check. The GPU sandbox stays enabled; encoder and rendering policies are unchanged. Rebuild the plugin only.
@@ -7,8 +12,8 @@
 ## Fork display rotation on Tahoe
 
 - Add 90°, 180° and 270° rotation with desktop/cursor alignment, enabled by default on Tahoe. Preserve native timings and Standard's normal path; `nvrmrotation=0` disables it.
-- Rotate shared VRAM on WindowServer's producer queue with a bounded completion handoff and checked CPU fallback. Keep source/mode/ticket/output state independent per display, including shared sources and different resolutions/angles.
-- Use `NVRMRotationEnabled` and `NVRMRotationImplementationVersion`. Rebuild NVRMFB, Tahoe NVAccel and NVMTLDriver together. Single-monitor alignment and GPU handoff were tested on RTX 2060 Super at native resolution/75 Hz; the final multi-display changes need hardware testing. See [Display rotation](docs/DISPLAY-ROTATION.md) for results and limitations.
+- Use native CoreDisplay composition into the physical scanout raster, with distinct per-display identities, mode publication and cursor mapping. The former extra rotation pass and CPU fallback are retired.
+- Use `NVRMRotationEnabled` and `NVRMRotationImplementationVersion`. Rebuild NVRMFB, Tahoe NVAccel and NVMTLDriver together. The native replacement passes host checks and kernel-collection preflight; physical single- and multi-display testing remains pending. Earlier single-monitor results apply to the retired path. See [Display rotation](docs/DISPLAY-ROTATION.md) for results and limitations.
 
 ## Fork integration with upstream 2.5.4
 
@@ -58,7 +63,15 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.5.4 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.5.5 build; comparative desktop performance remains unmeasured.
+
+## 2.5.5
+
+- Discord videos play again. 2.5.4 stopped registering the hardware video decoder in every sandboxed process, and Discord decodes inside its own sandboxed GPU process, so its videos did not play at all. Only Apple's sandboxed apps (Safari, QuickTime, Preview) now hand decoding to macOS's video decoding service; Chromium and Electron apps decode in their own process as in 2.5.3.
+- Remote-desktop apps such as UU Remote show the picture: the hardware H.264 and HEVC encoders marked every keyframe "not a sync frame: false" where Apple's encoders leave the mark out, and apps that look for the mark's absence never found a keyframe on every card generation (#388, #358, thanks a1461750564 and sherves for measuring it). The encoders for the newest cards also load on macOS 15.0 to 15.4 now; they asked for 15.5.
+- Screen Sharing and other screen-capture apps show the screen instead of black: a texture made from a buffer could only be viewed as its own format and its sRGB twin, and screen capture views a BGRA surface as RGBA when it scales or converts.
+- Brave and Microsoft Edge get Metal through ANGLE the way Chrome does (PR #381, thanks SameerAlSahab; Edge tested by sherves).
+- On a card with a small BAR1 window, NVAccel no longer logs every refused allocation: a third of all log lines on an idle desktop (#387, thanks wwwljxw). It logs the first eight and then every 256th with the running count, as the framebuffer does; `debug.nvaccel_vm_refused` keeps the exact total.
 
 ## 2.5.4
 

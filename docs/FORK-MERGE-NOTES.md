@@ -16,8 +16,8 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.5.4 at `4677905`**, from `upstream/main`, integrated on
-2026-10-24. The preceding base was 2.5.2 at `f2114ab`, integrated on 2026-10-22.
+The current upstream base is **2.5.5 at `bf23ca7`**, from `upstream/main`, integrated on
+2026-10-26. The preceding base was 2.5.4 at `4677905`, integrated on 2026-10-24.
 
 ## Tahoe display rotation
 
@@ -45,8 +45,9 @@ Enable rotation only on Darwin 25, preserving property/`nvrmrotation=0` opt-outs
 Use implementation marker 13 and native accelerator protocol 1. Reject nonzero
 probes without a matching accelerator on the same PCI device; Standard restore
 remains available. Rebuild NVRMFB, Tahoe NVAccel and the release plugin together.
-The current base remains upstream 2.5.4; this is a selected rotation adaptation,
-not a merge of the latest upstream or its unrelated plugin wait changes.
+This is a selected rotation adaptation; upstream 2.5.5 does not change the
+framebuffer or contain this rotation implementation. The separate surface-busy
+wait from PR 398 remains excluded.
 
 The four-monitor RTX 3070 report exposes wrong-monitor rotation, mode fallback
 and mirroring; initial snapshots alone missed later failures. The candidate
@@ -54,7 +55,58 @@ still needs physical testing on that desktop. PR-author dual-monitor results
 and prior single-monitor results qualify neither this port nor laptop iGPU/dGPU
 routing. See [Display rotation](DISPLAY-ROTATION.md) for tests and limitations.
 
-## Upstream 2.5.4 integration
+## Upstream 2.5.5 integration
+
+Two files had textual conflicts: `CHANGELOG.md` and `plugin/NVMTLDevice.m`.
+Keep both histories. Upstream's Discord decoder repair (`9a00f88`) covers the same
+registration regression as the fork, but delegates only when a sandboxed process
+has a `com.apple.*` bundle identifier. It registers in every other sandboxed
+client without checking accelerator access. Retain the fork's tested policy:
+only an exact Chromium GPU-process type with both RM bridge connections available
+gets local registration; all other native sandboxed clients retain service decoding.
+Keep service exceptions, cached probes, connection cleanup and codec-disable guards.
+This preserves the Discord and QuickTime behavior already tested on the fork,
+without adding a second registrar or relying on a bundle-name allowlist. Adapt
+upstream's sandbox fixture to exercise the retained production policy and denied access.
+
+Upstream's Brave and Edge additions are already covered by the fork's all-app
+ANGLE Metal default. Preserve that default, existing overrides and the opt-out.
+
+Take the same-size buffer-texture view repair (`86083d2`). A mutable linear/DRM
+buffer alias now lists the device-supported compatible formats, including BGRA/RGBA
+reinterpretation used by screen capture. Require the image's own format and every
+requested usage feature, validate the combined list against the device, and keep
+unlisted or wrong-size views refused. Failed or unavailable capability queries
+fall back to the original single-format image. Keep `vfl` mask checks in resource
+migration/purge eligibility, alongside the fork's caches and lifetime guards.
+
+Take the NVAccel refusal-log throttle (`f675901`): first eight refusals and then
+every 256th, while counting every refusal. It changes no allocation decision,
+parked backing, scanout, BAR1 budget, flip or completion policy. The framebuffer,
+main RM, translator, NVK, rotation, cursor serialization/drain and existing
+OpenGL/MoltenVK optimizations are unchanged by this integration. No equivalent
+upstream native-rotation or cursor shutdown/drain repair was added.
+
+Use the official **2.5.5** package for the matching runtime, firmware, codecs,
+installer and version/dependency metadata when staging. In particular, its release
+ships encoder-library keyframe metadata and deployment-target repairs which are
+not changes to these plugin sources. A source merge or local plugin rebuild alone
+does not update those installed codec libraries. NVIDIA headers remain 615.78.08.
+
+Build and source-retention records are identified by `out/upstream-merge-latest.json`.
+The release plugin (`-O2`) and Tahoe accelerator compile, with no new warning
+messages or accelerator kernel imports. Fourteen focused host checks pass,
+covering real-sandbox decoder policy with mocked bridge access, decoder cleanup,
+format-list filtering/fallback under ASan/UBSan, ANGLE defaults, cache/resource
+lifetime, surface publication and retained source. The older GL descriptor fixture
+failed identically on the pre-merge revision; update its mocks to the existing
+uniform-buffer interface and retain its descriptor-reuse/state checks.
+Validation is limited to host fixtures, source comparison and compilation; the
+combined build still needs Discord/QuickTime, screen-capture, boot and physical
+multi-display tests. This integration does not update the installed driver or
+either existing package folder.
+
+## Historical upstream 2.5.4 integration
 
 Two files had textual conflicts: `CHANGELOG.md` and the ANGLE policy in `plugin/NVMTLDevice.m`.
 Keep the fork history and upstream release entries. Upstream adds Discord to its browser-name allowlist;
