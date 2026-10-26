@@ -23,6 +23,9 @@ fixture = r'''
 #include <mach/mach.h>
 #include <vulkan/vulkan.h>
 #include "nvmtl_vk.h"
+// This fixture starts with a selected pipeline. Uniform-CBUF selection is
+// independent of the binding cache and is not exercised here.
+static nvk_pipeline *nvmtl_uniform_cbuf_pick(nvk_cmdbuf *c, nvk_pipeline *p) { return p; }
 static unsigned descriptor_calls, pipeline_calls;
 static void pvkCmdBindDescriptorSets(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipelineLayout layout,
         unsigned first,unsigned count,const VkDescriptorSet *sets,unsigned ndyn,const unsigned *offsets) {

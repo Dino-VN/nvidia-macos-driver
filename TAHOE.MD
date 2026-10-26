@@ -10,14 +10,15 @@ and startup changes. The earlier parked-VRAM and OpenGL/Minecraft optimizations 
 and included once. The fork retains its cursor shutdown accounting, pointer safety guards and the
 other behavior described in the [merge notes](docs/FORK-MERGE-NOTES.md).
 
-The fork adds [display rotation](docs/DISPLAY-ROTATION.md), enabled by default on Tahoe
-with matching NVRMFB, Tahoe NVAccel and NVMTLDriver. Standard keeps its normal path;
-90°, 180° and 270° use GPU output when a matching completed result is available and
-a checked CPU copy otherwise. Rotation state and buffers are independent per display.
-`nvrmrotation=0` disables rotation. Rebuild all three components together for the
-renamed interfaces and per-display GPU protocol; preserve official version/dependency
-metadata. RTX 2060 Super output/cursor alignment was tested at native resolution/75 Hz.
-Physical multi-monitor testing, other hardware, sleep/wake and hotplug remain unqualified.
+The local [display rotation](docs/DISPLAY-ROTATION.md) candidate uses native CoreDisplay
+rotation, enabled by default on Tahoe. WindowServer rotates into the physical raster;
+the extra GPU/CPU correction pass is retired. It includes native rotated modes,
+per-head registry paths and cursor geometry, while retaining cursor serialization/drain
+and preserving existing scaling overrides. `nvrmrotation=0` disables it. Build matching
+NVRMFB, Tahoe NVAccel and NVMTLDriver, preserving official version/dependency metadata.
+The four-monitor desktop report still needs a retest with this candidate. Prior RTX
+2060 Super results apply to the retired path; laptop routing, sleep/wake and hotplug
+remain unqualified. The PR's separate surface-busy/wait change is excluded.
 
 ANGLE Metal remains enabled by default for all apps loading this plugin, including Chrome, Chromium, Edge and
 Electron. `NVMTL_ANGLE_METAL=0` skips the automatic workaround for an application. The user reconfirmed this

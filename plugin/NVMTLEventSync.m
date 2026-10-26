@@ -20,7 +20,6 @@
     BOOL waitFolded;
     BOOL aheadEmpty;
     BOOL claimed;
-    NSArray *rotationWork;
     NSArray<NVMTLBuffer *> *copyInputs;
     BOOL copyInputsPrepared, hasHostCopies;
 }
@@ -260,8 +259,6 @@ static void nvmtl_ws_mark_ready(NVMTLCommandBuffer *cb) {
     objc_setAssociatedObject(cb, nvmtl_ws_marks_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     (void)nvmtl_ws_publish_settled(settled, nil);
 }
-#import "NVMTLRotationInline.m"
-
 static void nvmtl_surface_finish_writes(NVMTLCommandBuffer *cb) {
     nvmtl_ws_mark_ready(cb);
     @synchronized ([NVMTLCommandBuffer class]) {
@@ -704,7 +701,6 @@ static void nvmtl_gsub_ahead_pass1(void) {
             if (!nvmtl_ws_publish_settled(settled, self)) published = NO;
             for (NVMTLBuffer *buffer in nvmtl_submission_copies(part->resources, YES)) nvmtl_buffer_sync_out(buffer);
         }
-        if (published && part->rotationWork.count) nvmtl_rotation_part_ready(part);
         if (!published) {
             [self nvmtlFinishExecution:[NSError errorWithDomain:MTLCommandBufferErrorDomain code:MTLCommandBufferErrorInternal
                 userInfo:@{NSLocalizedDescriptionKey:result ? @"GPU event segment submission failed" : @"Could not publish event segment writes"}]];
@@ -746,7 +742,6 @@ static void nvmtl_gsub_ahead_pass1(void) {
     // the commit's kernel marks can wait for the accelerator lock, so they go in outside the class lock (see
     // nvmtl_ws_mark_pending). This command buffer is committed and holds its queue reservation, but nothing submits it
     // (_commitMarking stops the submit-ahead pass) or completes it (it is not pending yet) before its marks are in.
-    nvmtl_rotation_prepare(self); // producer thread, outside the class lock and before GPU pending marks
     nvmtl_ws_mark_pending(self);
     @synchronized ([NVMTLCommandBuffer class]) {
         _commitMarking = NO;

@@ -1,8 +1,9 @@
-/* Display rotation contract. Native physical modes remain unchanged. */
+/* Tahoe CoreDisplay rotation contract. Physical scanout stays raster-oriented. */
 #pragma once
 #include <stdint.h>
 
-#define NM_ROTATION_IMPLEMENTATION_VERSION 12u
+#define NM_ROTATION_IMPLEMENTATION_VERSION 13u
+#define NM_NATIVE_ROTATION_PROTOCOL 1u
 enum { kNVRMSetTransform = 0x00000400u, kNVRMTransformShift = 16 };
 
 static inline bool nvrmRotationSupportedKernel(int major)
@@ -10,22 +11,14 @@ static inline bool nvrmRotationSupportedKernel(int major)
     return major == 25; // macOS Tahoe 26; later private layouts need validation.
 }
 
-// The v8 live capture shows this contract yields a complete preoriented physical
-// image for quarter turns, rather than v7's cropped landscape image. V10 corrects
-// its opposite direction to align with the cursor. No NVKMS rotation is claimed.
-static inline bool nvrmRotationDriverBacked(bool rotationEnabled, uint32_t requestedBits)
-{
-    return rotationEnabled && (requestedBits == 3u || requestedBits == 5u);
-}
-
 static inline bool nvrmRotationBits(unsigned degrees, uint32_t *bits)
 {
     if (!bits) return false;
     switch (degrees) {
     case 0: *bits = 0; return true;
-    case 90: *bits = 3; return true;
-    case 180: *bits = 6; return true;
-    case 270: *bits = 5; return true;
+    case 90: *bits = 0x30; return true;
+    case 180: *bits = 0x60; return true;
+    case 270: *bits = 0x50; return true;
     default: return false;
     }
 }
@@ -41,9 +34,9 @@ static inline unsigned nvrmRotationDegrees(uint32_t bits)
     }
 }
 
-// Low bits let IOGraphics transform the cursor and report logical axes. They do
-// not rotate desktop pixels: the mode contract and presenter handle that image.
-// High scaler encodings are accepted as UI input, then normalized to low bits.
+// CoreDisplay rotates the desktop; the driver maps the cursor into that raster.
+// Accept either public encoding, then consistently use the scaler encoding so
+// IOFramebuffer does not apply the earlier low-bit cursor transformation too.
 // Reflections, mixed encodings and unknown transform flags are rejected.
 static inline bool nvrmRotationNormalizeProbe(uint32_t options, uint32_t *normalized)
 {

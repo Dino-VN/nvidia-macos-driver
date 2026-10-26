@@ -21,38 +21,38 @@ The current upstream base is **2.5.4 at `4677905`**, from `upstream/main`, integ
 
 ## Tahoe display rotation
 
-Retain GPU rotation on WindowServer's producer queue, the bounded 1-ms metadata
-handoff and the checked CPU fallback into each display's owned scanout. Standard
-keeps its normal presentation path. Do not restore a separate GPU-import worker,
-reacquire the family lock from a presentation callback, or hold a display gate
-across the family's reconnect request. Imports stay outside completion/pool locks
-and ahead of pending marks; GPU completion stays after normal surface publication.
+The current local candidate uses the native CoreDisplay rotation approach from
+`0700c208` in PR 398, with fork repairs. Its separate surface-busy/wait commit
+`566c1307` is excluded. Do not restore the extra producer compute/CPU correction,
+output pools or old mode/copy/GPU protocols: they would apply rotation twice.
+WindowServer owns pixel rotation and the ordinary presentation path scans out
+its physical raster. Keep conditional completion/capture synchronization.
 
-Keep the quarter-turn mode-backing flag, exact full-plane/scaler validation and
-180-degree correction of the preoriented image together. Cursor transformation is
-already performed by IOFramebuffer. Preserve normalized transforms, per-display
-mode/epoch/framebuffer-owner checks, input/output bounds/format/layout guards,
-allocation cookies, pin/latch lifetime and stale asynchronous-flip rejection.
+Retain the native rotated-mode publication, timing-ID matching and aliases,
+224-entry macOS timing capacity, full-raster/reflection/allocation checks,
+aligned timing copies and per-display cursor bitmap/hotspot/geometry mapping.
+Existing scaling overrides must survive; replace/remove only the scale array
+published by this instance. A first-frame reconnect must use the deferred
+connection worker, never call the family from inside the presentation gate.
 
-Route BEGIN to an explicit display index. Source IDs can occur on multiple displays;
-never restore a global first-match lookup. Keep each display's source records,
-nonwrapping nonce and three output buffers independent. A shared-source write
-invalidates all consumers; completion/scanout and reconnect invalidation remain
-scoped to their owner. Never reuse another display's source or output buffer.
-Standard on one display must not disable rotation on another.
+Keep the indexed IOService location on each NVRMDisplay provider before the
+framebuffer starts and the controller's path/registry-ID check. Preserve the
+kernel-priority ONCE cursor call, accepted-work count, exported cancellation,
+shutdown drain, display gate and cursor-state locking. The native approach does
+not replace these lifetime repairs, parked backing, BAR1 budgets or scanout guards.
 
-Enable rotation only on Darwin 25 with property/`nvrmrotation=0` opt-outs. Preserve
-`NVRMRotationEnabled`, implementation 12, mode/copy interface 10 and per-display
-GPU protocol 12. These checks reject partial component upgrades. Package matching
-NVRMFB, Tahoe NVAccel and plugin while keeping official versions/dependencies.
-Retain per-display GPU/CPU counters and bounded root-only source diagnostics.
+Enable rotation only on Darwin 25, preserving property/`nvrmrotation=0` opt-outs.
+Use implementation marker 13 and native accelerator protocol 1. Reject nonzero
+probes without a matching accelerator on the same PCI device; Standard restore
+remains available. Rebuild NVRMFB, Tahoe NVAccel and the release plugin together.
+The current base remains upstream 2.5.4; this is a selected rotation adaptation,
+not a merge of the latest upstream or its unrelated plugin wait changes.
 
-Single-monitor RTX 2060 Super tests confirmed all three angles at native 75 Hz.
-The GPU handoff repair presented 322/324 completed jobs in two trials; 1,069 CPU
-copies remained. These counters are not an FPS benchmark. Final multi-display
-routing, other GPUs, sleep/wake, HDR, mirroring and hotplug still need hardware
-testing. Preserve the known stale-DVI/shared-controller transition limitation and
-the nonwrapping per-display nonce fallback in the [rotation guide](DISPLAY-ROTATION.md).
+The four-monitor RTX 3070 report exposes wrong-monitor rotation, mode fallback
+and mirroring; initial snapshots alone missed later failures. The candidate
+still needs physical testing on that desktop. PR-author dual-monitor results
+and prior single-monitor results qualify neither this port nor laptop iGPU/dGPU
+routing. See [Display rotation](DISPLAY-ROTATION.md) for tests and limitations.
 
 ## Upstream 2.5.4 integration
 

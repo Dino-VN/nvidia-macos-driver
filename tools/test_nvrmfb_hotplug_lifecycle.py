@@ -53,7 +53,7 @@ static void clock_interval_to_deadline(unsigned ms,int,std::uint64_t*d){*d=ms;} 
 struct OSObject{int refs=1;void retain(){++refs;}void release(){--refs;}};
 class Base{public:IOReturn getAttributeForConnection(IOIndex,IOSelect,std::uintptr_t*){return 77;}};
 struct NVRMNVDAFramebuffer:OSObject,Base{
-using super=Base; bool fDpyLost=false,fInternal=false,fConnectFired=false; unsigned fEdidSize=0,fIndex=0; UInt8 fEdid[256]={};
+using super=Base; bool fDpyLost=false,fInternal=false,fConnectFired=false,fRotationEnabled=false; unsigned fEdidSize=0,fIndex=0; UInt8 fEdid[256]={};
 volatile int fStopping=0; thread_call_t fConnectNotify=reinterpret_cast<void*>(1);
 struct{void(*proc)(void*,void*);void*target;void*ref;}fConnect{}; unsigned scheduled=0;std::uint64_t deadline=0;
 void scheduleCall(thread_call_t,std::uint64_t d){++scheduled;deadline=d;retain();}

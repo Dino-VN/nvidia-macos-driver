@@ -60,6 +60,18 @@ static uint64_t entryID(io_service_t entry)
     return id;
 }
 
+static bool framebufferPathMatches(io_service_t entry, io_string_t path, uint64_t *resolvedID)
+{
+    path[0] = 0;
+    *resolvedID = 0;
+    if (IORegistryEntryGetPath(entry, kIOServicePlane, path) != KERN_SUCCESS) return false;
+    io_registry_entry_t resolved = IORegistryEntryFromPath(kIOMainPortDefault, path);
+    if (!resolved) return false;
+    *resolvedID = entryID(resolved);
+    IOObjectRelease(resolved);
+    return *resolvedID != 0 && *resolvedID == entryID(entry);
+}
+
 static int printDisplays()
 {
     CGDirectDisplayID displays[32]; uint32_t count = 0;
@@ -75,14 +87,26 @@ static int printDisplays()
             @"width": @(CGDisplayPixelsWide(id)), @"height": @(CGDisplayPixelsHigh(id)),
             @"bounds_width": @(bounds.size.width), @"bounds_height": @(bounds.size.height),
             @"rotation": @(CGDisplayRotation(id)), @"nvrm_framebuffer": @(fb != IO_OBJECT_NULL),
+            @"builtin": @(CGDisplayIsBuiltin(id)), @"active": @(CGDisplayIsActive(id)),
+            @"online": @(CGDisplayIsOnline(id)), @"mirror_of": @(CGDisplayMirrorsDisplay(id)),
+            @"bounds_x": @(bounds.origin.x), @"bounds_y": @(bounds.origin.y),
             @"rotation_enabled": @(enabled(p))
         } mutableCopy];
         for (NSString *key in @[@"IOFBTransform", @"IOFBProbeOptions", @"NVRMNativeRotationMask",
-                                 @"NVRMRotationRequestedTransform", @"NVRMRotationPath", @"NVRMRotationImplementationVersion"])
+                                 @"NVRMRotationRequestedTransform", @"NVRMRotationPath", @"NVRMRotationImplementationVersion",
+                                 @"IOFBDependentIndex"])
             if (p[key]) row[key] = p[key];
         if (fb && enabled(p))
             row[@"NVRMRotationActiveDegrees"] = @(nvrmRotationDegrees([p[@"IOFBTransform"] unsignedIntValue] & 0xffu));
-        if (fb) { row[@"registry_id"] = @(entryID(fb)); IOObjectRelease(fb); }
+        if (fb) {
+            io_string_t path; uint64_t resolvedID = 0;
+            const bool matched = framebufferPathMatches(fb, path, &resolvedID);
+            row[@"registry_id"] = @(entryID(fb));
+            row[@"framebuffer_path"] = @(path);
+            row[@"framebuffer_path_registry_id"] = @(resolvedID);
+            row[@"framebuffer_path_matches"] = @(matched);
+            IOObjectRelease(fb);
+        }
         CGDisplayModeRef mode = CGDisplayCopyDisplayMode(id);
         if (mode) {
             row[@"mode_width"] = @(CGDisplayModeGetWidth(mode));
@@ -271,6 +295,14 @@ int main(int argc, char **argv)
         if (!enabled(p)) {
             IOObjectRelease(fb);
             fprintf(stderr, "Rotation is not active on this display; no rotation requested.\n");
+            return 2;
+        }
+        io_string_t path; uint64_t resolvedID = 0;
+        if (!framebufferPathMatches(fb, path, &resolvedID)) {
+            fprintf(stderr, "Framebuffer path does not resolve to the selected head (selected %llu, resolved %llu). "
+                "Install the display-identity repair before testing rotation. No rotation requested.\n",
+                (unsigned long long)entryID(fb), (unsigned long long)resolvedID);
+            IOObjectRelease(fb);
             return 2;
         }
         id transform = p[@"IOFBTransform"];

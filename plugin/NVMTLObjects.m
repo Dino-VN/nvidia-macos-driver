@@ -5125,7 +5125,7 @@ destinationBytesPerImage:(NSUInteger)img options:(MTLBlitOption)opt {
     static int ws = -1;
     if (ws < 0) ws = (getprogname() && !strcmp(getprogname(), "WindowServer")) ? 1 : 0;
     [self commit];
-    if (nvmtl_rotation_has_work(self) || (ws && !nvmtl_ws_kernel_waits())) [self waitUntilCompleted]; else [self waitUntilScheduled];
+    if (ws && !nvmtl_ws_kernel_waits()) [self waitUntilCompleted]; else [self waitUntilScheduled];
     return self.status != MTLCommandBufferStatusError;
 }
 - (void)commit {

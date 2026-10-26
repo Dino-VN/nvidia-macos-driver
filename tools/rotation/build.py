@@ -51,27 +51,15 @@ commands = {
     'framebuffer-link': ['xcrun', 'clang++', '-arch', 'x86_64', '-mmacosx-version-min=15.0',
                          '-fapple-kext', '-nostdlib', '-Xlinker', '-kext', '-lkmodc++', '-lkmod',
                          '-lcc_kext', str(obj), '-o', str(bundle / 'Contents/MacOS/NVRMFB')],
-    'protocol-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                       str(root / 'tools/rotation/protocol_test.cpp'), '-o', str(output / 'protocol-test')],
     'control': ['xcrun', 'clang++', *common, '-fobjc-arc', str(root / 'tools/rotation/control.mm'),
                  '-framework', 'Foundation', '-framework', 'CoreGraphics', '-framework', 'IOKit',
                  '-o', str(output / 'nv-rotate')],
-    'copy-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/copy_test.cpp'), '-o', str(output / 'copy-test')],
-    'cursor-map-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/cursor_map_test.cpp'), '-o', str(output / 'cursor-map-test')],
-    'copy-bench': ['xcrun', 'clang++', *common, '-Werror',
-                     str(root / 'tools/rotation/copy_bench.cpp'), '-o', str(output / 'copy-bench')],
-    'source-probe-test': ['xcrun', 'clang++', *common, '-Werror', '-Wno-missing-field-initializers', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/source_probe_test.cpp'), '-o', str(output / 'source-probe-test')],
+    'transform-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
+                       '-fno-sanitize-recover=all', str(root / 'tools/rotation/transform_test.cpp'),
+                       '-o', str(output / 'transform-test')],
     'resolution-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/resolution_test.cpp'), '-o', str(output / 'resolution-test')],
-    'physical-plane-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/physical_plane_test.cpp'), '-o', str(output / 'physical-plane-test')],
-    'gpu-state-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/gpu_state_test.cpp'), '-o', str(output / 'gpu-state-test')],
-    'multidisplay-test': ['xcrun', 'clang++', *common, '-Werror', '-fsanitize=address,undefined',
-                    str(root / 'tools/rotation/multidisplay_test.cpp'), '-o', str(output / 'multidisplay-test')],
+                       '-fno-sanitize-recover=all', str(root / 'tools/rotation/resolution_test.cpp'),
+                       '-o', str(output / 'resolution-test')],
 }
 (output / 'COMMANDS.json').write_text(json.dumps(commands, indent=2) + '\n')
 results = {}
@@ -108,7 +96,7 @@ hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() f
           if '__pycache__' not in p.parts and p.suffix != '.pyc'}
 (output / 'SOURCE-HASHES.json').write_text(json.dumps(hashes, indent=2) + '\n')
 artifacts = {}
-for p in [bundle / 'Contents/MacOS/NVRMFB', output / 'nv-rotate', output / 'protocol-test', output / 'resolution-test', output / 'copy-test', output / 'cursor-map-test', output / 'copy-bench', output / 'source-probe-test', output / 'physical-plane-test', output / 'gpu-state-test', output / 'multidisplay-test']:
+for p in [bundle / 'Contents/MacOS/NVRMFB', output / 'nv-rotate', output / 'transform-test', output / 'resolution-test']:
     artifacts[p.name] = {'path': str(p), 'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
                          'uuid': subprocess.check_output(['dwarfdump', '--uuid', str(p)], text=True).split()[1]}
 (output / 'ARTIFACTS.json').write_text(json.dumps(artifacts, indent=2) + '\n')

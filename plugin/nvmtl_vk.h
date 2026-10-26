@@ -370,9 +370,3 @@ int nvmtl_vk_surface_dirty(uint32_t surfaceID, uint32_t plane);
 int nvmtl_vk_surface_dirty_try(uint32_t surfaceID, uint32_t plane);
 uint32_t nvmtl_vk_surface_gpu_mark(uint32_t surfaceID, int pending);
 int nvmtl_vk_accel_surface_wait(void);
-
-uint32_t nvmtl_vk_rotation_control(uint32_t surface,uint32_t operation);
-int nvmtl_vk_rotation_buffer_alias(const nvk_buffer *owner,nvk_buffer *alias);
-void nvmtl_vk_rotation_buffer_release(nvk_buffer *alias);
-int nvmtl_vk_cmd_rotation_180(nvk_cmdbuf *commands,nvk_buffer *source,nvk_buffer *destination,
-    uint32_t width,uint32_t height,uint32_t sourcePitch,uint32_t destinationPitch);

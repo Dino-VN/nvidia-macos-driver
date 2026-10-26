@@ -21,7 +21,6 @@ fixture=r'''
 #include <string>
 #include <vector>
 #include "nvrm-rotation.h"
-#include "copy_request.h"
 using UInt32=uint32_t;using SInt32=int32_t;using UInt64=uint64_t;using SInt64=int64_t;
 using IOOptionBits=uint32_t;using IOReturn=int;
 enum{kIOFBUserRequestProbe=1,kIOReturnSuccess=0,kIOReturnBadArgument=-1,kIOReturnNotReady=-2,kIOReturnBusy=-3};
@@ -81,22 +80,22 @@ int main(){
     version_major=25;bootArg=-1;NVRMNVDAFramebuffer fb;fb.configureRotation();
     assert(fb.fRotationEnabled);
     assert(fb.requestProbe(0x300400)==kIOReturnNotReady&&!fb.calls); // no matching accelerator
-    IOService accel;OSNumber protocol;protocol.value=8;accel.setProperty("NVAccelRotationCopyProtocol",&protocol);accel.provider=fb.pciNub();
+    IOService accel;OSNumber protocol;protocol.value=8;accel.setProperty("NVAccelNativeRotationProtocol",&protocol);accel.provider=fb.pciNub();
     iterator.services={&accel};assert(fb.requestProbe(0x300400)==kIOReturnNotReady&&!fb.calls);
-    protocol.value=NM_ROTATION_COPY_PROTOCOL;IOService otherGPU;accel.provider=&otherGPU;
+    protocol.value=NM_NATIVE_ROTATION_PROTOCOL;IOService otherGPU;accel.provider=&otherGPU;
     assert(fb.requestProbe(0x300400)==kIOReturnNotReady&&!fb.calls);
     accel.provider=fb.pciNub();
-    assert(fb.requestProbe(0x300400)==0&&fb.last==0x30400&&fb.fRotationRequestedBits==3&&fb.fRotationEpoch==3&&!fb.fRotationRequesting);
-    const auto accepted=fb.fRotationEpoch;
+    assert(fb.requestProbe(0x300400)==0&&fb.last==0x300400&&!fb.fRotationRequesting);
+    assert(fb.requestProbe(0x30400)==0&&fb.last==0x300400&&!fb.fRotationRequesting);
     fb.nextResult=kIOReturnBadArgument;
-    assert(fb.requestProbe(0x500400)==kIOReturnBadArgument&&fb.fRotationRequestedBits==3&&fb.fRotationEpoch==accepted+2&&!fb.fRotationRequesting);
+    assert(fb.requestProbe(0x500400)==kIOReturnBadArgument&&!fb.fRotationRequesting);
     fb.nextResult=0;
     fb.fRotationRequesting=1;const auto count=fb.calls;
     assert(fb.requestProbe(0x600400)==kIOReturnBusy&&fb.calls==count);fb.fRotationRequesting=0;
     fb.fStopping=1;assert(fb.requestProbe(0x500400)==kIOReturnNotReady&&fb.calls==count);fb.fStopping=0;
     assert(fb.requestProbe(0x400400)==kIOReturnBadArgument&&fb.calls==count);
     iterator.services.clear(); // restoring Standard never depends on a matching accelerator
-    assert(fb.requestProbe(0x400)==0&&fb.last==0x400&&!fb.fRotationRequestedBits);
+    assert(fb.requestProbe(0x400)==0&&fb.last==0x400);
     fb.fRotationEnabled=false;
     assert(fb.requestProbe(0x300400)==0&&fb.last==0x300400); // original family dispatch
     printf("PASS: %u production enablement cases; Tahoe default and property/boot opt-outs; OS gate, matching GPU/protocol, normalized transforms, failed/busy/stopping requests, accelerator-independent Standard restore\n",configs);
