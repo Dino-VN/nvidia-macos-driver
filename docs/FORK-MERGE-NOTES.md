@@ -19,6 +19,27 @@ Before each merge:
 The current upstream base is **2.5.5 at `bf23ca7`**, from `upstream/main`, integrated on
 2026-10-26. The preceding base was 2.5.4 at `4677905`, integrated on 2026-10-24.
 
+## Native NVK runtime for Minecraft 26.3
+
+Retain the optional frontend and build/test tools in `nvk/native-macos/`, alongside
+the [NVK Bridge mod](https://github.com/HighDelay/minecraft-nvk). This does not change
+the installed plugin, default Vulkan provider, framebuffer or existing Metal,
+OpenGL and MoltenVK paths. An instance opts in through its runtime manifest.
+
+Keep application Vulkan objects on the private renderer's device, with local symbol
+resolution and a distinct renderer install name. Preserve stable swapchain images,
+separate drawable reservations, queue synchronization, completion before dirty/tag
+publication and retained resources after uncertain GPU completion. Normal presentation
+copies on the GPU; do not replace it with a CPU pixel transfer or import foreign-device
+Vulkan handles. When changing NVK or the driver, check the version-3 IOSurface import
+record, `nvmtl_nvk_stage_import`, `nvmtl_nvk_surface_dirty` and VRAM generation tags
+against the bundled renderer before rebuilding the runtime.
+
+RTX 2060 SUPER/Tahoe 26.7.1 tests cover actual device requirements, SDL presentation,
+pixel checks, resize/restore, LWJGL/SDL provider equality and Fabric Essential gameplay.
+Other GPUs, NeoForge gameplay, broad WSI conformance and a controlled performance
+comparison remain unqualified. See [Native Vulkan presentation](../nvk/native-macos/README.md).
+
 ## Tahoe display rotation
 
 The current local candidate uses the native CoreDisplay rotation approach from

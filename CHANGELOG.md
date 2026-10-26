@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork native Vulkan runtime for Minecraft 26.3
+
+- Add an optional native NVK runtime with Metal surface/swapchain support. Minecraft renders directly through NVK; finished images are copied by the GPU into display drawables without MoltenVK, Metal shader translation or CPU pixel transfers. Use the companion [NVK Bridge mod](https://github.com/HighDelay/minecraft-nvk); installed driver defaults remain unchanged.
+- Validate native features, provider matching, pixel output and resize/restore on RTX 2060 SUPER/Tahoe 26.7.1. Fabric Essential gameplay renders correctly; performance gains over MoltenVK and other hardware remain unmeasured. See [Native Vulkan presentation](nvk/native-macos/README.md).
+
 ## Fork integration with upstream 2.5.5
 
 - Add same-size buffer-texture views for screen capture and throttle refused-VRAM allocation logs without changing allocation or parking behavior.
