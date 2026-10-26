@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the Tahoe PR builds in a copy of an extracted upstream package.
+"""Stage fork builds for Sequoia/Tahoe in a copy of an upstream package.
 
 Requires macOS, Python 3, and Apple's command line tools. The upstream input
 and build outputs remain unchanged; the destination must not already exist.
@@ -22,6 +22,8 @@ TRANSLATOR = RUNTIME / "libnvmtl_translate.dylib"
 BUNDLED_TRANSLATOR = PLUGIN / "Contents/MacOS/libnvmtl_translate.dylib"
 FRAMEBUFFER = Path("Library/Extensions/NVRMFB.kext")
 ACCEL = {v: Path("Library/NullMoth/kexts") / v / "NVAccel.kext" for v in ("15", "26")}
+MINECRAFT = RUNTIME / "minecraft"
+SEQUOIA_RUNTIME_MINIMUM = "15.5"
 
 
 def require(condition, message):
@@ -132,6 +134,40 @@ def replace_file(source, destination):
     shutil.copy2(source, destination)
 
 
+def validate_minecraft_runtime(root, checker):
+    require(root.is_dir() and not root.is_symlink(), "missing Minecraft runtime directory")
+    validate_links(root.resolve())
+    manifest = root / "nvk-bridge-runtime.properties"
+    regular(manifest)
+    fields = {}
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith(("#", "!")):
+            continue
+        key, separator, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        require(separator and key not in fields, "invalid or duplicate Minecraft runtime property")
+        fields[key] = value
+    expected = {"schema.version": "1", "target.os": "macos", "target.arch": "x86_64",
+                "minecraft.version": "26.3", "presentation": "gpu-copy",
+                "library.path": "lib/libnvk_minecraft.dylib"}
+    require(all(fields.get(key) == value for key, value in expected.items()),
+            "incompatible Minecraft runtime manifest")
+    require(bool(fields.get("runtime.id")), "missing Minecraft runtime identity")
+    require(re.fullmatch(r"[0-9a-fA-F]{64}", fields.get("library.sha256", "")) is not None,
+            "invalid Minecraft runtime hash")
+    entry = root / expected["library.path"]
+    renderer = root / "lib/libnvk_renderer.dylib"
+    for binary in (entry, renderer):
+        regular(binary)
+    require(digest(entry) == fields["library.sha256"].lower(), "Minecraft entry hash mismatch")
+    regular(checker)
+    for binary in (entry, renderer):
+        run("lipo", binary, "-verify_arch", "x86_64")
+        run("codesign", "--verify", "--strict", binary)
+        run(checker, SEQUOIA_RUNTIME_MINIMUM, binary)
+    return (manifest, entry, renderer)
+
+
 def stage(args):
     require(sys.platform == "darwin", "run this helper on macOS")
     base = args.base.resolve(strict=True)
@@ -179,10 +215,14 @@ def stage(args):
     with plist.open("rb") as stream:
         require(plistlib.load(stream).get("CFBundleExecutable") == "NVRMFB", "not an NVRMFB Info.plist")
     replacements = [(plugin, PLUGIN / "Contents/MacOS/NVMTLDriver"), (translator, TRANSLATOR)]
-    if args.accel_26:
-        bundle(args.accel_26, "NVAccel")
-        validate_links(args.accel_26.resolve())
-        run("lipo", args.accel_26 / "Contents/MacOS/NVAccel", "-verify_arch", "x86_64")
+    accelerators = {major: getattr(args, "accel_" + major, None) for major in ACCEL}
+    for accelerator in accelerators.values():
+        if accelerator:
+            bundle(accelerator, "NVAccel")
+            validate_links(accelerator.resolve())
+            run("lipo", accelerator / "Contents/MacOS/NVAccel", "-verify_arch", "x86_64")
+    minecraft = getattr(args, "minecraft_runtime", None)
+    minecraft_files = validate_minecraft_runtime(minecraft, base / "nullmoth-runtime-check") if minecraft else ()
     for source, _ in replacements:
         run("lipo", source, "-verify_arch", "x86_64")
 
@@ -190,15 +230,18 @@ def stage(args):
     with tempfile.TemporaryDirectory(prefix=".nullmoth-stage-", dir=output.parent) as temporary:
         work = Path(temporary) / "pkgroot"
         shutil.copytree(base, work, symlinks=True)
-        if args.accel_26:
-            destination = work / ACCEL["26"]
+        for major, accelerator in accelerators.items():
+            if not accelerator:
+                continue
+            destination = work / ACCEL[major]
             shutil.rmtree(destination)
-            shutil.copytree(args.accel_26, destination, symlinks=True)
+            shutil.copytree(accelerator, destination, symlinks=True)
+        if accelerators["26"]:
             active = work / "Library/Extensions/NVAccel.kext"
             if active.exists():
                 bundle(active, "NVAccel")
                 shutil.rmtree(active)
-                shutil.copytree(args.accel_26, active, symlinks=True)
+                shutil.copytree(accelerators["26"], active, symlinks=True)
         if framebuffer:
             destination = work / FRAMEBUFFER
             shutil.rmtree(destination)
@@ -206,6 +249,17 @@ def stage(args):
         replace_file(plist, work / FRAMEBUFFER / "Contents/Info.plist")
         for source, relative in replacements:
             replace_file(source, work / relative)
+        if minecraft:
+            destination = work / MINECRAFT
+            if destination.is_symlink() or destination.is_file():
+                destination.unlink()
+            elif destination.exists():
+                shutil.rmtree(destination)
+            (destination / "lib").mkdir(parents=True)
+            for source in minecraft_files:
+                replace_file(source, destination / source.relative_to(minecraft))
+            replace_file(REPO / "nvk/native-macos/INSTALL.md", work / "MINECRAFT-NVK.md")
+            validate_minecraft_runtime(destination, base / "nullmoth-runtime-check")
 
         # Copy finalized binaries byte-for-byte, including the translator copy
         # which the plugin prefers over the canonical runtime directory.
@@ -215,10 +269,10 @@ def stage(args):
                     "bundled translator link must point to the canonical nvmtl translator")
         elif bundled.exists():
             replace_file(work / TRANSLATOR, bundled)
-        # install.sh requires both OS variants and selects 26 on Tahoe. Only
-        # that optional replacement needs a new nested manifest; preserve 15.
-        if args.accel_26:
-            write_manifest(work / ACCEL["26"].parent)
+        # install.sh chooses the OS variant. Refresh only replaced variants.
+        for major, accelerator in accelerators.items():
+            if accelerator:
+                write_manifest(work / ACCEL[major].parent)
         for name in ("install.sh", "uninstall.sh"):
             (work / name).chmod(0o755)
         validate_links(work)
@@ -226,8 +280,10 @@ def stage(args):
         require(not output.exists() and not output.is_symlink(), "output appeared while staging; refusing to replace it")
         work.rename(output)
     print("Package ready: " + str(output))
-    print("Updated: NVMTLDriver, translator, " + ("NVRMFB" if framebuffer else "NVRMFB Info.plist") + (", Tahoe NVAccel" if args.accel_26 else ""))
-    print("SHA256SUMS verified. Install on Tahoe using install.sh.")
+    print("Updated: NVMTLDriver, translator, " + ("NVRMFB" if framebuffer else "NVRMFB Info.plist")
+          + "".join(", macOS " + major + " NVAccel" for major, source in accelerators.items() if source)
+          + (", Minecraft native NVK runtime" if minecraft else ""))
+    print("SHA256SUMS verified. Install on Sequoia or Tahoe using install.sh.")
     return output
 
 
@@ -240,6 +296,8 @@ def main():
     parser.add_argument("--framebuffer-plist", type=Path, help="NVRMFB Info.plist (default: this checkout's PR #131 plist)")
     parser.add_argument("--framebuffer", type=Path, help="optional complete rebuilt NVRMFB.kext; uses its plist unless overridden")
     parser.add_argument("--accel-26", type=Path, help="optional complete rebuilt Tahoe NVAccel.kext")
+    parser.add_argument("--accel-15", type=Path, help="optional complete rebuilt Sequoia NVAccel.kext")
+    parser.add_argument("--minecraft-runtime", type=Path, help="optional native Minecraft runtime built by nvk/native-macos/build.py")
     try:
         stage(parser.parse_args())
     except (OSError, ValueError, RuntimeError, plistlib.InvalidFileException) as error:

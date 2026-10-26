@@ -1,5 +1,8 @@
 # NullMoth NVIDIA Driver for macOS
 
+**Minecraft:** [Minecraft NVK companion mod](https://github.com/HighDelay/minecraft-nvk) ·
+[Aetherium — optional Vulkan shader mod](https://github.com/HighDelay/aetherium)
+
 A Metal driver for NVIDIA GeForce cards on macOS 15 Sequoia (Intel Macs and OpenCore PCs). It is open source; the
 kernel extensions, the Metal plugin and the shader translator are in this repository. The 1401 app that installs it
 (Mac and Windows) is its own project: [1401](https://github.com/nullmoth/1401).
@@ -26,6 +29,21 @@ Support the work: https://buymeacoffee.com/nullmoth
 | GPUs | NVIDIA Turing and later; developed on an RTX 5060 |
 | Metal | Metal 3: argument buffers tier 2, ray tracing, mesh shaders, MPS, MetalFX path |
 | Also | OpenGL (through Apple's GL-on-Metal), OpenCL, Core Image, Core ML |
+
+## Minecraft native Vulkan
+
+Install this fork's driver package and the matching Minecraft NVK companion mod, then add this to your Minecraft
+instance's **Java/JVM arguments**:
+
+```text
+-Dnvkbridge.runtime=/Library/GPUBundles/nvmtl/minecraft
+```
+
+Replace any existing `-Dnvkbridge.runtime=...` argument with this one. Select **Vulkan** in Minecraft's graphics
+settings and restart the game. Aetherium is optional for shader packs.
+
+Requires Minecraft **26.3**, Java **25**, and Intel macOS **Sequoia 15.5 or newer** or **Tahoe 26**.
+See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
 
 ## How it works
 

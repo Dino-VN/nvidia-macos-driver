@@ -16,6 +16,12 @@ The output includes two signed dylibs under `lib/`, the NVK Bridge manifest, sou
 
 This reuses the renderer binary rather than rebuilding Mesa. Its IOSurface import protocol and surface-dirty entry points must match the installed driver. Other applications keep using their existing libraries.
 
+## Include in a driver package
+
+The frontend targets macOS 15.0; the bundled upstream NVK renderer targets 15.5, making the package minimum **Sequoia 15.5**. Tahoe 26 is also supported. Build both accelerator variants with `build/accel_build_all.sh`, then pass `--accel-15`, `--accel-26` and `--minecraft-runtime` to `build/stage_package.py` along with the matching plugin, translator and framebuffer. The helper checks both runtime libraries against macOS 15.5, verifies the entry hash and signatures, and regenerates the replaced accelerators' nested checksums and the root manifest.
+
+The package installer already selects the accelerator for its running OS. It copies the bridge under `/Library/GPUBundles/nvmtl/minecraft` with the existing userland runtime, and uninstall removes it through that same directory. Use [the packaged Minecraft setup instructions](INSTALL.md) for the mod's Java argument. This packaging does not enable Tahoe rotation on Sequoia or change the default Vulkan provider. Physical Sequoia boot/gameplay testing remains unqualified.
+
 ## Presentation and synchronization
 
 - Rendering functions and actual device features come from NVK. The frontend implements Metal surfaces and swapchains; missing rendering features are not spoofed.
@@ -37,12 +43,13 @@ Tested on Tahoe 26.7.1, RTX 2060 SUPER, 8 GiB BAR1, with fork 2.5.5 installed:
 | Final runtime relocation, four images/three drawable slots | 24 frames; all pixels checked; zero import failures. |
 | Mod + LWJGL 3.4.3 + SDL | Manifest, provider path, Metal surface creation and provider pointer equality passed. |
 | Fabric 0.19.5, Minecraft 26.3, Essential | Menu and multiplayer rendering worked, confirmed by the user. Screenshot shows about 148 FPS in one scene. |
+| NeoForge 26.3.0.99, Minecraft 26.3 | Game session worked, confirmed by the user. The session log identifies Vulkan 1.4.363 NVK Mesa 26.3.0-devel. |
 
 The companion mod repository records [integration results](https://github.com/HighDelay/minecraft-nvk/blob/main/docs/TEST-RESULTS.md), runtime identity and validation limits. Raw test artifacts remain local and are not part of the source repository.
 
 ## Limits
 
-This is a local Minecraft runtime, not a generally qualified Vulkan WSI implementation. Only this NVIDIA desktop and the Fabric Essential instance were tested. NeoForge packaging and offline transformation checks pass, but a NeoForge game launch, other GPUs, multiple GPUs/windows, device loss recovery and long sessions remain unqualified. Ambiguous matches between identical NVIDIA GPUs are rejected.
+This is a local Minecraft runtime, not a generally qualified Vulkan WSI implementation. Testing covers this NVIDIA desktop with Fabric Essential and NeoForge 26.3.0.99. Other GPUs, multiple GPUs/windows, device loss recovery and long sessions remain unqualified. Ambiguous matches between identical NVIDIA GPUs are rejected.
 
 Presentation waits on the host for each GPU copy and allocates/imports presentation resources per frame. These remain candidates for measurement and resource reuse. The screenshot is not an A/B benchmark. No speedup over MoltenVK or removal of the earlier frame-rate ceiling has been established. VSync, drawable availability and compositor scheduling still affect presentation.
 

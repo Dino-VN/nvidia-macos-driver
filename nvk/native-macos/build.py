@@ -25,6 +25,7 @@ commands = [
     ['codesign', '--force', '--sign', '-', '--timestamp=none', str(renderer)],
     ['xcrun', 'clang++', '-arch', 'x86_64', '-mmacosx-version-min=15.0', '-dynamiclib',
      '-std=c++17', '-fobjc-arc', '-O2', '-Wall', '-Wextra', '-Wno-missing-field-initializers',
+     '-Werror=unguarded-availability-new',
      '-I' + str(args.headers), str(repo / 'nvk/native-macos/bridge.mm'),
      '-framework', 'Foundation', '-framework', 'QuartzCore', '-framework', 'Metal',
      '-framework', 'IOSurface', '-framework', 'IOKit',

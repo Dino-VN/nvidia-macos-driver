@@ -91,6 +91,12 @@ class StagePackage(unittest.TestCase):
         elif tool == "lipo":
             self.assertEqual(args[2:], ("-verify_arch", "x86_64"))
             status = int(Path(args[1]).read_bytes().startswith(b"ARM64"))
+        elif tool == "codesign":
+            self.assertEqual(args[1:3], ("--verify", "--strict"))
+            status = int(Path(args[3]).read_bytes().startswith(b"BAD-SIGNATURE"))
+        elif tool.endswith("/nullmoth-runtime-check"):
+            self.assertEqual(args[1], "15.5")
+            status = int(Path(args[2]).read_bytes().startswith(b"MINOS26"))
         else:
             self.fail("unexpected command: " + repr(args))
         result = subprocess.CompletedProcess(args, status, stdout, "simulated failure" if status else "")
@@ -168,6 +174,66 @@ class StagePackage(unittest.TestCase):
         self.assertEqual(self.snapshot(self.output / STAGE.ACCEL["15"]), self.snapshot(self.base / STAGE.ACCEL["15"]))
         self.assert_manifest(self.output / STAGE.ACCEL["26"].parent)
         self.assert_manifest(self.output)
+
+    def test_both_os_accelerators_are_replaced_and_have_independent_manifests(self):
+        self.args.accel_15 = self.make_bundle(self.build / "15/NVAccel.kext", "NVAccel", b"Sequoia accelerator")
+        self.args.accel_26 = self.make_bundle(self.build / "26/NVAccel.kext", "NVAccel", b"Tahoe accelerator")
+        self.make_bundle(self.base / "Library/Extensions/NVAccel.kext", "NVAccel", b"old active accelerator")
+        self.seal_base()
+        self.stage()
+        for major, expected in (("15", b"Sequoia accelerator"), ("26", b"Tahoe accelerator")):
+            self.assertEqual((self.output / STAGE.ACCEL[major] / "Contents/MacOS/NVAccel").read_bytes(), expected)
+            self.assert_manifest(self.output / STAGE.ACCEL[major].parent)
+        self.assertEqual((self.output / "Library/Extensions/NVAccel.kext/Contents/MacOS/NVAccel").read_bytes(), b"Tahoe accelerator")
+        self.assert_manifest(self.output)
+        self.assert_unchanged()
+
+    def minecraft_runtime(self, entry=b"native entry", renderer=b"private renderer"):
+        runtime = self.build / "Minecraft runtime"
+        self.put(runtime / "lib/libnvk_minecraft.dylib", entry)
+        self.put(runtime / "lib/libnvk_renderer.dylib", renderer)
+        fields = {"schema.version": "1", "target.os": "macos", "target.arch": "x86_64",
+                  "minecraft.version": "26.3", "runtime.id": "test-runtime", "presentation": "gpu-copy",
+                  "library.path": "lib/libnvk_minecraft.dylib", "library.sha256": hashlib.sha256(entry).hexdigest()}
+        self.put(runtime / "nvk-bridge-runtime.properties", "".join(k + "=" + v + "\n" for k, v in fields.items()).encode())
+        self.put(runtime / "BUILD.json", b"local build paths must not be packaged")
+        self.args.minecraft_runtime = runtime
+        self.original_build = self.snapshot(self.build)
+        return runtime
+
+    def test_minecraft_runtime_is_opt_in_curated_and_does_not_replace_default_nvk(self):
+        self.minecraft_runtime()
+        self.stage()
+        runtime = self.output / STAGE.MINECRAFT
+        self.assertEqual({p.relative_to(runtime).as_posix() for p in runtime.rglob("*") if p.is_file()},
+                         {"lib/libnvk_minecraft.dylib", "lib/libnvk_renderer.dylib", "nvk-bridge-runtime.properties"})
+        self.assertEqual((self.output / STAGE.RUNTIME / "libvulkan_nouveau.dylib").read_bytes(), b"old NVK")
+        self.assertIn("/Library/GPUBundles/nvmtl/minecraft", (self.output / "MINECRAFT-NVK.md").read_text())
+        self.assert_manifest(self.output)
+        self.assert_unchanged()
+
+    def test_minecraft_entry_hash_mismatch_is_rejected_before_copying(self):
+        runtime = self.minecraft_runtime()
+        (runtime / "lib/libnvk_minecraft.dylib").write_bytes(b"changed after manifest")
+        self.original_build = self.snapshot(self.build)
+        with self.assertRaisesRegex(ValueError, "Minecraft entry hash mismatch"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_minecraft_runtime_requiring_tahoe_is_not_packaged_for_sequoia(self):
+        self.minecraft_runtime(entry=b"MINOS26")
+        with self.assertRaisesRegex(ValueError, "nullmoth-runtime-check failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_minecraft_renderer_wrong_architecture_is_rejected(self):
+        self.minecraft_runtime(renderer=b"ARM64 renderer")
+        with self.assertRaisesRegex(ValueError, "lipo failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
 
     def test_wrong_framebuffer_architecture_is_rejected_before_copying(self):
         self.args.framebuffer = self.make_bundle(self.build / "NVRMFB.kext", "NVRMFB", b"ARM64-only framebuffer")

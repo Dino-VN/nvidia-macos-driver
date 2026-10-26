@@ -35,9 +35,17 @@ Vulkan handles. When changing NVK or the driver, check the version-3 IOSurface i
 record, `nvmtl_nvk_stage_import`, `nvmtl_nvk_surface_dirty` and VRAM generation tags
 against the bundled renderer before rebuilding the runtime.
 
+Preserve optional staging of both OS accelerator variants and the curated Minecraft
+runtime under `Library/GPUBundles/nvmtl/minecraft`. Keep the bundled renderer's
+Sequoia 15.5 minimum, the frontend's 15.0 deployment target, compatibility
+checks, manifest/hash/signature validation and independent 15/26 checksum manifests.
+The existing installer chooses the OS variant and manages the runtime through its
+ordinary nvmtl copy/removal path; keep default Vulkan selection opt-in.
+
 RTX 2060 SUPER/Tahoe 26.7.1 tests cover actual device requirements, SDL presentation,
-pixel checks, resize/restore, LWJGL/SDL provider equality and Fabric Essential gameplay.
-Other GPUs, NeoForge gameplay, broad WSI conformance and a controlled performance
+pixel checks, resize/restore, LWJGL/SDL provider equality, Fabric Essential gameplay
+and a NeoForge 26.3.0.99 game session confirmed by the user and its native NVK log.
+Other GPUs, broad WSI conformance and a controlled performance
 comparison remain unqualified. See [Native Vulkan presentation](../nvk/native-macos/README.md).
 
 ## Tahoe display rotation

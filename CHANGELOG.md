@@ -3,7 +3,8 @@
 ## Fork native Vulkan runtime for Minecraft 26.3
 
 - Add an optional native NVK runtime with Metal surface/swapchain support. Minecraft renders directly through NVK; finished images are copied by the GPU into display drawables without MoltenVK, Metal shader translation or CPU pixel transfers. Use the companion [NVK Bridge mod](https://github.com/HighDelay/minecraft-nvk); installed driver defaults remain unchanged.
-- Validate native features, provider matching, pixel output and resize/restore on RTX 2060 SUPER/Tahoe 26.7.1. Fabric Essential gameplay renders correctly; performance gains over MoltenVK and other hardware remain unmeasured. See [Native Vulkan presentation](nvk/native-macos/README.md).
+- Validate native features, provider matching, pixel output and resize/restore on RTX 2060 SUPER/Tahoe 26.7.1. Fabric Essential and NeoForge 26.3.0.99 gameplay render correctly; performance gains over MoltenVK and other hardware remain unmeasured. See [Native Vulkan presentation](nvk/native-macos/README.md).
+- Package the optional Minecraft runtime for Sequoia 15.5+ and Tahoe 26, with deployment checks, matching NVAccel variants and refreshed checksum manifests. The bundled upstream NVK renderer sets the 15.5 minimum. The existing installer selects the correct accelerator; Sequoia boot/gameplay still needs physical testing.
 
 ## Fork integration with upstream 2.5.5
 
