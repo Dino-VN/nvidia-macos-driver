@@ -6,6 +6,7 @@ and build outputs remain unchanged; the destination must not already exist.
 """
 import argparse
 import hashlib
+import json
 import os
 import plistlib
 import re
@@ -24,6 +25,7 @@ FRAMEBUFFER = Path("Library/Extensions/NVRMFB.kext")
 AGDC = Path("Library/Extensions/NVRMAGDC.kext")
 ACCEL = {v: Path("Library/NullMoth/kexts") / v / "NVAccel.kext" for v in ("15", "26")}
 MINECRAFT = RUNTIME / "minecraft"
+WINE = RUNTIME / "wine"
 SEQUOIA_RUNTIME_MINIMUM = "15.5"
 
 
@@ -169,6 +171,51 @@ def validate_minecraft_runtime(root, checker):
     return (manifest, entry, renderer)
 
 
+def validate_wine_runtime(root, checker):
+    require(root.is_dir() and not root.is_symlink(), "missing Wine/NVK provider directory")
+    validate_links(root.resolve())
+    manifest = root / "nvk-wine-runtime.json"
+    regular(manifest)
+    fields = json.loads(manifest.read_text(encoding="utf-8"))
+    require(fields.get("schema_version") == 1 and fields.get("kind") == "provider"
+            and "wine" not in fields, "stage a compact provider, not a bundled Wine installation")
+    require(fields.get("platform") == {"os": "macos", "arch": "x86_64", "minimum_macos": "15.5"},
+            "incompatible Wine/NVK provider platform")
+    require(fields.get("dxvk", {}).get("version") == "3.1.1+nvk-shared-fallback",
+            "Wine/NVK requires the repaired DXVK pair")
+    require(fields.get("launch_defaults", {}).get("DXVK_CONFIG") == "dxvk.enableDescriptorBuffer = False",
+            "Wine/NVK descriptor-set default is missing")
+    required = {"lib/libnvk_wine.dylib", "lib/libnvk_renderer.dylib", "bin/nvk-runtime",
+                "dxvk/x64/d3d11.dll", "dxvk/x64/dxgi.dll", "dxvk/source-changes.patch", "DXVK-BUILD.json",
+                "LICENSES/frontend-PolyForm-Noncommercial-1.0.0.txt", "LICENSES/DXVK-zlib.txt",
+                "LICENSES/Mesa-license.rst", "LICENSES/Wine-LGPL-2.1.txt"}
+    files = fields.get("files", {})
+    require(isinstance(files, dict) and required <= files.keys(), "incomplete Wine/NVK provider")
+    for name, sha in files.items():
+        relative = Path(name)
+        require(name in required or (len(relative.parts) == 2 and relative.parts[0] == "LICENSES"),
+                "unexpected Wine/NVK provider artifact: " + name)
+        regular(root / relative)
+        require(digest(root / relative) == sha, "Wine/NVK hash mismatch: " + name)
+    require(fields.get("entry", {}).get("path") == "lib/libnvk_wine.dylib"
+            and fields.get("renderer", {}).get("path") == "lib/libnvk_renderer.dylib",
+            "unexpected Wine/NVK library paths")
+    alias = root / "lib/libMoltenVK.dylib"
+    require(alias.is_symlink() and os.readlink(alias) == "libnvk_wine.dylib", "incorrect Wine/NVK provider alias")
+    regular(checker)
+    for name in ("lib/libnvk_wine.dylib", "lib/libnvk_renderer.dylib", "bin/nvk-runtime"):
+        binary = root / name
+        run("lipo", binary, "-verify_arch", "x86_64")
+        run("codesign", "--verify", "--strict", binary)
+        run(checker, SEQUOIA_RUNTIME_MINIMUM, binary)
+    run(root / "bin/nvk-runtime", "check", root)
+    extra = {"nvk-wine-runtime.json", "README.md", "BUILD.json", "SHA256SUMS"}
+    for name in extra:
+        regular(root / name)
+    verify_manifest(root)
+    return tuple(root / name for name in sorted(set(files) | extra))
+
+
 def stage(args):
     require(sys.platform == "darwin", "run this helper on macOS")
     base = args.base.resolve(strict=True)
@@ -229,6 +276,8 @@ def stage(args):
             run("lipo", accelerator / "Contents/MacOS/NVAccel", "-verify_arch", "x86_64")
     minecraft = getattr(args, "minecraft_runtime", None)
     minecraft_files = validate_minecraft_runtime(minecraft, base / "nullmoth-runtime-check") if minecraft else ()
+    wine = getattr(args, "wine_runtime", None)
+    wine_files = validate_wine_runtime(wine, base / "nullmoth-runtime-check") if wine else ()
     for source, _ in replacements:
         run("lipo", source, "-verify_arch", "x86_64")
 
@@ -270,6 +319,19 @@ def stage(args):
                 replace_file(source, destination / source.relative_to(minecraft))
             replace_file(REPO / "nvk/native-macos/INSTALL.md", work / "MINECRAFT-NVK.md")
             validate_minecraft_runtime(destination, base / "nullmoth-runtime-check")
+        if wine:
+            destination = work / WINE
+            if destination.is_symlink() or destination.is_file():
+                destination.unlink()
+            elif destination.exists():
+                shutil.rmtree(destination)
+            for source in wine_files:
+                target = destination / source.relative_to(wine)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                replace_file(source, target)
+            (destination / "lib/libMoltenVK.dylib").symlink_to("libnvk_wine.dylib")
+            replace_file(REPO / "nvk/wine-macos/INSTALL.md", work / "WINE-NVK.md")
+            validate_wine_runtime(destination, base / "nullmoth-runtime-check")
 
         # Copy finalized binaries byte-for-byte, including the translator copy
         # which the plugin prefers over the canonical runtime directory.
@@ -293,7 +355,8 @@ def stage(args):
     print("Updated: NVMTLDriver, translator, " + ("NVRMFB" if framebuffer else "NVRMFB Info.plist")
           + (", NVRMAGDC" if agdc else "")
           + "".join(", macOS " + major + " NVAccel" for major, source in accelerators.items() if source)
-          + (", Minecraft native NVK runtime" if minecraft else ""))
+          + (", Minecraft native NVK runtime" if minecraft else "")
+          + (", Wine native NVK provider and DXVK" if wine else ""))
     print("SHA256SUMS verified. Install on Sequoia or Tahoe using install.sh.")
     return output
 
@@ -310,6 +373,7 @@ def main():
     parser.add_argument("--accel-26", type=Path, help="optional complete rebuilt Tahoe NVAccel.kext")
     parser.add_argument("--accel-15", type=Path, help="optional complete rebuilt Sequoia NVAccel.kext")
     parser.add_argument("--minecraft-runtime", type=Path, help="optional native Minecraft runtime built by nvk/native-macos/build.py")
+    parser.add_argument("--wine-runtime", type=Path, help="optional compact Wine/NVK provider built by nvk/wine-macos/provider.py")
     try:
         stage(parser.parse_args())
     except (OSError, ValueError, RuntimeError, plistlib.InvalidFileException) as error:

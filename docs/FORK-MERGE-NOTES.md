@@ -51,6 +51,41 @@ and a NeoForge 26.3.0.99 game session confirmed by the user and its native NVK l
 Other GPUs, broad WSI conformance and a controlled performance
 comparison remain unqualified. See [Native Vulkan presentation](../nvk/native-macos/README.md).
 
+## Native NVK runtime for Wine / DXVK
+
+Retain `nvk/wine-macos/`, `tools/wine-nvk/` and the shared frontend's
+`NVKBRIDGE_WINE` build mode. This adds opt-in Wine support without changing the
+plugin, framebuffer, desktop presentation or default Vulkan provider. The Wine
+frontend exports `vkCreateMetalSurfaceEXT` directly through the same guarded
+implementation as proc-address lookup. Preserve Wine-only filtering of unsupported
+WSI/HDR/external-handle extensions and queries, the private staged IOSurface
+import, stable swapchain images and completion/lifetime rules from Minecraft.
+Resize of a valid drawable returns OUT_OF_DATE so Wine can recreate its chain.
+
+Keep the matched DXVK 3.1.1 shared-resource fallback repair, source/license records,
+`dxvk.enableDescriptorBuffer = False` default, and paired DLL install/rollback
+journal. A rejected external-sharing request must not call an unavailable Win32
+export function. Do not advertise general GPU-handle sharing or fake successful
+exports. Descriptor sets restored ZZZ characters and HUD text in an actual A/B test.
+
+Preserve optional `--wine-runtime` staging of the compact provider under
+`Library/GPUBundles/nvmtl/wine`, separate from Minecraft. Validate the manifest,
+hashes, signatures, Intel architecture, macOS 15.5 compatibility, provider alias,
+licenses and checksums before publishing. The full YAAGL bundle may additionally
+carry its pinned Wine; the driver provider does not. Prefix DLL originals must
+remain restorable after a runtime update, including interrupted operations.
+
+YAAGL integration is maintained in HighDelay/yaagl-nvk, repaired DXVK in
+HighDelay/dxvk-nvk (`nvk-3.1.1`). YAAGL prefers the installed driver provider,
+retains its bundled Wine, and only falls back to its bundled renderer if the
+driver provider is absent. An identical DXVK pair can adopt the provider identity
+without replacing original DLL backups; a different pair still requires restore.
+ZZZ gameplay is user-confirmed on RTX 2060 SUPER /
+Tahoe 26.7.1 with YAAGL Wine 11.0-1. GI/HSR launch configurations exist but gameplay,
+commercial CrossOver, other Wine builds and Sequoia hardware remain unqualified.
+Native and Windows Vulkan/D3D11 probes verify correctness, not an FPS improvement.
+See [Wine/NVK source and validation](../nvk/wine-macos/README.md).
+
 ## Tahoe display rotation
 
 The current local candidate uses the native CoreDisplay rotation approach from

@@ -1,6 +1,70 @@
 #include "bridge.mm"
 #include <cassert>
 
+#ifdef NVKBRIDGE_WINE
+// Objective-C presentation objects are stand-ins; the IOSurface is host memory.
+@interface HostDevice : NSObject
+@property(readonly) uint64_t registryID;
+@end
+@implementation HostDevice
+- (uint64_t)registryID { return 17; }
+@end
+@interface HostTexture : NSObject
+@property(strong) id device;
+@property(assign) IOSurfaceRef iosurface;
+@end
+@implementation HostTexture
+- (NSUInteger)width { return 4; }
+- (NSUInteger)height { return 4; }
+- (NSUInteger)iosurfacePlane { return 0; }
+- (MTLPixelFormat)pixelFormat { return MTLPixelFormatBGRA8Unorm; }
+@end
+static int drawable_presented,dirty_called,native_released;
+@interface HostDrawable : NSObject
+@property(strong) HostTexture *texture;
+@end
+@implementation HostDrawable
+- (void)present { drawable_presented++; }
+@end
+@interface HostLayer : NSObject
+@property(strong) HostDrawable *drawable;
+@end
+@implementation HostLayer
+- (id)nextDrawable { return self.drawable; }
+@end
+static VkResult host_buffer(VkDevice,const VkBufferCreateInfo *,const VkAllocationCallbacks *,VkBuffer *out) { *out=(VkBuffer)(uintptr_t)71;return VK_SUCCESS; }
+static void host_requirements(VkDevice,VkBuffer,VkMemoryRequirements *out) { *out={256,64,1}; }
+static VkResult host_allocate(VkDevice,const VkMemoryAllocateInfo *info,const VkAllocationCallbacks *,VkDeviceMemory *out) {
+   close(((const VkImportMemoryFdInfoKHR *)info->pNext)->fd);*out=(VkDeviceMemory)(uintptr_t)72;return VK_SUCCESS;
+}
+static VkResult host_bind(VkDevice,VkBuffer,VkDeviceMemory,VkDeviceSize) { return VK_SUCCESS; }
+static VkResult host_pool(VkDevice,const VkCommandPoolCreateInfo *,const VkAllocationCallbacks *,VkCommandPool *out) { *out=(VkCommandPool)(uintptr_t)73;return VK_SUCCESS; }
+static VkResult host_commands(VkDevice,const VkCommandBufferAllocateInfo *,VkCommandBuffer *out) { *out=(VkCommandBuffer)(uintptr_t)74;return VK_SUCCESS; }
+static VkResult host_begin(VkCommandBuffer,const VkCommandBufferBeginInfo *) { return VK_SUCCESS; }
+static VkResult host_end(VkCommandBuffer) { return VK_SUCCESS; }
+static void host_barrier(VkCommandBuffer,VkPipelineStageFlags,VkPipelineStageFlags,VkDependencyFlags,uint32_t,const VkMemoryBarrier *,uint32_t,const VkBufferMemoryBarrier *,uint32_t,const VkImageMemoryBarrier *) {}
+static void host_copy(VkCommandBuffer,VkImage,VkImageLayout,VkBuffer,uint32_t,const VkBufferImageCopy *) {}
+static VkResult host_fence(VkDevice,const VkFenceCreateInfo *,const VkAllocationCallbacks *,VkFence *out) { *out=(VkFence)(uintptr_t)75;return VK_SUCCESS; }
+static VkResult host_timeout(VkDevice,uint32_t,const VkFence *,VkBool32,uint64_t) { return VK_TIMEOUT; }
+static void host_release_pool(VkDevice,VkCommandPool,const VkAllocationCallbacks *) { native_released++; }
+static void host_release_fence(VkDevice,VkFence,const VkAllocationCallbacks *) { native_released++; }
+static void host_release_buffer(VkDevice,VkBuffer,const VkAllocationCallbacks *) { native_released++; }
+static void host_release_memory(VkDevice,VkDeviceMemory,const VkAllocationCallbacks *) { native_released++; }
+static PFN_vkVoidFunction host_proc(const char *name) {
+#define HOST(vk,fn) if (!strcmp(name,"vk" #vk)) return (PFN_vkVoidFunction)fn
+   HOST(CreateBuffer,host_buffer);HOST(GetBufferMemoryRequirements,host_requirements);HOST(AllocateMemory,host_allocate);
+   HOST(BindBufferMemory,host_bind);HOST(CreateCommandPool,host_pool);HOST(AllocateCommandBuffers,host_commands);
+   HOST(BeginCommandBuffer,host_begin);HOST(EndCommandBuffer,host_end);HOST(CmdPipelineBarrier,host_barrier);
+   HOST(CmdCopyImageToBuffer,host_copy);HOST(CreateFence,host_fence);HOST(WaitForFences,host_timeout);
+   HOST(DestroyCommandPool,host_release_pool);HOST(DestroyFence,host_release_fence);
+   HOST(DestroyBuffer,host_release_buffer);HOST(FreeMemory,host_release_memory);
+#undef HOST
+   return nullptr;
+}
+static void host_stage(const Share *) {}
+static uint32_t host_dirty(VkDevice,uint32_t,uint32_t) { dirty_called++;return 0; }
+#endif
+
 static int submits, waits, destroyed_semaphores;
 static VkResult injected=VK_SUCCESS;
 static VkResult fake_submit(VkQueue,uint32_t count,const VkSubmitInfo *infos,VkFence) {
@@ -14,13 +78,30 @@ static VkResult fake_semaphore(VkDevice,const VkSemaphoreCreateInfo *,const VkAl
 }
 static void fake_destroy_semaphore(VkDevice,VkSemaphore,const VkAllocationCallbacks *) { destroyed_semaphores++; }
 static PFN_vkVoidFunction fake_gdpa(VkDevice,const char *name) {
+#ifdef NVKBRIDGE_WINE
+   if (auto fn=host_proc(name)) return fn;
+#endif
    if (!strcmp(name,"vkQueueSubmit")) return (PFN_vkVoidFunction)fake_submit;
    if (!strcmp(name,"vkQueueWaitIdle")) return (PFN_vkVoidFunction)fake_idle;
    if (!strcmp(name,"vkCreateSemaphore")) return (PFN_vkVoidFunction)fake_semaphore;
    if (!strcmp(name,"vkDestroySemaphore")) return (PFN_vkVoidFunction)fake_destroy_semaphore;
    return nullptr;
 }
-static PFN_vkVoidFunction fake_gipa(VkInstance,const char *) { return nullptr; }
+static void fake_families(VkPhysicalDevice,uint32_t *count,VkQueueFamilyProperties *out) {
+   if (out && *count) { *out={};out->queueCount=1;out->queueFlags=VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT|VK_QUEUE_TRANSFER_BIT; }
+   *count=1;
+}
+static VkResult fake_device_extensions(VkPhysicalDevice,const char *,uint32_t *count,VkExtensionProperties *out) {
+   return enumerate(std::vector<VkExtensionProperties>{extension("VK_EXT_hdr_metadata",1),
+      extension("VK_KHR_external_memory_fd",1),extension("VK_KHR_external_semaphore_fd",1),
+      extension("VK_KHR_external_fence_fd",1),extension("VK_EXT_transform_feedback",1),
+      extension("VK_KHR_swapchain",1)},count,out);
+}
+static PFN_vkVoidFunction fake_gipa(VkInstance,const char *name) {
+   if (!strcmp(name,"vkGetPhysicalDeviceQueueFamilyProperties")) return (PFN_vkVoidFunction)fake_families;
+   if (!strcmp(name,"vkEnumerateDeviceExtensionProperties")) return (PFN_vkVoidFunction)fake_device_extensions;
+   return (PFN_vkVoidFunction)fake_idle;
+}
 static VkResult throw_oom() { throw std::bad_alloc(); }
 static VkResult throw_error() { throw std::runtime_error("injected"); }
 
@@ -74,5 +155,49 @@ int main() { @autoreleasepool {
    assert(ApiGuard<throw_oom>::call()==VK_ERROR_OUT_OF_HOST_MEMORY);
    assert(ApiGuard<throw_error>::call()==VK_ERROR_UNKNOWN);
    puts("PASS command scope, extension gating and C ABI exception containment");
+   assert(lookup("vkCreateMetalSurfaceEXT")==reinterpret_cast<PFN_vkVoidFunction>(&vkCreateMetalSurfaceEXT));
+   VkMetalSurfaceCreateInfoEXT metalInfo{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
+   VkSurfaceKHR untouched=(VkSurfaceKHR)(uintptr_t)0x1234;
+   assert(vkCreateMetalSurfaceEXT(VK_NULL_HANDLE,&metalInfo,nullptr,&untouched)==VK_ERROR_INITIALIZATION_FAILED);
+   assert(untouched==(VkSurfaceKHR)(uintptr_t)0x1234);
+   puts("PASS direct Metal surface export shares guarded dispatch and rejects invalid input");
+#ifdef NVKBRIDGE_WINE
+   count=0;assert(device_extensions(p,nullptr,&count,nullptr)==VK_SUCCESS && count==2);
+   std::vector<VkExtensionProperties> exposed(count);assert(device_extensions(p,nullptr,&count,exposed.data())==VK_SUCCESS);
+   assert(!strcmp(exposed[0].extensionName,"VK_EXT_transform_feedback") && !strcmp(exposed[1].extensionName,"VK_KHR_swapchain"));
+   assert(vkGetInstanceProcAddr(i->raw,"vkSetHdrMetadataEXT")==nullptr);
+   assert(vkGetInstanceProcAddr(i->raw,"vkGetMemoryFdKHR")==nullptr);
+   assert(vkGetInstanceProcAddr(i->raw,"vkWaitForPresentKHR")==nullptr);
+   VkExternalBufferProperties external{VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+   external.externalMemoryProperties.externalMemoryFeatures=~0u;
+   auto externalQuery=(PFN_vkGetPhysicalDeviceExternalBufferProperties)lookup("vkGetPhysicalDeviceExternalBufferProperties");
+   externalQuery(p,nullptr,&external);assert(external.externalMemoryProperties.externalMemoryFeatures==0);
+   VkPhysicalDeviceExternalImageFormatInfo externalInfo{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};externalInfo.handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   VkPhysicalDeviceImageFormatInfo2 imageInfo{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};imageInfo.pNext=&externalInfo;
+   VkImageFormatProperties2 imageProperties{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2};
+   assert(image_format2(p,&imageInfo,&imageProperties)==VK_ERROR_FORMAT_NOT_SUPPORTED);
+   puts("PASS Wine capabilities refuse unimplemented WSI and external sharing without forwarding handles");
+
+   NSDictionary *props=@{(__bridge NSString *)kIOSurfaceWidth:@4,(__bridge NSString *)kIOSurfaceHeight:@4,
+      (__bridge NSString *)kIOSurfaceBytesPerElement:@4,(__bridge NSString *)kIOSurfaceBytesPerRow:@64};
+   IOSurfaceRef cpu=IOSurfaceCreate((__bridge CFDictionaryRef)props);assert(cpu && IOSurfaceGetAllocSize(cpu)>=256);
+   auto metal=[HostDevice new];auto texture=[HostTexture new];texture.device=metal;texture.iosurface=cpu;
+   auto drawable=[HostDrawable new];drawable.texture=texture;auto layer=[HostLayer new];layer.drawable=drawable;
+   s->layer=(CAMetalLayer *)layer;d->metal=(id<MTLDevice>)metal;
+   d->memory.memoryTypeCount=1;d->memory.memoryTypes[0].propertyFlags=VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+   d->swapchain=true;c->retired=false;c->format=VK_FORMAT_B8G8R8A8_UNORM;c->extent={4,4};c->images[0].raw=(VkImage)(uintptr_t)76;c->images[0].acquired=true;
+   stage_import=host_stage;surface_dirty=host_dirty;
+   present.pSwapchains=&c->handle;present.pImageIndices=&zero;
+   const int before_release=native_released,before_semaphores=destroyed_semaphores;
+   assert(queue_present(q->raw,&present)==VK_ERROR_DEVICE_LOST);
+   assert(d->uncertain && c->images[0].acquired && quarantine.size()==1);
+   assert(native_released==before_release && destroyed_semaphores==before_semaphores);
+   assert(!dirty_called && !drawable_presented);
+   destroy_swapchain(d->raw,c->handle,nullptr);destroy_device(d->raw,nullptr);
+   assert(find(chains,c->handle)==c && find(devices,d->raw)==d && native_released==before_release);
+   // The mock now supplies proof of completion solely for fixture cleanup.
+   d->uncertain=false;quarantine.clear();assert(native_released==before_release+4);CFRelease(cpu);
+   puts("PASS uncertain GPU completion retains native resources, device, drawable and image reservations without publication");
+#endif
    puts("HOST CHECKS PASSED; bridge submission functions were mocked");
 } }

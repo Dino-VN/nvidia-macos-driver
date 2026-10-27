@@ -24,6 +24,8 @@
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char *);
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char *);
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateMetalSurfaceEXT(
+   VkInstance, const VkMetalSurfaceCreateInfoEXT *, const VkAllocationCallbacks *, VkSurfaceKHR *);
 
 namespace {
 struct Share { uint32_t version, surface, plane, pad; uint64_t bytes; };
@@ -130,6 +132,50 @@ bool instance_owned(const char *name) {
    return !strcmp(name, VK_KHR_SURFACE_EXTENSION_NAME) || !strcmp(name, VK_EXT_METAL_SURFACE_EXTENSION_NAME) ||
           !strcmp(name, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
 }
+#ifdef NVKBRIDGE_WINE
+// This frontend owns swapchains. Renderer WSI entry points cannot accept them.
+// Its staged IOSurface fd import is private, not general Wine handle sharing.
+bool unsupported_extension(const char *name) {
+   for (const char *blocked : {"VK_EXT_hdr_metadata", "VK_GOOGLE_display_timing",
+        "VK_KHR_present_id", "VK_KHR_present_wait", "VK_KHR_present_id2", "VK_KHR_present_wait2",
+        "VK_EXT_swapchain_maintenance1", "VK_KHR_swapchain_maintenance1",
+        "VK_KHR_swapchain_mutable_format", "VK_EXT_full_screen_exclusive",
+        "VK_EXT_display_control", "VK_AMD_display_native_hdr", "VK_NV_low_latency2",
+        "VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf",
+        "VK_KHR_external_semaphore_fd", "VK_KHR_external_fence_fd"})
+      if (!strcmp(name, blocked)) return true;
+   return false;
+}
+bool unsupported_proc(const char *name) {
+   for (const char *blocked : {"vkSetHdrMetadataEXT", "vkGetPastPresentationTimingGOOGLE",
+        "vkGetRefreshCycleDurationGOOGLE", "vkWaitForPresentKHR", "vkWaitForPresent2KHR",
+        "vkReleaseSwapchainImagesEXT", "vkReleaseSwapchainImagesKHR",
+        "vkGetPhysicalDeviceSurfacePresentModes2EXT", "vkAcquireFullScreenExclusiveModeEXT",
+        "vkReleaseFullScreenExclusiveModeEXT", "vkGetDeviceGroupSurfacePresentModes2EXT",
+        "vkGetSwapchainCounterEXT", "vkSetLocalDimmingAMD", "vkSetLatencySleepModeNV",
+        "vkLatencySleepNV", "vkSetLatencyMarkerNV", "vkGetLatencyTimingsNV",
+        "vkQueueNotifyOutOfBandNV", "vkGetMemoryFdKHR", "vkGetMemoryFdPropertiesKHR",
+        "vkImportSemaphoreFdKHR", "vkGetSemaphoreFdKHR", "vkImportFenceFdKHR", "vkGetFenceFdKHR"})
+      if (!strcmp(name, blocked)) return true;
+   return false;
+}
+void VKAPI_CALL external_buffer(VkPhysicalDevice,const VkPhysicalDeviceExternalBufferInfo *,VkExternalBufferProperties *out) {
+   out->externalMemoryProperties={};
+}
+void VKAPI_CALL external_semaphore(VkPhysicalDevice,const VkPhysicalDeviceExternalSemaphoreInfo *,VkExternalSemaphoreProperties *out) {
+   out->exportFromImportedHandleTypes=0;out->compatibleHandleTypes=0;out->externalSemaphoreFeatures=0;
+}
+void VKAPI_CALL external_fence(VkPhysicalDevice,const VkPhysicalDeviceExternalFenceInfo *,VkExternalFenceProperties *out) {
+   out->exportFromImportedHandleTypes=0;out->compatibleHandleTypes=0;out->externalFenceFeatures=0;
+}
+VkResult VKAPI_CALL image_format2(VkPhysicalDevice physical,const VkPhysicalDeviceImageFormatInfo2 *info,VkImageFormatProperties2 *out) {
+   auto instance=find(physicals,physical);if (!instance) return VK_ERROR_INITIALIZATION_FAILED;
+   for (auto p=(const VkBaseInStructure *)info->pNext;p;p=p->pNext)
+      if (p->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO &&
+          ((const VkPhysicalDeviceExternalImageFormatInfo *)p)->handleType) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   return IP(instance,GetPhysicalDeviceImageFormatProperties2)(physical,info,out);
+}
+#endif
 bool valid_format(VkFormat f) { return f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB; }
 uint64_t elapsed(std::chrono::steady_clock::time_point start) {
    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
@@ -228,7 +274,12 @@ VkResult VKAPI_CALL device_extensions(VkPhysicalDevice physical, const char *lay
    uint32_t n=0; VkResult r=fn(physical, nullptr, &n, nullptr); if (r != VK_SUCCESS) return r;
    std::vector<VkExtensionProperties> all(n); r=fn(physical, nullptr, &n, all.data()); if (r != VK_SUCCESS) return r;
    all.resize(n);
-   all.erase(std::remove_if(all.begin(),all.end(),[](auto &e) { return !strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME); }),all.end());
+   all.erase(std::remove_if(all.begin(),all.end(),[](auto &e) {
+#ifdef NVKBRIDGE_WINE
+      if (unsupported_extension(e.extensionName)) return true;
+#endif
+      return !strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+   }),all.end());
    if (transfer_family(physical, state) >= 0) all.push_back(extension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION));
    return enumerate(all,count,out);
 }
@@ -241,6 +292,9 @@ VkResult VKAPI_CALL create_device(VkPhysicalDevice physical, const VkDeviceCreat
    std::vector<const char *> extensions;
    for (uint32_t i=0;i<info->enabledExtensionCount;i++) {
       const char *name=info->ppEnabledExtensionNames[i];
+#ifdef NVKBRIDGE_WINE
+      if (unsupported_extension(name)) return VK_ERROR_EXTENSION_NOT_PRESENT;
+#endif
       if (!strcmp(name,VK_KHR_SWAPCHAIN_EXTENSION_NAME)) state->swapchain=true;
       else extensions.push_back(name);
    }
@@ -538,8 +592,12 @@ VkResult copy_frame(const std::shared_ptr<Chain> &c,uint32_t index,VkSemaphore h
    auto start=std::chrono::steady_clock::now();frame->drawable=[c->surface->layer nextDrawable];drawable_ns+=elapsed(start);
    if (!frame->drawable) return VK_ERROR_OUT_OF_DATE_KHR;
    id<MTLTexture> texture=frame->drawable.texture;
-   if (texture.device.registryID!=d->metal.registryID || texture.width!=c->extent.width || texture.height!=c->extent.height ||
-       texture.iosurfacePlane!=0 || !texture.iosurface) return VK_ERROR_SURFACE_LOST_KHR;
+   if (texture.device.registryID!=d->metal.registryID || texture.iosurfacePlane!=0 || !texture.iosurface)
+      return VK_ERROR_SURFACE_LOST_KHR;
+   // A valid layer can resize before its old swapchain is replaced. Let the
+   // application recreate that chain rather than reporting a lost window.
+   if (texture.width!=c->extent.width || texture.height!=c->extent.height)
+      return VK_ERROR_OUT_OF_DATE_KHR;
    MTLPixelFormat expected=c->format==VK_FORMAT_B8G8R8A8_SRGB?MTLPixelFormatBGRA8Unorm_sRGB:MTLPixelFormatBGRA8Unorm;
    if (texture.pixelFormat!=expected) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    frame->surface=(IOSurfaceRef)CFRetain(texture.iosurface);
@@ -664,6 +722,7 @@ template<auto Function,class R,class... Args> struct ApiGuard<Function,R(*)(Args
 PFN_vkVoidFunction lookup(const char *name) {
    if (!strcmp(name,"vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)&vkGetInstanceProcAddr;
    if (!strcmp(name,"vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)&vkGetDeviceProcAddr;
+   if (!strcmp(name,"vkCreateMetalSurfaceEXT")) return (PFN_vkVoidFunction)&vkCreateMetalSurfaceEXT;
 #define MAP(vkname, fn) if (!strcmp(name,"vk" #vkname)) return reinterpret_cast<PFN_vkVoidFunction>(&ApiGuard<fn>::call)
    MAP(CreateInstance,create_instance); MAP(DestroyInstance,destroy_instance); MAP(EnumerateInstanceExtensionProperties,instance_extensions);
    MAP(EnumerateInstanceLayerProperties,instance_layers); MAP(EnumerateInstanceVersion,instance_version);
@@ -671,7 +730,13 @@ PFN_vkVoidFunction lookup(const char *name) {
    MAP(CreateDevice,create_device); MAP(DestroyDevice,destroy_device); MAP(GetDeviceQueue,get_queue); MAP(GetDeviceQueue2,get_queue2);
    MAP(QueueSubmit,queue_submit); MAP(QueueSubmit2,queue_submit2); MAP(QueueSubmit2KHR,queue_submit2);
    MAP(QueueBindSparse,bind_sparse); MAP(QueueWaitIdle,queue_idle); MAP(DeviceWaitIdle,device_idle);
-   MAP(CreateMetalSurfaceEXT,create_surface); MAP(DestroySurfaceKHR,destroy_surface);
+   MAP(DestroySurfaceKHR,destroy_surface);
+#ifdef NVKBRIDGE_WINE
+   MAP(GetPhysicalDeviceExternalBufferProperties,external_buffer);MAP(GetPhysicalDeviceExternalBufferPropertiesKHR,external_buffer);
+   MAP(GetPhysicalDeviceExternalSemaphoreProperties,external_semaphore);MAP(GetPhysicalDeviceExternalSemaphorePropertiesKHR,external_semaphore);
+   MAP(GetPhysicalDeviceExternalFenceProperties,external_fence);MAP(GetPhysicalDeviceExternalFencePropertiesKHR,external_fence);
+   MAP(GetPhysicalDeviceImageFormatProperties2,image_format2);MAP(GetPhysicalDeviceImageFormatProperties2KHR,image_format2);
+#endif
    MAP(GetPhysicalDeviceSurfaceSupportKHR,surface_support); MAP(GetPhysicalDeviceSurfaceCapabilitiesKHR,surface_caps);
    MAP(GetPhysicalDeviceSurfaceCapabilities2KHR,surface_caps2); MAP(GetPhysicalDeviceSurfaceFormatsKHR,surface_formats);
    MAP(GetPhysicalDeviceSurfaceFormats2KHR,surface_formats2); MAP(GetPhysicalDeviceSurfacePresentModesKHR,present_modes);
@@ -686,6 +751,9 @@ PFN_vkVoidFunction lookup(const char *name) {
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance,const char *name) {
    if (!name || !initialize()) return nullptr;
+#ifdef NVKBRIDGE_WINE
+   if (unsupported_proc(name)) return nullptr;
+#endif
    if (!instance && strcmp(name,"vkGetInstanceProcAddr") && strcmp(name,"vkCreateInstance") &&
        strcmp(name,"vkEnumerateInstanceExtensionProperties") && strcmp(name,"vkEnumerateInstanceLayerProperties") &&
        strcmp(name,"vkEnumerateInstanceVersion")) return nullptr;
@@ -696,6 +764,9 @@ extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInst
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,const char *name) {
    auto d=find(devices,device);
    if (!name || !d) return nullptr;
+#ifdef NVKBRIDGE_WINE
+   if (unsupported_proc(name)) return nullptr;
+#endif
    if (strstr(name,"vkGetPhysicalDevice")==name || strstr(name,"vkEnumerate")==name ||
        !strcmp(name,"vkGetInstanceProcAddr") || !strcmp(name,"vkCreateInstance") || !strcmp(name,"vkDestroyInstance") ||
        !strcmp(name,"vkCreateDevice") || !strcmp(name,"vkCreateMetalSurfaceEXT") || !strcmp(name,"vkDestroySurfaceKHR")) return nullptr;
@@ -704,6 +775,12 @@ extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice
         !strcmp(name,"vkGetDeviceGroupSurfacePresentModesKHR")) && !d->swapchain) return nullptr;
    if (auto fn=lookup(name)) return fn;
    return backend_gdpa(device,name);
+}
+// Wine probes this direct symbol before choosing its EXT Metal surface route.
+// Share the exact guarded implementation returned through gipa.
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateMetalSurfaceEXT(
+   VkInstance instance,const VkMetalSurfaceCreateInfoEXT *info,const VkAllocationCallbacks *alloc,VkSurfaceKHR *out) {
+   return ApiGuard<create_surface>::call(instance,info,alloc,out);
 }
 extern "C" void nvkbridgeGetStats(uint64_t out[7]) {
    out[0]=copies;out[1]=copy_bytes;out[2]=drawable_ns;out[3]=producer_ns;out[4]=import_failures;out[5]=0;out[6]=0;

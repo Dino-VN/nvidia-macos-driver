@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import plistlib
 import subprocess
@@ -97,6 +98,9 @@ class StagePackage(unittest.TestCase):
         elif tool.endswith("/nullmoth-runtime-check"):
             self.assertEqual(args[1], "15.5")
             status = int(Path(args[2]).read_bytes().startswith(b"MINOS26"))
+        elif tool.endswith("/bin/nvk-runtime"):
+            self.assertEqual(args[1], "check")
+            self.assertEqual(Path(args[2]) / "bin/nvk-runtime", Path(tool))
         else:
             self.fail("unexpected command: " + repr(args))
         result = subprocess.CompletedProcess(args, status, stdout, "simulated failure" if status else "")
@@ -261,6 +265,85 @@ class StagePackage(unittest.TestCase):
             self.stage()
         self.assertFalse(self.output.exists())
         self.assert_unchanged()
+
+    def wine_runtime(self, renderer=b"Wine renderer"):
+        runtime = self.build / "Wine runtime"
+        payloads = {"lib/libnvk_wine.dylib": b"Wine frontend", "lib/libnvk_renderer.dylib": renderer,
+                    "bin/nvk-runtime": b"setup helper", "dxvk/x64/d3d11.dll": b"paired D3D11",
+                    "dxvk/x64/dxgi.dll": b"paired DXGI", "dxvk/source-changes.patch": b"sharing repair",
+                    "DXVK-BUILD.json": b"{}", "LICENSES/frontend-PolyForm-Noncommercial-1.0.0.txt": b"frontend",
+                    "LICENSES/DXVK-zlib.txt": b"DXVK", "LICENSES/Mesa-license.rst": b"Mesa",
+                    "LICENSES/Wine-LGPL-2.1.txt": b"Wine"}
+        for name, data in payloads.items():
+            self.put(runtime / name, data)
+        fields = {"schema_version": 1, "kind": "provider", "runtime_id": "test-wine-runtime",
+                  "platform": {"os": "macos", "arch": "x86_64", "minimum_macos": "15.5"},
+                  "entry": {"path": "lib/libnvk_wine.dylib"}, "renderer": {"path": "lib/libnvk_renderer.dylib"},
+                  "dxvk": {"version": "3.1.1+nvk-shared-fallback"},
+                  "launch_defaults": {"DXVK_CONFIG": "dxvk.enableDescriptorBuffer = False"},
+                  "files": {name: hashlib.sha256(data).hexdigest() for name, data in payloads.items()}}
+        self.put(runtime / "nvk-wine-runtime.json", json.dumps(fields).encode())
+        self.put(runtime / "README.md", b"provider instructions")
+        self.put(runtime / "BUILD.json", b"{}")
+        self.symlink(runtime / "lib/libMoltenVK.dylib", "libnvk_wine.dylib")
+        STAGE.write_manifest(runtime)
+        self.args.wine_runtime = runtime
+        self.original_build = self.snapshot(self.build)
+        return runtime
+
+    def test_wine_and_minecraft_coexist_without_replacing_default_nvk_or_shipping_wine(self):
+        minecraft = self.minecraft_runtime()
+        wine = self.wine_runtime()
+        self.put(wine / "wine/unwanted", b"must not ship a Wine installation")
+        self.put(wine / "cache/unwanted", b"must not ship local caches")
+        self.original_build = self.snapshot(self.build)
+        self.stage()
+        destination = self.output / STAGE.WINE
+        self.assertEqual((destination / "lib/libnvk_wine.dylib").read_bytes(), b"Wine frontend")
+        self.assertTrue((destination / "lib/libMoltenVK.dylib").is_symlink())
+        self.assertFalse((destination / "wine").exists())
+        self.assertFalse((destination / "cache").exists())
+        self.assertEqual((self.output / STAGE.MINECRAFT / "lib/libnvk_renderer.dylib").read_bytes(),
+                         (minecraft / "lib/libnvk_renderer.dylib").read_bytes())
+        self.assertEqual((self.output / STAGE.RUNTIME / "libvulkan_nouveau.dylib").read_bytes(), b"old NVK")
+        self.assertIn("/Library/GPUBundles/nvmtl/wine", (self.output / "WINE-NVK.md").read_text())
+        self.assert_manifest(destination)
+        self.assert_manifest(self.output)
+        self.assert_unchanged()
+
+    def test_mismatched_wine_dxvk_pair_is_rejected_before_publishing(self):
+        runtime = self.wine_runtime()
+        self.put(runtime / "dxvk/x64/dxgi.dll", b"different DXVK")
+        self.original_build = self.snapshot(self.build)
+        with self.assertRaisesRegex(ValueError, "Wine/NVK hash mismatch"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_full_wine_bundle_is_rejected_by_driver_stager(self):
+        runtime = self.wine_runtime()
+        manifest = runtime / "nvk-wine-runtime.json"
+        fields = json.loads(manifest.read_text())
+        fields.pop("kind")
+        fields["wine"] = {"executable": "wine/bin/wine"}
+        manifest.write_text(json.dumps(fields))
+        self.original_build = self.snapshot(self.build)
+        with self.assertRaisesRegex(ValueError, "compact provider"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
+    def test_wine_runtime_must_support_sequoia_and_have_matching_alias(self):
+        runtime = self.wine_runtime(renderer=b"MINOS26")
+        with self.assertRaisesRegex(ValueError, "nullmoth-runtime-check failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        alias = runtime / "lib/libMoltenVK.dylib"
+        alias.unlink()
+        self.symlink(alias, "libnvk_renderer.dylib")
+        with self.assertRaisesRegex(ValueError, "incorrect Wine/NVK provider alias"):
+            self.stage()
+        self.assertFalse(self.output.exists())
 
     def test_package_without_bundled_translator_uses_the_canonical_library(self):
         (self.base / STAGE.BUNDLED_TRANSLATOR).unlink()

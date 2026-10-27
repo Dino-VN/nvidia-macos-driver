@@ -3,6 +3,9 @@
 **Minecraft:** [Minecraft NVK companion mod](https://github.com/HighDelay/minecraft-nvk) ·
 [Aetherium — optional Vulkan shader mod](https://github.com/HighDelay/aetherium)
 
+**Windows games:** [Wine / CrossOver native NVK](#wine--crossover-native-vulkan) ·
+[YAAGL NVK for ZZZ, Genshin Impact and Honkai: Star Rail](https://github.com/HighDelay/yaagl-nvk)
+
 A Metal driver for NVIDIA GeForce cards on macOS 15 Sequoia (Intel Macs and OpenCore PCs). It is open source; the
 kernel extensions, the Metal plugin and the shader translator are in this repository. The 1401 app that installs it
 (Mac and Windows) is its own project: [1401](https://github.com/nullmoth/1401).
@@ -67,6 +70,62 @@ argument that points to the standard installed directory. Use `-Dnvkbridge.enabl
 
 Fabric Essential and NeoForge gameplay were checked on RTX 2060 SUPER / Tahoe 26.7.1.
 See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
+
+## Wine / CrossOver native Vulkan
+
+The Wine/NVK runtime lets compatible macOS Wine builds use this fork's native
+NVK renderer directly. For **D3D11** games, the included [DXVK NVK](https://github.com/HighDelay/dxvk-nvk)
+DLLs translate D3D11 to Vulkan:
+
+| Provider | Game rendering path on this driver |
+|---|---|
+| DXVK + MoltenVK | D3D11 → DXVK → Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
+| DXVK + native NVK | D3D11 → DXVK → Wine's Vulkan bridge → native NVK → NVIDIA GPU |
+
+As with the Minecraft bridge, this removes MoltenVK's Vulkan-to-Metal conversion
+and NVMTL's Metal/AIR-to-SPIR-V translation from game rendering. Wine, DXVK and NVK
+shader compilation remain. The GPU still copies completed frames into Metal
+drawables for macOS presentation, without CPU pixel readback/upload. Fewer
+translation stages can reduce conversion overhead; **a controlled FPS improvement
+has not been measured**.
+
+Requires this fork's matching driver/runtime, Intel macOS **Sequoia 15.5+** or
+**Tahoe 26**, and a compatible x64 Wine build. This integration supports x64
+D3D11, not D3D12. **ZZZ gameplay is verified on RTX 2060 SUPER / Tahoe with YAAGL
+Wine 11.0-1. GI, HSR and commercial CrossOver have not been qualified.**
+
+### YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
+
+1. Install [this fork's driver](https://github.com/HighDelay/nvidia-macos-driver/releases) and reboot.
+2. Get the matching [YAAGL NVK package](https://github.com/HighDelay/yaagl-nvk/releases)
+   for your game. Keep its app, launcher data and runtime directories together.
+3. Open its supplied **Start** command, then select **Settings → Wine → NVIDIA
+   NVK + DXVK (local, experimental)**.
+4. Install or select the game directory and launch. The backend uses its own
+   prefix, selects D3D11 and installs the matched DLLs. The FPS overlay is enabled.
+
+The launcher provides configurations for all three games, including global/CN
+variants. It prefers the driver runtime at **`/Library/GPUBundles/nvmtl/wine`**
+and keeps its compatible bundled Wine. If that driver directory is absent, it
+uses the complete bundled runtime through `launcher-data/nvk-runtime` instead.
+It defaults to descriptor sets: the descriptor-buffer path lost ZZZ
+characters and HUD text in testing. See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
+
+### Your own Wine / CrossOver
+
+Driver releases carrying the compact runtime install it at
+`/Library/GPUBundles/nvmtl/wine`. Wine itself is supplied separately. Use a
+dedicated 64-bit Wine prefix or a duplicate CrossOver bottle, then install the
+runtime's matched DXVK DLL pair with `bin/nvk-runtime install`. Launch that game
+with a scoped `DYLD_LIBRARY_PATH` pointing to the runtime's `lib` directory,
+`WINEDLLOVERRIDES='d3d11,dxgi=n'`, and
+`DXVK_CONFIG='dxvk.enableDescriptorBuffer = False'`.
+
+**[Follow the Wine and CrossOver setup commands](nvk/wine-macos/INSTALL.md)** for
+prefix creation, bottle configuration, launching, logs and restoring the original
+DLLs. CrossOver is an opt-in compatibility test: Wine versions and loader/signing
+policies differ, so verify the loaded NVK libraries. This does not replace
+CrossOver.app's libraries or change the system's default Vulkan provider.
 
 ## How it works
 
