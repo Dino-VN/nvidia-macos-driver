@@ -63,9 +63,16 @@ for name in ['cursorInit', 'cursorFire', 'cursorApply', 'scheduleCall', 'stop',
     assert method(FB, signature) == method(old, signature), name
 apply = method(FB, 'bool NVRMNVDAFramebuffer::applyMode(')
 assert apply == method(old, 'bool NVRMNVDAFramebuffer::applyMode(')
+init = method(FB, 'bool NVRMNVDAFramebuffer::kapiInit(')
+assert init.replace('    validateInitialDviMode();\n', '') == method(old, 'bool NVRMNVDAFramebuffer::kapiInit(')
+for signature in ['bool NVRMNVDAFramebuffer::edidModeFor(', 'unsigned NVRMNVDAFramebuffer::addKmsRefreshModes(']:
+    filtered = method(FB, signature)
+    check = '        if (fDviModeValidation && !fKms->validateDisplayMode(fDev, fDisplay, &m)) continue;\n'
+    assert filtered.count(check) == 1
+    assert filtered.replace(check, '') == method(old, signature), signature
 flip = method(FB, 'bool NVRMNVDAFramebuffer::flipToMemory(')
 assert 'notifyConnectionChanged(1);' in flip and 'fConnect.proc(' not in flip
 assert not re.search(r'\bthread_call_cancel_wait\s*\(', FB)
 assert 'THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE' in FB
 assert 'while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);' in FB
-print('PASS: reviewed controller-slot callback only; native rotation rendering, decoder/ANGLE/-O2, translator/NVK/Minecraft, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved')
+print('PASS: reviewed controller-slot and DVI validation changes only; native rotation rendering, decoder/ANGLE/-O2, translator/NVK/Minecraft, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved')

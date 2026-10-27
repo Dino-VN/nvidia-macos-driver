@@ -96,6 +96,23 @@ with local dependent index zero; head zero keeps the Intel-compatible legacy gro
 grouping. The three kexts must be staged together. Host checks pass, but four-head
 hardware validation is pending; do not describe this candidate as a proven fix.
 
+## DVI startup timing validation
+
+Retain `nvrm-dvi-modes.h` and its startup call before the boot raster/scanout is
+established. Digital DVI-D/DVI-I must keep an already-valid timing; an invalid
+one may use only a same-visible-resolution progressive mode accepted by both
+indexed and explicit NVKMS validation. Preserve the nearest-refresh choice,
+bounded enumeration and unchanged output on failure. Do not hardcode 1080p75,
+force dual-link, disable EDID/link checks or carry over the diagnostic ioctl helper.
+Keep explicit validation on KAPI-generated DVI refresh modes and the EDID match
+shortcut. Other connector types retain their selection; presentation, cursor,
+rotation, parked backing and public KAPI dependencies are unchanged.
+
+The RTX 2060 SUPER/ITY V2422F test boot selected 1080p75 after rejecting 1080p60;
+both DVI and HDMI modesets succeeded and the user confirmed output. That test
+used shared controller grouping. Other GPUs/adapters and independent four-head
+rotation remain unqualified. See [DVI modes](DVI-MODES.md).
+
 ## Upstream 2.5.5 integration
 
 Two files had textual conflicts: `CHANGELOG.md` and `plugin/NVMTLDevice.m`.

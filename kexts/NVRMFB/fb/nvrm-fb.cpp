@@ -71,6 +71,7 @@ extern "C" {
 }
 #include <libkern/OSAtomic.h>
 #include "nvrm_vram_abi.h"
+#include "nvrm-dvi-modes.h"
 
 // Surfaces may use half of a resizable BAR1 (>= 4 GB) and three quarters of a smaller one. WAS: a fixed 192 MB below
 // 4 GB, which is 3/4 of the 256 MB firmware window but left a 512 MB or 1 GB BAR1 no better off (issue #27).
@@ -251,6 +252,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     // the mode NVKMS validated for this display, kept when the boot pair takes the firmware's timing instead (applyMode)
     struct NvKmsKapiDisplayMode fKmsMode = {};
     bool fHaveKmsMode = false;
+    bool fDviModeValidation = false;
     struct NvKmsKapiMemory *fMem = nullptr; struct NvKmsKapiSurface *fSurf = nullptr;
     void *fKva = nullptr; NvU64 fPhys = 0, fSize = 0; NvU32 fPitch = 0, fW = 0, fH = 0;
     NvU64 fScanLogPhys = 0; NvU32 fScanLogW = 0, fScanLogH = 0, fScanLogPitch = 0;  // last nvScanoutInfo answer logged
@@ -467,6 +469,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     bool waitFlipDone(uint64_t limitUs);
     void flipFaultLog(const char *why);
     bool kapiInit();
+    void validateInitialDviMode();
     bool applyMode();
     void hudDraw();
 public:
@@ -989,6 +992,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
         FBLOG("boot pair: display 0x%x keeps the firmware's mode %ux%u @%u on head %u", fDisplay,
               fMode.timings.hVisible, fMode.timings.vVisible, fMode.timings.refreshRate, fHead);
     }
+    validateInitialDviMode();
     fW = fMode.timings.hVisible; fH = fMode.timings.vVisible;
     {
         const struct NvKmsKapiDisplayModeTimings &k5t = fMode.timings;
@@ -2478,6 +2482,29 @@ void NVRMNVDAFramebuffer::headProbeFire(thread_call_param_t p0, thread_call_para
     uint64_t d; clock_interval_to_deadline(gap, kSecondScale, &d);
     me->scheduleCall(me->fHeadProbe, d);
 }
+void NVRMNVDAFramebuffer::validateInitialDviMode()
+{
+    if (!fKms || !fDev || !fKms->getConnectorInfo || !fKms->validateDisplayMode) return;
+    struct NvKmsKapiConnectorInfo connector = {};
+    if (!fKms->getConnectorInfo(fDev, fConnector, &connector)) return;
+    fDviModeValidation = connector.signalFormat == NVKMS_CONNECTOR_SIGNAL_FORMAT_TMDS &&
+        (connector.type == NVKMS_CONNECTOR_TYPE_DVI_D || connector.type == NVKMS_CONNECTOR_TYPE_DVI_I);
+    if (!fDviModeValidation) return;
+
+    setProperty("NVRMDviModeSelectionVersion", 1ull, 32);
+    struct NvKmsKapiDisplayMode replacement = {}; NvU32 index = 0;
+    const bool changed = nvrmDviSelectSameRasterMode(fKms, fDev, fDisplay, &fMode, &replacement, &index);
+    setProperty("NVRMDviModeFallbackApplied", changed);
+    if (!changed) return;
+    FBLOG("fb%u DVI display 0x%x: initial %ux%u @%u pclk %u failed validation; using same-raster index %u @%u pclk %u",
+          fIndex, fDisplay, fMode.timings.hVisible, fMode.timings.vVisible, fMode.timings.refreshRate,
+          fMode.timings.pixelClockHz, index, replacement.timings.refreshRate, replacement.timings.pixelClockHz);
+    fMode = replacement;
+    fKmsMode = replacement;
+    fHaveKmsMode = true;
+    setProperty("NVRMDviReplacementModeIndex", (unsigned long long)index, 32);
+}
+
 bool NVRMNVDAFramebuffer::applyMode()
 {
     NVRMDisplayGate gate; if (!gate.valid()) return false;
@@ -3078,6 +3105,7 @@ bool NVRMNVDAFramebuffer::edidModeFor(const IODetailedTimingInformationV2 *d, st
         if (k.hVisible != d->horizontalActive || k.vVisible != d->verticalActive || k.hTotal != ht || k.vTotal != vt) continue;
         const NvU64 pc = k.pixelClockHz, want = d->pixelClock, diff = pc > want ? pc - want : want - pc;
         if (diff * 500 > want) continue;
+        if (fDviModeValidation && !fKms->validateDisplayMode(fDev, fDisplay, &m)) continue;
         *out = m; fEdidHits++;
         return true;
     }
@@ -3158,6 +3186,7 @@ unsigned NVRMNVDAFramebuffer::addKmsRefreshModes(unsigned n)
                   k.pixelClockHz, (unsigned)valid, (unsigned)pref, r == 0 ? " (empty slot)" : "",
                   (k.flags.interlaced || k.flags.doubleScan) ? " interlaced/doublescan" : "");
         if (r == 0 || !valid) continue;
+        if (fDviModeValidation && !fKms->validateDisplayMode(fDev, fDisplay, &m)) continue;
         if (k.flags.interlaced || k.flags.doubleScan || !k.pixelClockHz || k.hTotal <= k.hVisible || k.vTotal <= k.vVisible ||
             k.hSyncStart < k.hVisible || k.hSyncEnd < k.hSyncStart || k.vSyncStart < k.vVisible || k.vSyncEnd < k.vSyncStart) continue;
         int tmpl = -1; bool have = false, raster = false;

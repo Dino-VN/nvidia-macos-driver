@@ -1,5 +1,9 @@
 # Changelog
 
+## Fork DVI timing repair
+
+- Recover a detected but blank DVI display when its preferred KAPI timing fails validation, using an accepted timing at the same native resolution. Keep rejected timings out of KAPI-generated DVI modes and EDID shortcuts, without disabling EDID or link checks. The user confirmed working ITY V2422F output alongside HDMI on RTX 2060 SUPER/Tahoe 26.7.1; other hardware remains unqualified. See [DVI modes](docs/DVI-MODES.md).
+
 ## Fork native Vulkan runtime for Minecraft 26.3
 
 - Add an optional native NVK runtime with Metal surface/swapchain support. Minecraft renders directly through NVK; finished images are copied by the GPU into display drawables without MoltenVK, Metal shader translation or CPU pixel transfers. Use the companion [NVK Bridge mod](https://github.com/HighDelay/minecraft-nvk); installed driver defaults remain unchanged.
