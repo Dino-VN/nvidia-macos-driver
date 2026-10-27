@@ -35,12 +35,12 @@ and physical Sequoia hardware have **not** been qualified.
 ## YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
 
 Use [HighDelay/yaagl-nvk](https://github.com/HighDelay/yaagl-nvk) for these games.
-Its per-game packages include the compatible Wine build, matched runtime and
-launcher setup; the driver alone does not install the launcher or game.
+Its packages contain launchers only. The driver supplies NVK and the patched
+DXVK pair; first setup downloads/prepares the compatible Wine build separately.
+The driver alone does not install the launcher or game.
 
 1. Install this fork's driver and reboot.
-2. Extract the matching YAAGL NVK game package. Keep its app, `launcher-data` and
-   runtime directories together, then use its supplied **Start** command.
+2. Extract the YAAGL NVK package and use the desired game's supplied **Start** command.
 3. Select **Settings → Wine → NVIDIA NVK + DXVK (local, experimental)**.
 4. Install or select the game directory, then launch. This backend creates a
    separate `wineprefix-nvk`, selects D3D11, installs the matched DLLs and enables
@@ -49,18 +49,18 @@ launcher setup; the driver alone does not install the launcher or game.
 
 All three games have launcher configurations, including global/CN variants.
 **Only ZZZ gameplay is verified so far.** See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
-YAAGL prefers `/Library/GPUBundles/nvmtl/wine` for Vulkan/DXVK and retains the
-compatible Wine executable from its own bundle. If that driver directory is
-absent, it falls back to the complete bundled runtime via `launcher-data/nvk-runtime`.
-A present but invalid driver provider is reported rather than silently replaced
-by the bundled renderer.
+YAAGL requires `/Library/GPUBundles/nvmtl/wine` for both Vulkan and DXVK. There
+is no bundled renderer fallback or separate DXVK download. To update DXVK,
+replace both DLLs in the driver runtime and regenerate its manifest/checksums.
+YAAGL uses that installed pair. Wine downloads on first setup into the launcher's
+private `launcher-data/wine-nvk` directory.
 
 ## Standalone Wine
 
 Install a driver release that includes the Wine/NVK runtime, or extract a matching
 standalone runtime. Driver packages install the compact provider at
 `/Library/GPUBundles/nvmtl/wine`. It contains the libraries and DXVK pair, **not
-Wine itself**. The full YAAGL runtime additionally includes `wine/bin/wine`.
+Wine itself**. YAAGL downloads its Wine installation separately on first setup.
 Close applications in the prefix before installing or restoring the DLL pair.
 
 Choose a compatible Wine executable and create a dedicated 64-bit prefix:
@@ -74,8 +74,9 @@ env WINEPREFIX="$nvk_prefix" WINEARCH=win64 "$nvk_wine" wineboot.exe --init
 "$nvk_runtime/bin/nvk-runtime" install "$nvk_runtime" "$nvk_prefix"
 ```
 
-For the verified Wine build, set `nvk_wine` to the extracted full runtime's
-`wine/bin/wine`. Install any game prerequisites in this same prefix. Launch a
+For the verified Wine build, you can use YAAGL's prepared
+`launcher-data/wine-nvk/bin/wine` after first setup. Install any game prerequisites
+in this same prefix. Launch a
 D3D11 executable with the runtime selected **for this process only**:
 
 ```sh

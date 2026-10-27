@@ -98,16 +98,17 @@ Wine 11.0-1. GI, HSR and commercial CrossOver have not been qualified.**
 
 1. Install [this fork's driver](https://github.com/HighDelay/nvidia-macos-driver/releases) and reboot.
 2. Get the matching [YAAGL NVK package](https://github.com/HighDelay/yaagl-nvk/releases)
-   for your game. Keep its app, launcher data and runtime directories together.
+   for your game. The archive contains launchers only; no runtime is bundled.
 3. Open its supplied **Start** command, then select **Settings → Wine → NVIDIA
    NVK + DXVK (local, experimental)**.
-4. Install or select the game directory and launch. The backend uses its own
+4. Let setup download the pinned compatible Wine build, then select/install the
+   game directory and launch. The backend uses its own
    prefix, selects D3D11 and installs the matched DLLs. The FPS overlay is enabled.
 
 The launcher provides configurations for all three games, including global/CN
-variants. It prefers the driver runtime at **`/Library/GPUBundles/nvmtl/wine`**
-and keeps its compatible bundled Wine. If that driver directory is absent, it
-uses the complete bundled runtime through `launcher-data/nvk-runtime` instead.
+variants. It requires the driver runtime at **`/Library/GPUBundles/nvmtl/wine`**
+and uses both NVK and the patched DXVK pair from that directory. Only Wine is
+downloaded separately; YAAGL has no bundled runtime or separate DXVK download.
 It defaults to descriptor sets: the descriptor-buffer path lost ZZZ
 characters and HUD text in testing. See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
 

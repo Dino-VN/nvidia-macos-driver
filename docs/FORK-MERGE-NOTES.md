@@ -71,14 +71,16 @@ exports. Descriptor sets restored ZZZ characters and HUD text in an actual A/B t
 Preserve optional `--wine-runtime` staging of the compact provider under
 `Library/GPUBundles/nvmtl/wine`, separate from Minecraft. Validate the manifest,
 hashes, signatures, Intel architecture, macOS 15.5 compatibility, provider alias,
-licenses and checksums before publishing. The full YAAGL bundle may additionally
-carry its pinned Wine; the driver provider does not. Prefix DLL originals must
+licenses and checksums before publishing. YAAGL release archives contain launchers
+only; Wine downloads on first setup, while NVK and the matched DXVK pair come
+from the installed driver provider. Prefix DLL originals must
 remain restorable after a runtime update, including interrupted operations.
 
 YAAGL integration is maintained in HighDelay/yaagl-nvk, repaired DXVK in
-HighDelay/dxvk-nvk (`nvk-3.1.1`). YAAGL prefers the installed driver provider,
-retains its bundled Wine, and only falls back to its bundled renderer if the
-driver provider is absent. An identical DXVK pair can adopt the provider identity
+HighDelay/dxvk-nvk (`nvk-3.1.1`). YAAGL requires the installed driver provider;
+there is no bundled renderer fallback or separate DXVK download. Its private
+Wine archive is checksum-pinned and prepared without altering ordinary Wine.
+An identical DXVK pair can adopt the provider identity
 without replacing original DLL backups; a different pair still requires restore.
 ZZZ gameplay is user-confirmed on RTX 2060 SUPER /
 Tahoe 26.7.1 with YAAGL Wine 11.0-1. GI/HSR launch configurations exist but gameplay,

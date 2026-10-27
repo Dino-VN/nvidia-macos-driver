@@ -23,8 +23,9 @@ CPU, but currently waits on the CPU for each presentation copy to finish.
 
 - Intel x86_64 macOS, with a compatible installed NVIDIA driver and matching NVK
   IOSurface import protocol. The bundled renderer targets macOS 15.5 or newer.
-- Either the complete Wine/NVK package and YAAGL's `dxvk-nvk` backend, or the
-  compact provider and a compatible external Wine installation.
+- The compact provider and a compatible external Wine installation. YAAGL uses
+  the installed driver provider and downloads the pinned Wine build on setup.
+  The full-bundle developer builder below remains available for offline probes.
 - D3D11. This backend does not support D3D12.
 
 On RTX 2060 SUPER / Tahoe 26.7.1, real Windows Vulkan GPU readback and window
@@ -40,17 +41,16 @@ remain unqualified.
 
 ## Setup with YAAGL
 
-1. Keep `runtime/`, the custom YAAGL app and its `launcher-data/` directory
-   together. `launcher-data/nvk-runtime` points to `../runtime`.
+1. Install the driver runtime, extract the YAAGL launcher package and use its Start command.
 2. Open the supplied launcher and select **Settings → Wine → NVIDIA NVK + DXVK
    (local, experimental)**.
-3. Let the launcher initialize its dedicated `wineprefix-nvk` prefix. It validates
-   the runtime, initializes Wine, and installs the matched native x64
+3. Let the launcher download/prep its private Wine and initialize its dedicated
+   `wineprefix-nvk` prefix. It validates the installed runtime and installs its native x64
    `d3d11.dll` / `dxgi.dll` pair with a rollback journal.
 4. Download ZZZ into the chosen game directory, then launch. The backend forces
    `-force-d3d11`; a saved D3D12 preference cannot override it.
 5. Check the DXVK HUD and game launch logs. The underlying Vulkan device must
-   identify NVIDIA/NVK, and loaded-image logs must show this package's
+   identify NVIDIA/NVK, and loaded-image logs must show the installed driver's
    `libnvk_wine.dylib` and `libnvk_renderer.dylib`.
 
 The launcher sets `WINEDLLOVERRIDES=d3d11,dxgi=n` while preserving unrelated
@@ -75,6 +75,11 @@ The source is in this driver repository. YAAGL integration is in
 source are pinned as dependencies. Wine's binary code is unchanged. DXVK 3.1.1
 needs the local shared-resource fallback repair below for ZZZ startup. Compiled
 runtime archives belong in release assets.
+
+YAAGL release archives contain neither Wine nor NVK/DXVK. They require the
+driver's installed provider and download only the pinned Wine build on setup.
+Updating the driver's matched pair and manifests updates the pair YAAGL installs;
+there is no second DXVK release pin in the launcher.
 
 The build needs Xcode command line tools, Python 3.12 or newer, Vulkan headers,
 the matching private NVK renderer, the exact vendor archives below, and their
