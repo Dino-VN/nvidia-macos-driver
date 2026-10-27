@@ -74,7 +74,7 @@ shutdown drain, display gate and cursor-state locking. The native approach does
 not replace these lifetime repairs, parked backing, BAR1 budgets or scanout guards.
 
 Enable rotation only on Darwin 25, preserving property/`nvrmrotation=0` opt-outs.
-Use implementation marker 13 and native accelerator protocol 1. Reject nonzero
+Use implementation marker 14 and native accelerator protocol 1. Reject nonzero
 probes without a matching accelerator on the same PCI device; Standard restore
 remains available. Rebuild NVRMFB, Tahoe NVAccel and the release plugin together.
 This is a selected rotation adaptation; upstream 2.5.5 does not change the
@@ -86,6 +86,15 @@ and mirroring; initial snapshots alone missed later failures. The candidate
 still needs physical testing on that desktop. PR-author dual-monitor results
 and prior single-monitor results qualify neither this port nor laptop iGPU/dGPU
 routing. See [Display rotation](DISPLAY-ROTATION.md) for tests and limitations.
+
+The local controller-separation test adds `NVRMDisplayIndex` as the stable driver
+slot, preferred by both NVAccel and NVRMAGDC with the older dependent-index fallback.
+Keep PCI ownership, range/type/duplicate checks and Intel slot 4. When explicitly
+enabled, secondary heads receive distinct controller IDs before family startup,
+with local dependent index zero; head zero keeps the Intel-compatible legacy group.
+`nvfbcontrollers=0`, rotation disablement and non-Tahoe kernels preserve shared
+grouping. The three kexts must be staged together. Host checks pass, but four-head
+hardware validation is pending; do not describe this candidate as a proven fix.
 
 ## Upstream 2.5.5 integration
 

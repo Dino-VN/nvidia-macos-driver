@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--ogkm', type=Path, default=Path.home() / 'ogkm615')
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--package-base', type=Path, help='Read matching release metadata from this existing package')
+parser.add_argument('--independent-controllers', action='store_true', help='Enable the coordinated four-head controller test in the built kext')
 args = parser.parse_args()
 output = args.output.resolve()
 output.mkdir(parents=True, exist_ok=False)
@@ -87,11 +88,13 @@ for key in list(personality):
     if key.startswith('NVRMRotation') and key != 'NVRMRotationEnabled':
         del personality[key]
 personality.setdefault('NVRMRotationEnabled', True)
+personality['NVRMIndependentControllers'] = args.independent_controllers
 (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps(info, sort_keys=False))
 
 files = [p for p in (root / 'kexts/NVRMFB').rglob('*') if p.is_file()]
 files += [p for p in (root / 'tools/rotation').rglob('*') if p.is_file()]
 files += [p for p in (root / 'kexts/NVRM/accel').rglob('*') if p.is_file()]
+files.append(root / 'kexts/NVRM/nvrm_display_identity.h')
 hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in files
           if '__pycache__' not in p.parts and p.suffix != '.pyc'}
 (output / 'SOURCE-HASHES.json').write_text(json.dumps(hashes, indent=2) + '\n')

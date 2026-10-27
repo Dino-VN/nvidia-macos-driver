@@ -21,6 +21,7 @@ RUNTIME = Path("Library/GPUBundles/nvmtl")
 TRANSLATOR = RUNTIME / "libnvmtl_translate.dylib"
 BUNDLED_TRANSLATOR = PLUGIN / "Contents/MacOS/libnvmtl_translate.dylib"
 FRAMEBUFFER = Path("Library/Extensions/NVRMFB.kext")
+AGDC = Path("Library/Extensions/NVRMAGDC.kext")
 ACCEL = {v: Path("Library/NullMoth/kexts") / v / "NVAccel.kext" for v in ("15", "26")}
 MINECRAFT = RUNTIME / "minecraft"
 SEQUOIA_RUNTIME_MINIMUM = "15.5"
@@ -209,6 +210,11 @@ def stage(args):
         bundle(framebuffer, "NVRMFB")
         validate_links(framebuffer.resolve())
         run("lipo", framebuffer / "Contents/MacOS/NVRMFB", "-verify_arch", "x86_64")
+    agdc = getattr(args, "agdc", None)
+    if agdc:
+        bundle(agdc, "NVRMAGDC")
+        validate_links(agdc.resolve())
+        run("lipo", agdc / "Contents/MacOS/NVRMAGDC", "-verify_arch", "x86_64")
     plist = args.framebuffer_plist or (framebuffer / "Contents/Info.plist" if framebuffer else REPO / "kexts/NVRMFB/fb/Info.plist")
     for path in (plugin, translator, plist):
         regular(path)
@@ -246,6 +252,10 @@ def stage(args):
             destination = work / FRAMEBUFFER
             shutil.rmtree(destination)
             shutil.copytree(framebuffer, destination, symlinks=True)
+        if agdc:
+            destination = work / AGDC
+            shutil.rmtree(destination)
+            shutil.copytree(agdc, destination, symlinks=True)
         replace_file(plist, work / FRAMEBUFFER / "Contents/Info.plist")
         for source, relative in replacements:
             replace_file(source, work / relative)
@@ -281,6 +291,7 @@ def stage(args):
         work.rename(output)
     print("Package ready: " + str(output))
     print("Updated: NVMTLDriver, translator, " + ("NVRMFB" if framebuffer else "NVRMFB Info.plist")
+          + (", NVRMAGDC" if agdc else "")
           + "".join(", macOS " + major + " NVAccel" for major, source in accelerators.items() if source)
           + (", Minecraft native NVK runtime" if minecraft else ""))
     print("SHA256SUMS verified. Install on Sequoia or Tahoe using install.sh.")
@@ -295,6 +306,7 @@ def main():
     parser.add_argument("--translator", type=Path, help="libnvmtl_translate.dylib (default: out/translator Intel release)")
     parser.add_argument("--framebuffer-plist", type=Path, help="NVRMFB Info.plist (default: this checkout's PR #131 plist)")
     parser.add_argument("--framebuffer", type=Path, help="optional complete rebuilt NVRMFB.kext; uses its plist unless overridden")
+    parser.add_argument("--agdc", type=Path, help="optional complete rebuilt NVRMAGDC.kext")
     parser.add_argument("--accel-26", type=Path, help="optional complete rebuilt Tahoe NVAccel.kext")
     parser.add_argument("--accel-15", type=Path, help="optional complete rebuilt Sequoia NVAccel.kext")
     parser.add_argument("--minecraft-runtime", type=Path, help="optional native Minecraft runtime built by nvk/native-macos/build.py")

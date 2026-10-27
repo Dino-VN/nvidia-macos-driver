@@ -188,6 +188,25 @@ class StagePackage(unittest.TestCase):
         self.assert_manifest(self.output)
         self.assert_unchanged()
 
+    def test_agdc_replacement_keeps_complete_bundle_and_refreshes_root_manifest(self):
+        self.args.agdc = self.make_bundle(self.build / "NVRMAGDC.kext", "NVRMAGDC", b"stable display slots")
+        self.put(self.base / STAGE.AGDC / "Contents/obsolete-signature", b"must not survive overlay")
+        self.seal_base()
+        self.stage()
+        self.assertEqual(self.snapshot(self.output / STAGE.AGDC), self.snapshot(self.args.agdc))
+        for major in STAGE.ACCEL:
+            self.assertEqual(self.snapshot(self.output / STAGE.ACCEL[major]), self.snapshot(self.base / STAGE.ACCEL[major]))
+        self.assert_manifest(self.output)
+        self.assert_unchanged()
+
+    def test_wrong_agdc_architecture_is_rejected_before_publishing(self):
+        self.args.agdc = self.make_bundle(self.build / "NVRMAGDC.kext", "NVRMAGDC", b"ARM64 incompatible")
+        self.original_build = self.snapshot(self.build)
+        with self.assertRaisesRegex(ValueError, "lipo failed"):
+            self.stage()
+        self.assertFalse(self.output.exists())
+        self.assert_unchanged()
+
     def minecraft_runtime(self, entry=b"native entry", renderer=b"private renderer"):
         runtime = self.build / "Minecraft runtime"
         self.put(runtime / "lib/libnvk_minecraft.dylib", entry)

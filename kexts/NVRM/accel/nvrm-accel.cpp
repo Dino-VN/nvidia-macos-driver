@@ -11,6 +11,7 @@
 #include "nmx_accel_names.h"
 #endif
 #include <IOKit/IOService.h>
+#include "../nvrm_display_identity.h"
 #include <IOKit/IOLib.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <pexpert/pexpert.h>
@@ -293,9 +294,13 @@ public:
         (void)ref; (void)note;
         NVAccel *me = (NVAccel *)target;
         if (!me || !newService) return true;
-        unsigned idx = 0;
-        OSNumber *num = OSDynamicCast(OSNumber, newService->getProperty("IOFBDependentIndex"));
-        if (num) idx = num->unsigned32BitValue();
+        if (!me->fPCI || nvrmFramebufferPCIOwner(newService) != me->fPCI) return true;
+        unsigned long long slot = 0;
+        if (!nvrmFramebufferIndex(newService, &slot) || slot >= kNvMaxFB) {
+            ALOG("%s published without a valid driver display slot -- no pipe registered", newService->getName());
+            return true;
+        }
+        const unsigned idx = (unsigned)slot;
         const char *what = "kept";
         if (idx >= kNvMaxFB) what = "OUT OF RANGE -- this head will get no pipe";
         else {

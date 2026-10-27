@@ -40,6 +40,7 @@ static inline thread_call_t nvrmfbCall(thread_call_func_t fn, thread_call_param_
 #include "nvrm-hud.h"
 #include "nvrm-fb-safety.h"
 #include "nvrm-rotation.h"
+#include "../../NVRM/nvrm_display_identity.h"
 #include "nvrm-allocation-table.h"
 static IORecursiveLock *startLock();
 class NVRMCallReference {
@@ -275,6 +276,7 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     IOLock *fRotationAttributesLock = nullptr;
     OSArray *fRotationPublishedSizes = nullptr;
     void configureDisplayIdentity(IOService *provider);
+    bool configureControllerIdentity(IOService *provider);
     void configureRotation();
     unsigned fHomePure = 0;
     IODetailedTimingInformationV2 fDT[256]; unsigned fNDT = 0;
@@ -2594,6 +2596,10 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
     fRotationAttributesLock = IOLockAlloc();
     if (!fRotationAttributesLock) return false;
     configureRotation(); // Must precede kapiInit's first mode/scaler publication.
+    if (!configureControllerIdentity(provider)) {
+        FBLOG("fb%u: controller identity publication failed -- refusing to start", fIndex);
+        return false;
+    }
     fConnectNotify = nvrmfbCall(connectNotifyFire, this);
     if (!fConnectNotify) { FBLOG("fb%u: connect notification allocation failed -- refusing to start", fIndex); return false; }
     nvrmDiscoverBar1(provider, &fBarLen, &fBar1Base);
@@ -2631,8 +2637,6 @@ bool NVRMNVDAFramebuffer::start(IOService *provider)
     if (fHotplugBorn) FBLOG("fb%u: a display appeared after boot -- the connect interrupt will be fired once the head has a mode", fIndex);
     fPhysForVa = (nvrm_phys_for_va_t)(uintptr_t)propU64(provider, "phys-for-va");
     if (!fKms || !fPhysForVa || !fKms->getFlipPendingStatus || !fKms->dupMemory) { FBLOG("nub lacks nvkms-kapi/phys-for-va properties"); return false; }
-    setProperty("IOFBDependentID", (unsigned long long)0x4E56524D00000001ull, 64);
-    setProperty("IOFBDependentIndex", (unsigned long long)fIndex, 32);
     setProperty("IOFBMemorySize", (unsigned long long)(8ull << 30), 64);
     IORecursiveLock *sl = startLock();
     if (!sl) { FBLOG("start lock alloc failed -- refusing to start"); return false; }
@@ -2823,6 +2827,25 @@ void NVRMNVDAFramebuffer::configureDisplayIdentity(IOService *provider)
     char location[9];
     snprintf(location, sizeof location, "%x", fIndex);
     provider->setLocation(location, gIOServicePlane);
+}
+bool NVRMNVDAFramebuffer::configureControllerIdentity(IOService *provider)
+{
+    int requested = getProperty("NVRMIndependentControllers") == kOSBooleanTrue ? 1 : 0;
+    PE_parse_boot_argn("nvfbcontrollers", &requested, sizeof requested);
+    const bool independent = fRotationEnabled && requested == 1;
+    // Keep head zero's existing group for the optional NMIntelFB panel. Other
+    // NVIDIA heads get their own group before IOFramebuffer caches a controller.
+    const unsigned long long group = independent && fIndex != 0
+        ? provider->getRegistryEntryID() : NVRM_LEGACY_CONTROLLER_ID;
+    const unsigned local = independent ? 0 : fIndex;
+    if (!group || !setProperty(NVRM_DISPLAY_INDEX_KEY, (unsigned long long)fIndex, 32) ||
+        !setProperty("IOFBDependentID", group, 64) ||
+        !setProperty("IOFBDependentIndex", (unsigned long long)local, 32)) return false;
+    setProperty("NVRMIndependentControllers", independent ? kOSBooleanTrue : kOSBooleanFalse);
+    setProperty("NVRMDisplayIdentityVersion", (unsigned long long)NVRM_DISPLAY_IDENTITY_VERSION, 32);
+    FBLOG("fb%u: controller group 0x%llx local index %u, driver slot %u (independent %u)",
+          fIndex, group, local, fIndex, (unsigned)independent);
+    return true;
 }
 void NVRMNVDAFramebuffer::configureRotation()
 {

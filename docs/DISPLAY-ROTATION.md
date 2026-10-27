@@ -58,13 +58,40 @@ cursor alignment and restoration, then test mixed angles. Laptop iGPU/dGPU routi
 is a separate investigation. Mirroring/scaled desktops, HDR, hotplug, sleep/wake
 and long-running behavior remain unqualified.
 
+### Four-monitor controller repair
+
+The next RTX 3070 report has distinct indexed paths and correct transform targeting,
+but still enters mirroring. Independent controller tests were incomplete: late
+registry edits cannot establish that an already cached controller was recreated,
+and NVAccel/NVRMAGDC both used `IOFBDependentIndex` as their driver slot.
+
+The coordinated test separates those roles. `NVRMDisplayIndex` keeps the stable
+driver slot 0–3; both consumers prefer it and retain the old dependent-index fallback
+for earlier framebuffer builds. Invalid explicit slots are refused without truncation
+or fallback. GPU ownership is checked before accepting a slot. The optional Intel
+panel still uses its existing slot 4.
+
+With `NVRMIndependentControllers=true` in the test framebuffer personality, secondary
+NVIDIA heads receive unique provider-registry IDs as controller IDs before the family
+starts. Every NVIDIA head then has controller-local index zero. Head zero retains
+its original group, allowing the optional Intel-panel bridge to join it as before.
+The rotation rendering, cursor worker, scanout and parking paths are unchanged.
+
+This mode defaults off in ordinary builds. Build with `--independent-controllers`
+to enable it in a test package. `nvfbcontrollers=0` restores the existing shared
+grouping; the boot argument overrides the property. Rotation-disabled and non-Tahoe
+boots keep shared grouping. Install matching **NVRMFB, NVAccel and NVRMAGDC** together.
+Production-method host checks cover all four slots, the Intel slot, ownership,
+duplicate/invalid slots, legacy fallback and grouping opt-outs. Hardware validation
+of the four-monitor mirroring repair is still pending.
+
 ## Build and validation
 
 Install matching NVRMFB, Tahoe NVAccel and NVMTLDriver from this candidate. Runtime
-markers are `NVRMRotationImplementationVersion=13` and
+markers are `NVRMRotationImplementationVersion=14` and
 `NVAccelNativeRotationProtocol=1`. Nonzero rotation probes require a matching
 accelerator on the same PCI device; restoring Standard remains independent of it.
-The release package versions/dependencies stay 2.5.4. The signed translator,
+The release package versions/dependencies stay 2.5.5. The signed translator,
 main RM, NVK, codecs and firmware are reused unchanged. Kext signing is not required.
 
 ```sh
@@ -81,6 +108,11 @@ methods with OS/GPU doubles: `display_identity_test.py`, `enablement_test.py`,
 full-raster checks, cursor images/positions and concurrent geometry publication,
 override ownership, duplicate EDIDs, head isolation and retained fork code.
 These are not physical display or performance tests.
+
+`controller_identity_test.py` additionally runs the actual controller publication,
+accelerator notification and AGDC table scan against a four-head host fixture.
+The timed controller's `--list` output includes stable driver slots, controller IDs,
+local indices, split enablement and `NVRMDisplayIdentityVersion=1` for test captures.
 
 ```sh
 out/native-rotation-fb/nv-rotate --list

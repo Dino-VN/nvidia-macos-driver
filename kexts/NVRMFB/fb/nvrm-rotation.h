@@ -2,7 +2,7 @@
 #pragma once
 #include <stdint.h>
 
-#define NM_ROTATION_IMPLEMENTATION_VERSION 13u
+#define NM_ROTATION_IMPLEMENTATION_VERSION 14u
 #define NM_NATIVE_ROTATION_PROTOCOL 1u
 enum { kNVRMSetTransform = 0x00000400u, kNVRMTransformShift = 16 };
 

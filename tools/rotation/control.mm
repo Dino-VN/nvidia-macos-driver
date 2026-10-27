@@ -94,7 +94,8 @@ static int printDisplays()
         } mutableCopy];
         for (NSString *key in @[@"IOFBTransform", @"IOFBProbeOptions", @"NVRMNativeRotationMask",
                                  @"NVRMRotationRequestedTransform", @"NVRMRotationPath", @"NVRMRotationImplementationVersion",
-                                 @"IOFBDependentIndex"])
+                                 @"IOFBDependentID", @"IOFBDependentIndex", @"NVRMDisplayIndex",
+                                 @"NVRMDisplayIdentityVersion", @"NVRMIndependentControllers"])
             if (p[key]) row[key] = p[key];
         if (fb && enabled(p))
             row[@"NVRMRotationActiveDegrees"] = @(nvrmRotationDegrees([p[@"IOFBTransform"] unsignedIntValue] & 0xffu));
