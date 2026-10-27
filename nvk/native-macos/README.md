@@ -20,7 +20,7 @@ This reuses the renderer binary rather than rebuilding Mesa. Its IOSurface impor
 
 The frontend targets macOS 15.0; the bundled upstream NVK renderer targets 15.5, making the package minimum **Sequoia 15.5**. Tahoe 26 is also supported. Build both accelerator variants with `build/accel_build_all.sh`, then pass `--accel-15`, `--accel-26` and `--minecraft-runtime` to `build/stage_package.py` along with the matching plugin, translator and framebuffer. The helper checks both runtime libraries against macOS 15.5, verifies the entry hash and signatures, and regenerates the replaced accelerators' nested checksums and the root manifest.
 
-The package installer already selects the accelerator for its running OS. It copies the bridge under `/Library/GPUBundles/nvmtl/minecraft` with the existing userland runtime, and uninstall removes it through that same directory. Use [the packaged Minecraft setup instructions](INSTALL.md) for the mod's Java argument. This packaging does not enable Tahoe rotation on Sequoia or change the default Vulkan provider. Physical Sequoia boot/gameplay testing remains unqualified.
+The package installer already selects the accelerator for its running OS. It copies the bridge under `/Library/GPUBundles/nvmtl/minecraft` with the existing userland runtime, and uninstall removes it through that same directory. Companion mod **0.1.2+** detects that installed directory automatically; only custom runtime paths need a JVM argument. See [the packaged Minecraft setup instructions](INSTALL.md). This packaging does not enable Tahoe rotation on Sequoia or change the default Vulkan provider. Physical Sequoia boot/gameplay testing remains unqualified.
 
 ## Presentation and synchronization
 

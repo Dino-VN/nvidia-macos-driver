@@ -24,7 +24,8 @@ The current upstream base is **2.5.5 at `bf23ca7`**, from `upstream/main`, integ
 Retain the optional frontend and build/test tools in `nvk/native-macos/`, alongside
 the [NVK Bridge mod](https://github.com/HighDelay/minecraft-nvk). This does not change
 the installed plugin, default Vulkan provider, framebuffer or existing Metal,
-OpenGL and MoltenVK paths. An instance opts in through its runtime manifest.
+OpenGL and MoltenVK paths. An instance opts in by installing the companion mod
+and selecting Minecraft's Vulkan backend; the runtime manifest is validated before selection.
 
 Keep application Vulkan objects on the private renderer's device, with local symbol
 resolution and a distinct renderer install name. Preserve stable swapchain images,
@@ -40,7 +41,9 @@ runtime under `Library/GPUBundles/nvmtl/minecraft`. Keep the bundled renderer's
 Sequoia 15.5 minimum, the frontend's 15.0 deployment target, compatibility
 checks, manifest/hash/signature validation and independent 15/26 checksum manifests.
 The existing installer chooses the OS variant and manages the runtime through its
-ordinary nvmtl copy/removal path; keep default Vulkan selection opt-in.
+ordinary nvmtl copy/removal path; keep default Vulkan selection opt-in through the
+companion mod. Mod 0.1.2+ discovers that installed directory automatically; explicit
+custom paths take priority and `nvkbridge.enabled=false` must still disable selection.
 
 RTX 2060 SUPER/Tahoe 26.7.1 tests cover actual device requirements, SDL presentation,
 pixel checks, resize/restore, LWJGL/SDL provider equality, Fabric Essential gameplay

@@ -32,15 +32,18 @@ Support the work: https://buymeacoffee.com/nullmoth
 
 ## Minecraft native Vulkan
 
-Install this fork's driver package and the matching Minecraft NVK companion mod, then add this to your Minecraft
-instance's **Java/JVM arguments**:
+Install this fork's driver package and the matching Minecraft NVK companion mod **0.1.2 or newer**.
+The mod automatically detects `/Library/GPUBundles/nvmtl/minecraft`; **no JVM argument is required**.
+Select **Vulkan** in Minecraft's graphics settings and restart the game. Aetherium is optional for shader packs.
+
+For a custom runtime directory, set this optional Java/JVM argument:
 
 ```text
--Dnvkbridge.runtime=/Library/GPUBundles/nvmtl/minecraft
+-Dnvkbridge.runtime=/absolute/path/to/nvk-runtime
 ```
 
-Replace any existing `-Dnvkbridge.runtime=...` argument with this one. Select **Vulkan** in Minecraft's graphics
-settings and restart the game. Aetherium is optional for shader packs.
+An explicit path takes priority over automatic detection. After updating the bridge jar, you can remove the old
+argument that points to the standard installed directory. Use `-Dnvkbridge.enabled=false` to disable the bridge.
 
 Requires Minecraft **26.3**, Java **25**, and Intel macOS **Sequoia 15.5 or newer** or **Tahoe 26**.
 See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
