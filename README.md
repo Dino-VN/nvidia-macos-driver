@@ -32,9 +32,29 @@ Support the work: https://buymeacoffee.com/nullmoth
 
 ## Minecraft native Vulkan
 
-Install this fork's driver package and the matching Minecraft NVK companion mod **0.1.2 or newer**.
+The [Minecraft NVK companion mod](https://github.com/HighDelay/minecraft-nvk) lets Minecraft's
+official Vulkan renderer use NVK directly through this fork's native runtime. The simplified rendering paths are:
+
+| Provider | Rendering path on this driver |
+|---|---|
+| MoltenVK | Minecraft Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
+| NVK Bridge | Minecraft Vulkan → native NVK runtime → NVIDIA GPU |
+
+This removes MoltenVK's Vulkan-to-Metal conversion and NVMTL's Metal/AIR-to-SPIR-V translation from the
+game's rendering path. NVK still compiles shaders for the GPU. Finished frames are copied by the GPU into a
+Metal drawable for macOS presentation, without CPU pixel readback or upload. Fewer translation stages can
+reduce CPU and shader-conversion overhead; a controlled FPS gain over MoltenVK has not yet been measured.
+
+Requires Minecraft **26.3**, Java **25**, Fabric Loader **0.19.5+** or NeoForge **26.3.0.99+**,
+and Intel macOS **Sequoia 15.5+** or **Tahoe 26**.
+
+1. Install [this fork's driver package](https://github.com/HighDelay/nvidia-macos-driver/releases) with the native Minecraft runtime and reboot.
+2. Put the matching Fabric or NeoForge [NVK Bridge jar](https://github.com/HighDelay/minecraft-nvk/releases), **0.1.2 or newer**, in your instance's `mods` folder.
+3. Select **Vulkan** in Minecraft's graphics settings and restart the game.
+4. Check the `NVK Bridge` startup messages and F3 screen: the renderer should identify **NVK Mesa**.
+
 The mod automatically detects `/Library/GPUBundles/nvmtl/minecraft`; **no JVM argument is required**.
-Select **Vulkan** in Minecraft's graphics settings and restart the game. Aetherium is optional for shader packs.
+[Aetherium](https://github.com/HighDelay/aetherium) is optional for Vulkan shader-pack support.
 
 For a custom runtime directory, set this optional Java/JVM argument:
 
@@ -45,7 +65,7 @@ For a custom runtime directory, set this optional Java/JVM argument:
 An explicit path takes priority over automatic detection. After updating the bridge jar, you can remove the old
 argument that points to the standard installed directory. Use `-Dnvkbridge.enabled=false` to disable the bridge.
 
-Requires Minecraft **26.3**, Java **25**, and Intel macOS **Sequoia 15.5 or newer** or **Tahoe 26**.
+Fabric Essential and NeoForge gameplay were checked on RTX 2060 SUPER / Tahoe 26.7.1.
 See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
 
 ## How it works
