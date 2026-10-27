@@ -16,8 +16,8 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.5.5 at `bf23ca7`**, from `upstream/main`, integrated on
-2026-10-26. The preceding base was 2.5.4 at `4677905`, integrated on 2026-10-24.
+The current upstream base is **2.6.2 at `6e37546`**, from `upstream/main`, integrated on
+2026-10-27. The preceding base was 2.5.5 at `bf23ca7`, integrated on 2026-10-26.
 
 ## Native NVK runtime for Minecraft 26.3
 
@@ -113,7 +113,37 @@ both DVI and HDMI modesets succeeded and the user confirmed output. That test
 used shared controller grouping. Other GPUs/adapters and independent four-head
 rotation remain unqualified. See [DVI modes](DVI-MODES.md).
 
-## Upstream 2.5.5 integration
+## Upstream 2.6.2 integration
+
+Upstream adds four commits after 2.5.5, changing only `package/install.sh` and
+`CHANGELOG.md`. Resolve the changelog conflict by retaining the fork entries and
+adding the 2.6.0, 2.6.1 and 2.6.2 release notes. Keep the installer as provided.
+
+The installer queries existing no-team kext approvals and refreshes a signed
+bundle's stored load-history hash only when its bundle is already allowed.
+Unsigned bundles do not gain a signing requirement; first installs retain the
+normal approval guidance. If every selected extension is already allowed, the
+installer reports that the update takes one restart. Database-write failures
+remain nonfatal and print the upstream note; that approval count is not proof
+of a successful hash update or of the next boot's actual approval state.
+
+No rendering, kernel, translator, native NVK, firmware or build source changed.
+There are no new equivalents of the fork's DVI repair, rotation/controller
+identities, cursor shutdown/drain, decoder policy, all-app ANGLE default or
+OpenGL/Minecraft/MoltenVK follow-ups. Preserve them without applying another copy.
+Compiled source retention is checked against fork `7004150`; no driver rebuild
+is needed for this upstream delta.
+
+Validation covers installer shell syntax, isolated approval-database fixtures,
+existing installer/package checks and byte-for-byte retention of the protected
+source. The fixtures use temporary databases and mocked signatures, not the live
+KextPolicy database. They do not qualify macOS approval prompts or boot behavior.
+Records are identified by `out/upstream-merge-latest.json`. This source merge
+does not push, stage a package or alter the installed driver. When staging a
+2.6.2 release, use its installer and version/dependency metadata with the retained
+fork builds and native Minecraft runtime.
+
+## Historical upstream 2.5.5 integration
 
 Two files had textual conflicts: `CHANGELOG.md` and `plugin/NVMTLDevice.m`.
 Keep both histories. Upstream's Discord decoder repair (`9a00f88`) covers the same

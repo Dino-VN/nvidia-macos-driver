@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork integration with upstream 2.6.2
+
+- Keep the installer improvements for previously approved extensions and update its reboot guidance. First installs still follow macOS approval prompts.
+- Retain the DVI timing repair, Tahoe rotation/controller identities, cursor shutdown/drain, Minecraft native NVK runtime and existing rendering/performance fixes. Upstream changed no compiled driver source in this update; see [Fork merge notes](docs/FORK-MERGE-NOTES.md).
+
 ## Fork DVI timing repair
 
 - Recover a detected but blank DVI display when its preferred KAPI timing fails validation, using an accepted timing at the same native resolution. Keep rejected timings out of KAPI-generated DVI modes and EDID shortcuts, without disabling EDID or link checks. The user confirmed working ITY V2422F output alongside HDMI on RTX 2060 SUPER/Tahoe 26.7.1; other hardware remains unqualified. See [DVI modes](docs/DVI-MODES.md).
@@ -74,7 +79,19 @@
 - Retain parked-backing restoration before ordinary surface dirty updates while using upstream framebuffer-resource creation, scanout lifetime and GPU mapping. Restore the same allocation before upstream records its plugin-write cookie. The borrowed-scanout extension remains removed.
 - Cache submission upload discovery and deduplicate copy backings with a set; release plugin builds use `-O2`. This reduces CPU bookkeeping without changing copy coherence or adding a frame-rate limit. Animation performance needs hardware validation.
 
-The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.5.5 build; comparative desktop performance remains unmeasured.
+The release entries below describe upstream releases. Earlier hardware and benchmark results do not validate the combined 2.6.2 build; comparative desktop performance remains unmeasured.
+
+## 2.6.2
+
+- The same driver as 2.6.0, released with fixes to the 1401 apps for Mac and Windows.
+
+## 2.6.1
+
+- The same driver as 2.6.0, released with the redesigned 1401 apps for Mac and Windows.
+
+## 2.6.0
+
+- An update of the driver takes one restart. macOS shows a notice that the extensions were updated while the installer replaces them, and the installer used to answer it with "allow the extensions, then reboot once more"; the new driver already loads on the first restart (measured: every extension approved, none held back), so on an update it now says one restart is enough. A first install still asks you to allow the extensions once.
 
 ## 2.5.5
 
