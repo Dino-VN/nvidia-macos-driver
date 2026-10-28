@@ -14,6 +14,7 @@ fixture = r'''
 #include <assert.h>
 #include <dispatch/dispatch.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 #import <objc/runtime.h>
@@ -21,6 +22,8 @@ typedef struct __IOSurface { unsigned seed; unsigned char cpu[4]; } Surface;
 typedef int IOReturn;
 enum { kIOSurfaceLockReadOnly = 1 };
 typedef struct { unsigned w,h,bpp; unsigned char gpu[4]; } Image;
+typedef struct { BOOL imported; } HostPages;
+static BOOL hostPagesAvailable;
 static dispatch_semaphore_t entered, release_read;
 static unsigned uploads, gpu_seed;
 static unsigned long long g_surfin_skip, g_surfin_copy;
@@ -39,15 +42,14 @@ static void *IOSurfaceGetBaseAddressOfPlane(IOSurfaceRef s, uint32_t p) { return
 static size_t IOSurfaceGetBytesPerRowOfPlane(IOSurfaceRef s, uint32_t p) { return 4; }
 static void *IOSurfaceGetBaseAddress(IOSurfaceRef s) { return s->cpu; }
 static size_t IOSurfaceGetAllocSize(IOSurfaceRef s) { return sizeof s->cpu; }
-// the imported-pages upload is unavailable here, so every upload takes the CPU copy this test checks
-static int nvmtl_vk_image_write_host(void *q, Image *img, void *base, size_t row, size_t bytes) { return -1; }
 static uint32_t nvmtl_vram_gen(IOSurfaceRef s, NSUInteger p) { return 1; }
 static int nvmtl_vram_tag_current(IOSurfaceRef s, NSUInteger p, unsigned seed) { return gpu_seed == seed; }
 static void nvmtl_vram_tag_set(IOSurfaceRef s, NSUInteger p, unsigned seed) { gpu_seed=seed; }
 static unsigned nvmtl_vram_tag_bump(IOSurfaceRef s, NSUInteger p, unsigned seed) { return 1; }
 // the kernel's VRAM mark: dirtyAnswer for the blocking one (1 = refused, the copy path), tryAnswer for the try that never
 // waits for the accelerator lock (1 = the lock was taken, -1 = refused); each call counted
-static int dirtyAnswer=1, tryAnswer=-1; static unsigned blockingDirties, tries;
+static int dirtyAnswer=1; static _Atomic int tryAnswer=-1;
+static _Atomic unsigned blockingDirties, tries;
 static int nvmtl_vk_surface_dirty(unsigned s, unsigned p) { blockingDirties++; return dirtyAnswer; }
 static int nvmtl_vk_surface_dirty_try(unsigned s, unsigned p) { tries++; return tryAnswer; }
 static int nvmtl_noseed(void) { return 0; }
@@ -65,8 +67,19 @@ static int nvmtl_vk_image_read(void *q, Image *i, void *base, size_t row) {
     assert(!dispatch_semaphore_wait(release_read,dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC)));
     memcpy(base,i->gpu,4); return 0;
 }
+// Exercise publication ordering with both imported-page success and CPU fallback.
+// The GPU transfers themselves are mocked; production surface methods own the locking.
+static int nvmtl_vk_image_write_host(void *q, Image *img, void *base, size_t row, size_t bytes, HostPages *cache) {
+    if (!hostPagesAvailable) return -1;
+    cache->imported=YES; return nvmtl_vk_image_write(q,img,base,row);
+}
+static int nvmtl_vk_image_read_host(void *q, Image *img, void *base, size_t row, size_t bytes, HostPages *cache) {
+    if (!hostPagesAvailable) return -1;
+    cache->imported=YES; return nvmtl_vk_image_read(q,img,base,row);
+}
 @interface NVMTLTexture : NSObject {
 @public NVMTLTexture *_parent; IOSurfaceRef _surf; BOOL _vramOn, _surfSynced;
+    HostPages _hostPages;
     uint32_t _surfSeed, _surfGen; NSUInteger _plane; Image _i; void *_q;
 }
 - (BOOL)nvmtlSurfaceCopyable;
@@ -80,10 +93,12 @@ static int nvmtl_vk_image_read(void *q, Image *i, void *base, size_t row) {
 checks = r'''
 @end
 int main(int argc, char **argv) { @autoreleasepool {
+    const BOOL shared=argc>1 && !strcmp(argv[1],"shared");
+    hostPagesAvailable=argc>2;
     Surface s={.seed=1};
     NVMTLTexture *t=[NVMTLTexture new]; t->_surf=&s; t->_i=(Image){.w=1,.h=1,.bpp=4,.gpu={0,128,255,255}};
     NVMTLTexture *alias=[NVMTLTexture new];
-    if (argc > 1) { alias->_surf=&s; alias->_vramOn=YES; t->_vramOn=YES; }
+    if (shared) { alias->_surf=&s; alias->_vramOn=YES; t->_vramOn=YES; }
     else alias->_parent=t;
     entered=dispatch_semaphore_create(0); release_read=dispatch_semaphore_create(0);
     dispatch_group_t group=dispatch_group_create();
@@ -103,7 +118,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(!memcmp(t->_i.gpu,orange,4)); assert(!memcmp(s.cpu,orange,4)); assert(uploads==0);
     // A later CPU edit must still be imported once publication has finished.
     s.seed++; memset(s.cpu,71,4); [alias nvmtlSurfaceIn];
-    assert(uploads==1); assert(!memcmp((argc>1?alias:t)->_i.gpu,s.cpu,4));
+    assert(uploads==1); assert(!memcmp((shared?alias:t)->_i.gpu,s.cpu,4));
+    assert(t->_hostPages.imported==hostPagesAvailable);
     // Publication after the commit's VRAM mark (WindowServer, an NVAccel whose page-off waits) runs on the thread that
     // releases the pending marks, so it never waits for the accelerator lock: busy, the commit's mark stands and nothing
     // is copied (a copy would block in the read stub and fail); free, the surface is marked again.
@@ -116,10 +132,10 @@ int main(int argc, char **argv) { @autoreleasepool {
     // waited for the lock could land after a newer CPU write), until one takes; a page-off that slipped in between the
     // commit's marks must not leave its copy current
     tryAnswer=1;
-    assert([w nvmtlSurfaceOutDirtied:YES] && tries==3);
+    assert([w nvmtlSurfaceOutDirtied:YES] && tries>=3);
     for (int i=0; i<200 && tries<6; i++) [NSThread sleepForTimeInterval:0.002];
     assert(tries>=6 && !blockingDirties);
-    tryAnswer=0; const unsigned settledTries=tries;
+    const unsigned settledTries=tries; tryAnswer=0;
     for (int i=0; i<200 && tries==settledTries; i++) [NSThread sleepForTimeInterval:0.002];
     [NSThread sleepForTimeInterval:0.02];
     const unsigned after=tries; [NSThread sleepForTimeInterval:0.02];
@@ -140,3 +156,5 @@ with tempfile.TemporaryDirectory() as directory:
                     str(path / 'test.m'), '-o', str(path / 'test')], check=True)
     subprocess.run([str(path / 'test')], check=True)
     subprocess.run([str(path / 'test'), 'shared'], check=True)
+    subprocess.run([str(path / 'test'), 'root', 'host-pages'], check=True)
+    subprocess.run([str(path / 'test'), 'shared', 'host-pages'], check=True)

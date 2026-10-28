@@ -1,80 +1,72 @@
 #!/usr/bin/env python3
-"""Protect existing performance, decoder and cursor lifetime code during the rotation replacement."""
+"""Retain the fork's repairs while accepting the reviewed upstream 2.6.3 changes.
+
+Functional fixtures cover new mode/audio, shader and surface interfaces. These
+comparisons protect the existing fork behavior against the pre-merge checkpoint.
+"""
 import re
 import subprocess
-import tempfile
-from pathlib import Path
 from test_support import ROOT, FB, method
 
-base = '6d715894d05fca2a90f5886b1ac5f14fdc32a673'
-native = '6fc2b8101218b872dce8a723d86f865b09947259'
-upstream_base = '46779055f68208baa5ddfb9b2e9c77ed028e1d59'
-upstream = 'bf23ca740e55d86bac987fb68fb5164ac1237941'
-retained = '6ca72cbf96fc19c48ae824f6dcb4c5463e78da80'
-# Accepted Minecraft/Wine runtime integration after the original rotation baseline.
-runtime_retained = '35630051a34007ca68bce973c6a1b2dec97917ec'
+BASE = "55f9263e2a62fc7b84b1d4ffead29c426bc98a40"
 
+def historical(path):
+    return subprocess.check_output(["git", "show", BASE + ":" + path], cwd=ROOT)
 
-def historical(revision, path):
-    return subprocess.check_output(['git', 'show', revision + ':' + path], cwd=ROOT)
+def same_methods(path, signatures):
+    before = historical(path).decode()
+    after = (ROOT / path).read_text()
+    for signature in signatures:
+        assert method(before, signature) == method(after, signature), (path, signature)
 
+# These runtime/build sources were not touched by upstream 2.6.3. Protect the
+# Minecraft/Wine ABI, rollback tools and release optimization settings together.
+for path in subprocess.check_output(["git", "ls-tree", "-r", "--name-only", BASE,
+                                     "nvk", "runtime", "build"], cwd=ROOT, text=True).splitlines():
+    assert (ROOT / path).read_bytes() == historical(path), path
+assert (ROOT / "translator/wrapper/src/uniform_cbuf.rs").read_bytes() == historical("translator/wrapper/src/uniform_cbuf.rs")
 
-def with_upstream_changes(path):
-    """Compare against the reviewed upstream delta without relaxing fork retention."""
-    with tempfile.TemporaryDirectory(prefix='native-rotation-retention-') as tmp:
-        files = [Path(tmp) / name for name in ('fork', 'base', 'upstream')]
-        for file, revision in zip(files, (native, upstream_base, upstream)):
-            file.write_bytes(historical(revision, path))
-        return subprocess.check_output(['git', 'merge-file', '-p', *map(str, files)])
-
-
-changed = ['plugin/NVMTLObjects.m', 'plugin/nvmtl_vk.c', 'plugin/nvmtl_vk.h']
-for path in changed:
-    assert (ROOT / path).read_bytes() == with_upstream_changes(path), path
-for path in subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', runtime_retained, 'plugin', 'translator', 'nvk', 'runtime', 'build'], cwd=ROOT, text=True).splitlines():
-    # stage_package's new AGDC bundle replacement is covered by the package
-    # copy/hash tests; it is the only intended change under these directories.
-    if path in changed or path == 'build/stage_package.py':
-        continue
-    assert (ROOT / path).read_bytes() == historical(runtime_retained, path), path
-assert (ROOT / 'plugin/NVMTLEventSync.m').read_bytes() == historical(base, 'plugin/NVMTLEventSync.m')
-
-accel_path = 'kexts/NVRM/accel/nvrm-accel.cpp'
-accel = (ROOT / accel_path).read_text()
-marker = '            setProperty("NVAccelNativeRotationProtocol", (unsigned long long)NM_NATIVE_ROTATION_PROTOCOL, 32);\n'
-header = '#include "../../NVRMFB/fb/nvrm-rotation.h"\n'
-assert accel.count(marker) == 1 and accel.count(header) == 1
-before = historical(retained, accel_path).decode()
-assert before.encode() == with_upstream_changes(accel_path)
-stable_header = '#include "../nvrm_display_identity.h"\n'
-assert accel.count(stable_header) == 1
-reviewed = accel.replace(stable_header, '').replace(
-    method(accel, 'static bool fbPublished('), method(before, 'static bool fbPublished('))
-assert reviewed == before, 'accelerator changes exceed the display-slot callback'
-old_accel = historical(native, accel_path).decode()
-assert old_accel.replace(marker, '').replace(header, '').encode() == historical(base, accel_path)
-assert accel.count('static bool nvAccelRestoreParkedForDirty(') == 1
-assert not any(word in accel for word in ['nvRotationCopyPresent', 'nvRotationGPUTry', 'NVAccelRotationGPUProtocol'])
-assert not (ROOT / 'plugin/NVMTLRotationInline.m').exists()
-
-old = historical(retained, 'kexts/NVRMFB/fb/nvrm-fb.cpp').decode()
-for name in ['cursorInit', 'cursorFire', 'cursorApply', 'scheduleCall', 'stop',
-             'vramGrant', 'vramRelease', 'getApertureRange', 'getVRAMRange',
-             'headOff', 'setHeadPower', 'notifyConnectionChanged', 'connectNotifyFire']:
-    signature = 'NVRMNVDAFramebuffer::' + name + '('
+fb_path = "kexts/NVRMFB/fb/nvrm-fb.cpp"
+old = historical(fb_path).decode()
+for name in ["cursorInit", "cursorFire", "cursorApply", "scheduleCall",
+             "setCursorState", "setCursorImageLocked", "publishCursorGeometry",
+             "vramGrant", "vramRelease", "getApertureRange", "getVRAMRange", "headOff",
+             "notifyConnectionChanged", "connectNotifyFire", "configureRotation",
+             "configureDisplayIdentity", "configureControllerIdentity", "requestProbe",
+             "getCurrentDisplayMode", "setDetailedTimings", "dtIsCurrent", "publishRotatedSizes",
+             "edidModeFor", "addKmsRefreshModes"]:
+    signature = "NVRMNVDAFramebuffer::" + name + "("
     assert method(FB, signature) == method(old, signature), name
-apply = method(FB, 'bool NVRMNVDAFramebuffer::applyMode(')
-assert apply == method(old, 'bool NVRMNVDAFramebuffer::applyMode(')
-init = method(FB, 'bool NVRMNVDAFramebuffer::kapiInit(')
-assert init.replace('    validateInitialDviMode();\n', '') == method(old, 'bool NVRMNVDAFramebuffer::kapiInit(')
-for signature in ['bool NVRMNVDAFramebuffer::edidModeFor(', 'unsigned NVRMNVDAFramebuffer::addKmsRefreshModes(']:
-    filtered = method(FB, signature)
-    check = '        if (fDviModeValidation && !fKms->validateDisplayMode(fDev, fDisplay, &m)) continue;\n'
-    assert filtered.count(check) == 1
-    assert filtered.replace(check, '') == method(old, signature), signature
-flip = method(FB, 'bool NVRMNVDAFramebuffer::flipToMemory(')
-assert 'notifyConnectionChanged(1);' in flip and 'fConnect.proc(' not in flip
-assert not re.search(r'\bthread_call_cancel_wait\s*\(', FB)
-assert 'THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE' in FB
-assert 'while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);' in FB
-print('PASS: native rotation rendering, decoder/ANGLE/-O2, translator/NVK/Minecraft, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved; controller-slot and DVI guards retained')
+
+# Audio adds two notification removals and its worker to cleanup; the cursor's
+# separate accepted-work drain must remain byte-for-byte intact.
+stop = method(FB, "NVRMNVDAFramebuffer::stop(")
+for line in ["    if (fAudioReady) { fAudioReady->remove(); fAudioReady = nullptr; }\n",
+             "    if (fCodecReady) { fCodecReady->remove(); fCodecReady = nullptr; }\n"]:
+    assert stop.count(line) == 1
+    stop = stop.replace(line, "")
+assert stop.replace("&fConnectNotify, &fAudioCall}", "&fConnectNotify}") == method(old, "NVRMNVDAFramebuffer::stop(")
+for name in ["applyMode", "flipToMemory"]:
+    signature = "NVRMNVDAFramebuffer::" + name + "("
+    assert ''.join(method(FB, signature).replace("(NvU16)", "").split()) == ''.join(method(old, signature).split()), name
+power = method(FB, "NVRMNVDAFramebuffer::setHeadPower(")
+assert power.replace("{ fHeadSlept = false; publishDisplayAudioProperties(); }", "fHeadSlept = false;") == method(old, "NVRMNVDAFramebuffer::setHeadPower(")
+init = method(FB, "NVRMNVDAFramebuffer::kapiInit(")
+assert init.count("validateInitialDviMode();") == 1
+assert init.index("validateInitialDviMode();") < init.index("fBootW = fW")
+assert "nvrmKmsRasterValid" in init
+assert "fNewIdOnce" not in FB
+assert not re.search(r"\bthread_call_cancel_wait\s*\(", FB)
+assert "THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE" in FB
+assert "while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);" in FB
+
+same_methods("kexts/NVRM/accel/nvrm-accel.cpp", ["static bool nvAccelRestoreParkedForDirty(", "static bool fbPublished("])
+same_methods("plugin/NVMTLDevice.m", ["static bool nvmtl_is_sandboxed(", "static bool nvmtl_is_chromium_gpu_process(",
+    "static bool nvmtl_can_register_decoder(", "static void nvmtl_nvdec_register(",
+    "static void nvmtl_nvdec_hevc_register(", "static void nvmtl_angle_allow_nvidia("])
+same_methods("plugin/NVMTLEventSync.m", ["static void nvmtl_gpu_uses_adjust(", "static void nvmtl_gpu_uses_raise(",
+    "static void nvmtl_gpu_uses_lower(", "static void nvmtl_prepare_submission_copies("])
+same_methods("plugin/nvmtl_vk.c", ["uint32_t nvmtl_spirv_stencil_emu("])
+same_methods("plugin/NVMTLObjects.m", ["static unsigned nvmtl_mip_autofill_bpp(", "static void nvmtl_mip_autofill("])
+assert not (ROOT / "plugin/NVMTLRotationInline.m").exists()
+print("PASS: retained Tahoe rotation/current IDs, cursor serialization/drain, DVI, parked backing, decoder/ANGLE defaults, strict stencil, badge mips, GL completion/copies and native runtimes; reviewed audio/raster changes allowed")

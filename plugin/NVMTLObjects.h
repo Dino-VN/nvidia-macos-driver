@@ -46,6 +46,7 @@ static inline void *nvmtl_buf_cpu(NVMTLBuffer *b) { nvmtl_buf_settle(b); return 
   uint32_t _baseSlice, _baseLevel;
   uint32_t _surfSeed, _surfGen; BOOL _surfSynced, _surfOwned;
   nvk_buffer _vramBuf; BOOL _vramOn;
+  nvk_buffer _hostPages;   // this surface's pages imported for the host copies (nvmtl_host_pages), kept while they hold
   BOOL _stex;
   uint64_t _resid;
   NSUInteger _usage;
@@ -112,7 +113,7 @@ extern id gNVMTLMainDevice;
 @interface NVMTLCommandBuffer : NSObject <MTLCommandBuffer> {
   NSError *_cbError;
   NSMutableDictionary *_userDictionary;
-  @public nvk_cmdbuf _c; NVMTLCommandQueue *_queue; BOOL _committed, _commitMarking; BOOL _capacityHeld; MTLCommandBufferStatus _cbstatus;
+  @public nvk_cmdbuf _c; NVMTLCommandQueue *_queue; BOOL _committed, _commitMarking, _partsRetiring; BOOL _capacityHeld; MTLCommandBufferStatus _cbstatus;
   NVMTLTexture *_present;
   NSMutableArray *_presentations;
   NSMutableArray *_handlers;

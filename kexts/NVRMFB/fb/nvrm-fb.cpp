@@ -28,6 +28,9 @@
 #include <libkern/OSAtomic.h>
 #include <libkern/version.h>
 #include "../nvrm_eld.h"
+#include "../nvrm_audio_match.h"
+#include "../../NMHDA/nmhda_topology.h"
+#include <libkern/c++/OSArray.h>
 
 // Every callback this driver schedules runs one at a time. A plain thread_call that is entered again while it is still
 // running starts again on another thread, so a vblank or cursor callback stuck behind the display gate began a new
@@ -65,10 +68,15 @@ public:
     bool valid() const { return lock != nullptr; }
 };
 static NVRMAllocationTable<struct NvKmsKapiMemory, 4096> gAllocations;
+// The bundled NVKMS headers emit conversion warnings; keep them scoped to these external declarations.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
 extern "C" {
 #include "nvkms.h"
 #include "nvrm_gpuva_abi.h"
 }
+#pragma clang diagnostic pop
 #include <libkern/OSAtomic.h>
 #include "nvrm_vram_abi.h"
 #include "nvrm-dvi-modes.h"
@@ -138,6 +146,7 @@ static inline void nvu_zero_wide(void *p, size_t n) { size_t q = n >> 3; __asm__
 #define FBLOG(fmt, ...) do { IOLog("NVRM-fb: " fmt "\n", ##__VA_ARGS__); kprintf("NVRM-fb: " fmt "\n", ##__VA_ARGS__); \
     { char _tb[220]; snprintf(_tb, sizeof _tb, fmt, ##__VA_ARGS__); FBTRACE(_tb); } } while (0)
 static const char kPixelFormats[] = IO32BitDirectPixels "\0";
+static const UInt32 kNVRMFBSetTransform = 0x00000400;   // kIOFBSetTransform
 static const IODisplayModeID kModeId = 1;
 static const unsigned kTraceMax = 900;
 
@@ -147,10 +156,12 @@ static const unsigned kTraceMax = 900;
 // existed when the first framebuffer was opened (gIOFBHaveBacklight, IOFramebuffer::open). On Macs that is
 // the ACPI PNLF device; here it is this handler, published by the panel's framebuffer before super::start().
 // IODisplay finds it below the framebuffer (searchParameterHandlers) and offers "brightness" and
-// "linear-brightness" through it; both are percent of the panel's PWM. The level goes to NVRM
+// "linear-brightness" through it; both use the normalized NVKMS request range. The level goes to NVRM
 // ("NVRMBacklight": nvKmsSetBacklight on the backlight NVKMS registered), from a thread call, because
 // IODisplay calls doIntegerSet() with the framebuffer lock held.
-static const SInt32 kNVRMMinBacklight = 5;   // never 0: some panels switch the backlight off completely
+// AppleBacklightDisplay's public source uses 0..255 when no power-state range is published.
+static const SInt32 kAppleBacklightDefaultMax = 255;
+static const UInt32 kNVRMBacklightSaveDelaySeconds = 2;
 #define BLLOG(fmt, ...) do { IOLog("NVRM-fb: " fmt "\n", ##__VA_ARGS__); kprintf("NVRM-fb: " fmt "\n", ##__VA_ARGS__); } while (0)
 
 class NVRMBacklightHandler : public IODisplayParameterHandler {
@@ -158,9 +169,17 @@ class NVRMBacklightHandler : public IODisplayParameterHandler {
     IOService *fRM = nullptr;
     const OSSymbol *fFn = nullptr;
     thread_call_t fApply = nullptr;
+    thread_call_t fPersist = nullptr;
     volatile SInt32 fPending = -1;
-    SInt32 fLevel = 100;
+    SInt32 fLevel = kNVRMBacklightMax;
+    volatile SInt32 fUserLevel = kNVRMBacklightMax;
+    volatile SInt32 fPersistPending = -1;
+    volatile UInt64 fPersistDeadline = 0;
+    SInt32 fRestoreLevel = -1;
+    OSDictionary *fParameters = nullptr;
     static void applyFire(thread_call_param_t me, thread_call_param_t);
+    static void persistFire(thread_call_param_t me, thread_call_param_t);
+    static const OSSymbol *sBrightnessProbe, *sLinearBrightnessProbe;
 public:
     static NVRMBacklightHandler *withRM(IOService *rm, NvU32 level);
     bool setDisplay(IODisplay *display) override;
@@ -170,6 +189,8 @@ public:
     void free() override;
 };
 OSDefineMetaClassAndStructors(NVRMBacklightHandler, IODisplayParameterHandler)
+const OSSymbol *NVRMBacklightHandler::sBrightnessProbe = nullptr;
+const OSSymbol *NVRMBacklightHandler::sLinearBrightnessProbe = nullptr;
 
 NVRMBacklightHandler *NVRMBacklightHandler::withRM(IOService *rm, NvU32 level)
 {
@@ -177,17 +198,31 @@ NVRMBacklightHandler *NVRMBacklightHandler::withRM(IOService *rm, NvU32 level)
     if (!h || !h->init()) { OSSafeReleaseNULL(h); return nullptr; }
     h->fRM = rm; rm->retain();
     h->fFn = OSSymbol::withCStringNoCopy("NVRMBacklight");
+    if (!sBrightnessProbe) sBrightnessProbe = OSSymbol::withCStringNoCopy("brightness-probe");
+    if (!sLinearBrightnessProbe) sLinearBrightnessProbe = OSSymbol::withCStringNoCopy("linear-brightness-probe");
     h->fApply = nvrmfbCall(applyFire, h);
-    h->fLevel = level <= 100 ? (SInt32)level : 100;
-    if (!h->fFn || !h->fApply) { h->release(); return nullptr; }
+    h->fPersist = thread_call_allocate_with_options(persistFire, h, THREAD_CALL_PRIORITY_LOW, THREAD_CALL_OPTIONS_ONCE);
+    h->fLevel = (SInt32)nvrm_backlight_from_percent(level <= 100 ? level : 100);
+    UInt32 saved;
+    IORegistryEntry *options = IORegistryEntry::fromPath("/options", gIODTPlane);
+    if (options && nvrm_backlight_read(options, &saved)) {
+        h->fUserLevel = (SInt32)saved;
+        h->fRestoreLevel = (SInt32)saved;
+    } else {
+        h->fUserLevel = h->fLevel;
+    }
+    OSSafeReleaseNULL(options);
+    if (!h->fFn || !h->fApply || !h->fPersist) { h->release(); return nullptr; }
     return h;
 }
 
 void NVRMBacklightHandler::free()
 {
     if (fApply) { thread_call_cancel(fApply); while (!thread_call_free(fApply)) { thread_call_cancel(fApply); IOSleep(1); } fApply = nullptr; }
+    if (fPersist) { thread_call_cancel(fPersist); while (!thread_call_free(fPersist)) { thread_call_cancel(fPersist); IOSleep(1); } fPersist = nullptr; }
     OSSafeReleaseNULL(fFn);
     OSSafeReleaseNULL(fRM);
+    OSSafeReleaseNULL(fParameters);
     IODisplayParameterHandler::free();
 }
 
@@ -201,22 +236,56 @@ bool NVRMBacklightHandler::setDisplay(IODisplay *display)
     OSDictionary *params = cur ? OSDictionary::withDictionary(cur) : OSDictionary::withCapacity(2);
     OSSafeReleaseNULL(old);
     if (!params) return false;
-    IODisplay::addParameter(params, gIODisplayBrightnessKey, 0, 100);
-    IODisplay::setParameter(params, gIODisplayBrightnessKey, fLevel);
-    IODisplay::addParameter(params, gIODisplayLinearBrightnessKey, 0, 100);
-    IODisplay::setParameter(params, gIODisplayLinearBrightnessKey, fLevel);
+    IODisplay::addParameter(params, gIODisplayBrightnessKey, 0, kNVRMBacklightMax);
+    SInt32 initial = OSAddAtomic(0, &fUserLevel);
+    IODisplay::setParameter(params, gIODisplayBrightnessKey, initial);
+    IODisplay::addParameter(params, gIODisplayLinearBrightnessKey, 0, kNVRMBacklightMax);
+    IODisplay::setParameter(params, gIODisplayLinearBrightnessKey, initial);
+    // CoreDisplay converts between user and linear brightness by writing one probe and reading the other.
+    IODisplay::addParameter(params, sBrightnessProbe, 0, kNVRMBacklightMax);
+    IODisplay::setParameter(params, sBrightnessProbe, initial);
+    IODisplay::addParameter(params, sLinearBrightnessProbe, 0, kNVRMBacklightMax);
+    IODisplay::setParameter(params, sLinearBrightnessProbe, initial);
     display->setProperty(gIODisplayParametersKey, params);
-    params->release();
-    BLLOG("backlight: brightness parameters on %s, panel at %d%%", display->getName(), (int)fLevel);
+    OSSafeReleaseNULL(fParameters);
+    fParameters = params;
+    if (fRestoreLevel >= 0) {
+        fPending = fRestoreLevel;
+        fRestoreLevel = -1;
+        thread_call_enter(fApply);
+    }
+    BLLOG("backlight: brightness parameters on %s, logical level %d/65535", display->getName(), (int)fLevel);
     return true;
 }
 
 // User changes arrive with the parameter's own { min, max, value } (IODisplay::setForKey stores the value);
 // AppleBacklightDisplay's power states (dim, display sleep, lid) pass the whole IODisplayParameters.
-bool NVRMBacklightHandler::doIntegerSet(OSDictionary *, const OSSymbol *paramName, UInt32 value)
+bool NVRMBacklightHandler::doIntegerSet(OSDictionary *params, const OSSymbol *paramName, UInt32 value)
 {
-    if (paramName != gIODisplayBrightnessKey && paramName != gIODisplayLinearBrightnessKey) return false;
-    fPending = value > 100 ? 100 : (SInt32)value;
+    const bool probe = paramName == sBrightnessProbe || paramName == sLinearBrightnessProbe;
+    if (!probe && paramName != gIODisplayBrightnessKey && paramName != gIODisplayLinearBrightnessKey) return false;
+    SInt32 level = value > kNVRMBacklightMax ? kNVRMBacklightMax : (SInt32)value;
+    if (probe) {
+        // No transfer function is reported by NVKMS; preserve the normalized request without applying it.
+        return fParameters && IODisplay::setParameter(fParameters,
+            paramName == sBrightnessProbe ? sLinearBrightnessProbe : sBrightnessProbe, level);
+    }
+    const bool userRequest = params && params->getObject(gIODisplayValueKey);
+    if (userRequest) {
+        uint64_t deadline;
+        clock_interval_to_deadline(kNVRMBacklightSaveDelaySeconds, kSecondScale, &deadline);
+        __atomic_store_n(&fPersistDeadline, deadline, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&fUserLevel, level, __ATOMIC_SEQ_CST);
+        if (fParameters) IODisplay::setParameter(fParameters,
+            paramName == gIODisplayBrightnessKey ? gIODisplayLinearBrightnessKey : gIODisplayBrightnessKey, level);
+    }
+    else {
+        SInt32 target = OSAddAtomic(0, &fUserLevel);
+        if (value == kAppleBacklightDefaultMax || level > target) level = target;
+    }
+    BLLOG("backlight: %s request logical=%d/65535 user-target=%d/65535",
+        userRequest ? "user" : "power", (int)level, (int)OSAddAtomic(0, &fUserLevel));
+    fPending = level;
     thread_call_enter(fApply);
     return true;
 }
@@ -227,10 +296,41 @@ void NVRMBacklightHandler::applyFire(thread_call_param_t p, thread_call_param_t)
     SInt32 v;
     do { v = me->fPending; } while (!OSCompareAndSwap((UInt32)v, (UInt32)-1, (volatile UInt32 *)&me->fPending));
     if (v < 0) return;
-    NvU32 percent = (NvU32)(v < kNVRMMinBacklight ? kNVRMMinBacklight : v);
+    NvU32 percent = nvrm_backlight_to_percent((UInt32)v);
     IOReturn r = me->fRM->callPlatformFunction(me->fFn, false, &percent, (void *)1, NULL, NULL);
-    if (r == kIOReturnSuccess) me->fLevel = v;
-    else BLLOG("backlight: setting %u%% failed (0x%x)", (unsigned)percent, r);
+    if (r == kIOReturnSuccess) {
+        me->fLevel = v;
+        BLLOG("backlight: applied logical=%d/65535 hardware=%u%% user-target=%d/65535",
+            (int)v, (unsigned)percent, (int)OSAddAtomic(0, &me->fUserLevel));
+        uint64_t deadline = __atomic_load_n(&me->fPersistDeadline, __ATOMIC_SEQ_CST);
+        if (deadline && OSAddAtomic(0, &me->fUserLevel) == v) {
+            // Only a successfully applied user target becomes eligible for persistence.
+            __atomic_store_n(&me->fPersistPending, v, __ATOMIC_SEQ_CST);
+            thread_call_enter_delayed(me->fPersist, deadline);
+        }
+    } else BLLOG("backlight: setting %u%% failed (0x%x)", (unsigned)percent, r);
+}
+
+void NVRMBacklightHandler::persistFire(thread_call_param_t p, thread_call_param_t)
+{
+    NVRMBacklightHandler *me = (NVRMBacklightHandler *)p;
+    SInt32 target = OSAddAtomic(0, &me->fPersistPending);
+    if (target < 0 || OSAddAtomic(0, &me->fUserLevel) != target) return;
+    uint64_t deadline = __atomic_load_n(&me->fPersistDeadline, __ATOMIC_SEQ_CST);
+    if (mach_absolute_time() < deadline) {
+        thread_call_enter_delayed(me->fPersist, deadline);
+        return;
+    }
+    IORegistryEntry *options = IORegistryEntry::fromPath("/options", gIODTPlane);
+    bool saved = options && nvrm_backlight_write(options, (UInt32)target);
+    OSSafeReleaseNULL(options);
+    if (saved) {
+        OSCompareAndSwap((UInt32)target, (UInt32)-1, (volatile UInt32 *)&me->fPersistPending);
+    } else {
+        BLLOG("backlight: saving logical target %d failed; retrying", (int)target);
+        clock_interval_to_deadline(kNVRMBacklightSaveDelaySeconds, kSecondScale, &deadline);
+        thread_call_enter_delayed(me->fPersist, deadline);
+    }
 }
 
 // 1 once this boot's guard clear happened (a head lit, or nothing to light): NVRM reads it (debug.nvrmfb_guard_cleared)
@@ -370,6 +470,16 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     void takeEdid(const NvU8 *src, NvU32 size);
     void clearDisplayAudioProperties();
     void publishDisplayAudioProperties();
+    void refreshDisplayAudioProperties();
+    void publishDisplayAudioPropertiesNow();
+    static void audioFire(thread_call_param_t, thread_call_param_t);
+    thread_call_t fAudioCall = nullptr;
+    IONotifier *fAudioReady = nullptr, *fCodecReady = nullptr;
+    static bool audioReady(void *, void *, IOService *, IONotifier *);
+    uint64_t fAudioGeneration = 0;
+    unsigned fAudioAttempt = 0;
+    bool fAudioValid = false;
+    uint8_t fAudioCodec[4] = {};
     thread_call_t fConnectNotify = nullptr;
     void notifyConnectionChanged(unsigned delayMs);
     static void connectNotifyFire(thread_call_param_t p0, thread_call_param_t);
@@ -551,7 +661,7 @@ public:
 OSDefineMetaClassAndStructors(NVRMNVDAFramebuffer, IOFramebuffer)
 struct nvrm_dpy_rec {
     NvKmsKapiDisplay handle; NvKmsKapiConnector connector; NvU32 headMask; NvBool internal;
-    NvU32 hdaConnectorType; NvU32 edidSize; NvU8 edid[NVKMS_KAPI_EDID_BUFFER_SIZE];
+    NvU32 hdaConnectorType; NvBool mst, connected; NvU32 edidSize; NvU8 edid[NVKMS_KAPI_EDID_BUFFER_SIZE];
 };
 static NvU32 nvrmHdaConnectorType(const struct NvKmsKapiConnectorInfo *info)
 {
@@ -850,6 +960,7 @@ bool NVRMNVDAFramebuffer::kapiInit()
             if (!dd->connected || !gs) continue;
             if (gNDpy >= (int)(sizeof gDpy / sizeof gDpy[0])) { FBLOG("dpy table full at %d", gNDpy); break; }
             struct nvrm_dpy_rec *r = &gDpy[gNDpy++];
+            r->connected = dd->connected ? NV_TRUE : NV_FALSE; r->mst = si.isDpMST;
             r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask; r->internal = si.internal;
             r->hdaConnectorType = si.internal ? 0 : nvrmQueryHdaConnectorType(fKms, fDev, si.connectorHandle);
             r->edidSize = dd->edid.bufferSize > sizeof r->edid ? (NvU32)sizeof r->edid : dd->edid.bufferSize;
@@ -962,6 +1073,11 @@ bool NVRMNVDAFramebuffer::kapiInit()
         int r = fKms->getDisplayMode(fDev, fDisplay, i, &m, &valid, &preferred);
         if (r < 0) break;
         if (r == 0 || !valid) continue;
+        if (!nvrmKmsRasterValid(m.timings.hVisible, m.timings.vVisible)) {
+            FBLOG("skip mode %u with raster %ux%u outside NVKMS layer range", i,
+                  m.timings.hVisible, m.timings.vVisible);
+            continue;
+        }
         if (preferred) { fMode = m; have = true; break; }
         const NvU64 area = (NvU64)m.timings.hVisible * m.timings.vVisible;
         if (!have || area > bestArea || (area == bestArea && m.timings.pixelClockHz > bestClock)) {
@@ -971,7 +1087,8 @@ bool NVRMNVDAFramebuffer::kapiInit()
     if (!have) { FBLOG("no valid mode"); return false; }
     if (gBootHead < 0 && fIndex == 0) fBootConsole = true;
     fKmsMode = fMode; fHaveKmsMode = true;
-    if (gBootHead >= 0 && fDisplay == gBootDpy && (int)fHead == gBootHead) {
+    if (gBootHead >= 0 && fDisplay == gBootDpy && (int)fHead == gBootHead &&
+        nvrmKmsRasterValid(gBootMode.timings.hVisible, gBootMode.timings.vVisible)) {
         // the fallback for a refused firmware timing must be the same raster (it scans out the same surface): the
         // validated mode at the boot size whose refresh is closest to the firmware's
         bool same = false; NvU32 bestGap = 0;
@@ -979,7 +1096,8 @@ bool NVRMNVDAFramebuffer::kapiInit()
             struct NvKmsKapiDisplayMode m = {}; NvBool valid = NV_FALSE, preferred = NV_FALSE;
             int r = fKms->getDisplayMode(fDev, fDisplay, i, &m, &valid, &preferred);
             if (r < 0) break;
-            if (r == 0 || !valid || m.timings.hVisible != gBootMode.timings.hVisible ||
+            if (r == 0 || !valid || !nvrmKmsRasterValid(m.timings.hVisible, m.timings.vVisible) ||
+                m.timings.hVisible != gBootMode.timings.hVisible ||
                 m.timings.vVisible != gBootMode.timings.vVisible) continue;
             const NvU32 gap = m.timings.refreshRate > gBootMode.timings.refreshRate ?
                 m.timings.refreshRate - gBootMode.timings.refreshRate : gBootMode.timings.refreshRate - m.timings.refreshRate;
@@ -990,6 +1108,11 @@ bool NVRMNVDAFramebuffer::kapiInit()
         fBootConsole = true;
         FBLOG("boot pair: display 0x%x keeps the firmware's mode %ux%u @%u on head %u", fDisplay,
               fMode.timings.hVisible, fMode.timings.vVisible, fMode.timings.refreshRate, fHead);
+    } else if (gBootHead >= 0 && fDisplay == gBootDpy && (int)fHead == gBootHead) {
+        fBootConsole = true;
+        FBLOG("firmware boot raster %ux%u is outside the NVKMS layer range; using selected mode %ux%u",
+              gBootMode.timings.hVisible, gBootMode.timings.vVisible,
+              fMode.timings.hVisible, fMode.timings.vVisible);
     }
     validateInitialDviMode();
     fW = fMode.timings.hVisible; fH = fMode.timings.vVisible;
@@ -1296,6 +1419,9 @@ static OSObject *copyGpuHdaGfx(IOService *provider)
 
 void NVRMNVDAFramebuffer::clearDisplayAudioProperties()
 {
+    NVRMDisplayGate gate;
+    ++fAudioGeneration;
+    fAudioValid = false;
     removeProperty("nvda-eld");
     removeProperty("hda-gfx");
     removeProperty("connector-type");
@@ -1305,9 +1431,11 @@ void NVRMNVDAFramebuffer::clearDisplayAudioProperties()
     removeProperty("IODisplayEDID");
 }
 
-void NVRMNVDAFramebuffer::publishDisplayAudioProperties()
+#include "nvrm-audio-auto.inc"
+
+void NVRMNVDAFramebuffer::publishDisplayAudioPropertiesNow()
 {
-    clearDisplayAudioProperties();
+    if (!fAudioValid) { removeProperty("audio-codec-info"); return; }
     if (fInternal || fEdidSize < 128 || fIndex >= (unsigned)gNDpy) return;
 
     const NvU32 connectorType = gDpy[fIndex].hdaConnectorType;
@@ -1325,20 +1453,9 @@ void NVRMNVDAFramebuffer::publishDisplayAudioProperties()
     if (pairing) { setProperty("hda-gfx", pairing); pairing->release(); }
     else setProperty("hda-gfx", "onboard-1");
 
-    // A configured NVRMFBDisplayAudioCodecInfo names the codec pin for this machine. Without one the first display pin,
-    // codec 0 pin widget 4, is used: measured on an RTX 5060 desktop (#284). Other boards wire the display to another
-    // pin (pin 5 on an RTX 5080 Laptop, #313) and set the property; a malformed one publishes no association.
-    OSObject *codecInfoObject = copyProperty("NVRMFBDisplayAudioCodecInfo");
-    if (!codecInfoObject) {
-        static const NvU8 kDefaultCodecInfo[4] = { 0x00, 0x01, 0x04, 0x00 };
-        codecInfoObject = OSData::withBytes(kDefaultCodecInfo, sizeof kDefaultCodecInfo);
-    }
+    OSObject *codecInfoObject = OSData::withBytes(fAudioCodec, sizeof fAudioCodec);
     OSData *codecInfo = OSDynamicCast(OSData, codecInfoObject);
-    const NvU8 *bytes = codecInfo ? (const NvU8 *)codecInfo->getBytesNoCopy() : nullptr;
-    if (!bytes || codecInfo->getLength() != 4 || !bytes[1] || !bytes[2]) {
-        OSSafeReleaseNULL(codecInfoObject);
-        return;
-    }
+    if (!codecInfo) return;
 
     struct nvrm_cea_scan cea;
     nvrm_scan_cea(fEdid, fEdidSize, &cea);
@@ -1349,7 +1466,14 @@ void NVRMNVDAFramebuffer::publishDisplayAudioProperties()
 
     NvU8 connector[4] = { (NvU8)connectorType, (NvU8)(connectorType >> 8),
                           (NvU8)(connectorType >> 16), (NvU8)(connectorType >> 24) };
-    NvU8 port[4] = { 0, 0, 0, 0 };
+    unsigned external = 0;
+    for (int i = 0; i < gNDpy; ++i)
+        if (gDpy[i].connected && !gDpy[i].internal) ++external;
+    NvU8 port[4] = {};
+    if (!nvrm_audio_port_number(fAudioCodec[2], external, &port[0])) {
+        OSSafeReleaseNULL(codecInfoObject);
+        return;
+    }
     NvU8 signal[4] = { 8, 0, 0, 0 };
     bool published = setProperty("connector-type", connector, sizeof connector);
     if (published) published = setProperty("port-number", port, sizeof port);
@@ -1456,6 +1580,7 @@ void NVRMNVDAFramebuffer::hotplugFire(thread_call_param_t, thread_call_param_t)
             // that was seen disconnected and is connected again gets its head lit with the same full mode set the
             // display-wake path uses (reflip). Only on that transition, so other display events cause no modeset.
             if (!dynOk) continue;
+            gDpy[kdpy].connected = dd->connected ? NV_TRUE : NV_FALSE;
             bool audioTypeChanged = false;
             if (dd->connected && kdpy >= 0) {
                 NvU32 connectorType = gDpy[kdpy].internal ? 0 :
@@ -1509,7 +1634,8 @@ void NVRMNVDAFramebuffer::hotplugFire(thread_call_param_t, thread_call_param_t)
         if (!me->fKms->getStaticDisplayInfo(me->fDev, handles[i], &si)) continue;
         if (gNDpy >= (int)(sizeof gDpy / sizeof gDpy[0])) break;
         struct nvrm_dpy_rec *r = &gDpy[gNDpy];
-        r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask; r->internal = si.internal;
+        r->connected = dd->connected ? NV_TRUE : NV_FALSE; r->mst = si.isDpMST;
+            r->handle = handles[i]; r->connector = si.connectorHandle; r->headMask = si.headMask; r->internal = si.internal;
         r->hdaConnectorType = si.internal ? 0 : nvrmQueryHdaConnectorType(me->fKms, me->fDev, si.connectorHandle);
         r->edidSize = dd->edid.bufferSize > sizeof r->edid ? (NvU32)sizeof r->edid : dd->edid.bufferSize;
         nvu_copy(r->edid, dd->edid.buffer, r->edidSize);
@@ -1523,6 +1649,7 @@ void NVRMNVDAFramebuffer::hotplugFire(thread_call_param_t, thread_call_param_t)
         if (listed) continue;
         nvu_zero(dd, sizeof *dd); dd->handle = gDpy[k].handle;
         if (!me->fKms->getDynamicDisplayInfo(me->fDev, dd) || dd->connected) continue;
+        gDpy[k].connected = false;
         for (unsigned f = 0; f < sizeof gFBs / sizeof gFBs[0]; f++) {
             NVRMNVDAFramebuffer *fb = gFBs[f];
             if (!fb || fb->fDisplay != gDpy[k].handle || fb->fDpyLost) continue;
@@ -1534,6 +1661,8 @@ void NVRMNVDAFramebuffer::hotplugFire(thread_call_param_t, thread_call_param_t)
             if (nnotify < sizeof notify / sizeof notify[0]) { fb->retain(); notify[nnotify++] = fb; }
         }
     }
+    for (unsigned i = 0; i < sizeof gFBs / sizeof gFBs[0]; ++i)
+        if (gFBs[i] && !gFBs[i]->fDpyLost) gFBs[i]->publishDisplayAudioProperties();
     if (sl) IORecursiveLockUnlock(sl);
     IOFree(dd, sizeof *dd);
     for (unsigned f = 0; f < nnotify; f++) {
@@ -1593,7 +1722,8 @@ void NVRMNVDAFramebuffer::trace(const char *s)
     size_t n = strlen(s);
     SInt32 off = OSAddAtomic((SInt32)(n + 1), &gTraceLen);
     if (off < 0 || (size_t)off + n + 2 >= sizeof gTrace) { gTraceFull = 1; return; }
-    memcpy(gTrace + off, s, n); gTrace[off + n] = '\n';
+    const size_t offset = (size_t)off;
+    memcpy(gTrace + offset, s, n); gTrace[offset + n] = '\n';
     OSIncrementAtomic(&gTraceN);
     NVRMNVDAFramebuffer *me = gFB;
     if (!me || !nvfbTracePublish()) return;
@@ -1901,8 +2031,8 @@ bool NVRMNVDAFramebuffer::reflip()
     hr->flags.activeChanged = hr->flags.displaysChanged = hr->flags.modeChanged = NV_TRUE;
     struct NvKmsKapiLayerRequestedConfig *lr = &hr->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
     lr->config.surface = front;
-    lr->config.srcWidth = fW; lr->config.srcHeight = fH;
-    lr->config.dstWidth = fRasterW; lr->config.dstHeight = fRasterH;
+    lr->config.srcWidth = (NvU16)fW; lr->config.srcHeight = (NvU16)fH;
+    lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
     lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE;
     lr->config.minPresentInterval = 0;
     lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged =
@@ -2450,8 +2580,8 @@ bool NVRMNVDAFramebuffer::setHeadActive(bool active)
         hr->flags.displaysChanged = hr->flags.modeChanged = NV_TRUE;
         struct NvKmsKapiLayerRequestedConfig *lr = &hr->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
         lr->config.surface = fSurf;
-        lr->config.srcWidth = fW; lr->config.srcHeight = fH;
-        lr->config.dstWidth = fRasterW; lr->config.dstHeight = fRasterH;
+        lr->config.srcWidth = (NvU16)fW; lr->config.srcHeight = (NvU16)fH;
+        lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
         lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE;
         lr->config.minPresentInterval = 1;
         lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged =
@@ -2522,7 +2652,8 @@ bool NVRMNVDAFramebuffer::applyMode()
     hr->modeSetConfig.bActive = NV_TRUE; hr->modeSetConfig.numDisplays = 1; hr->modeSetConfig.displays[0] = fDisplay; hr->modeSetConfig.mode = fMode;
     hr->flags.activeChanged = hr->flags.displaysChanged = hr->flags.modeChanged = NV_TRUE;
     struct NvKmsKapiLayerRequestedConfig *lr = &hr->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
-    lr->config.surface = fSurf; lr->config.srcWidth = fW; lr->config.srcHeight = fH; lr->config.dstWidth = fRasterW; lr->config.dstHeight = fRasterH;
+    lr->config.surface = fSurf; lr->config.srcWidth = (NvU16)fW; lr->config.srcHeight = (NvU16)fH;
+    lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
     lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE; lr->config.minPresentInterval = 1;
     lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged = lr->flags.dstXYChanged = lr->flags.dstWHChanged = NV_TRUE;
     nvrmUnownedHeadsOff(cfg);
@@ -2550,8 +2681,8 @@ bool NVRMNVDAFramebuffer::applyMode()
         nvrmHeadConfigBaseline(hr, fGammaOn && fGamma ? olutFromGamma() : NULL);
         hr->modeSetConfig.bActive = NV_TRUE; hr->modeSetConfig.numDisplays = 1; hr->modeSetConfig.displays[0] = fDisplay;
         hr->modeSetConfig.mode = fMode;
-        lr->config.surface = fSurf; lr->config.srcWidth = fW; lr->config.srcHeight = fH;
-        lr->config.dstWidth = fRasterW; lr->config.dstHeight = fRasterH;
+        lr->config.surface = fSurf; lr->config.srcWidth = (NvU16)fW; lr->config.srcHeight = (NvU16)fH;
+        lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
         lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE; lr->config.minPresentInterval = 1;
         lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged = lr->flags.dstXYChanged =
             lr->flags.dstWHChanged = NV_TRUE;
@@ -2741,6 +2872,8 @@ void NVRMNVDAFramebuffer::scheduleCall(thread_call_t call, uint64_t deadline)
 }
 void NVRMNVDAFramebuffer::stop(IOService *provider)
 {
+    if (fAudioReady) { fAudioReady->remove(); fAudioReady = nullptr; }
+    if (fCodecReady) { fCodecReady->remove(); fCodecReady = nullptr; }
     if (fFlipCacheLock) {
         IOInterruptState state = IOSimpleLockLockDisableInterrupt(fFlipCacheLock);
         fStopping = 1;
@@ -2768,7 +2901,7 @@ void NVRMNVDAFramebuffer::stop(IOService *provider)
         thread_call_free(fCursorCall);
         fCursorCall = nullptr;
     }
-    thread_call_t *calls[] = {&fHwVblCall, &fReflip, &fGpuWake, &fBars, &fVblTimer, &fSampler, &fHeadProbe, &fConnectNotify};
+    thread_call_t *calls[] = {&fHwVblCall, &fReflip, &fGpuWake, &fBars, &fVblTimer, &fSampler, &fHeadProbe, &fConnectNotify, &fAudioCall};
     for (unsigned i = 0; i < sizeof calls / sizeof calls[0]; ++i) {
         thread_call_t call = *calls[i];
         if (!call) continue;
@@ -2838,6 +2971,7 @@ IOReturn NVRMNVDAFramebuffer::enableController()
 {
     FBLOG("enableController");
     const bool ok = applyMode();
+    if (ok) refreshDisplayAudioProperties();
     // A display that appeared after boot: tell the framework, through the connect handler it registered (fConnect),
     // that this connection is new. It has to happen after the mode set -- WindowServer re-probes a framebuffer that
     // has a mode, and firing it earlier leaves the display undetected -- so it is a delayed call.
@@ -2943,25 +3077,31 @@ IOReturn NVRMNVDAFramebuffer::setDisplayMode(IODisplayModeID mode, IOIndex depth
 {
     FBLOG("fb%u setDisplayMode 0x%x depth %d (current 0x%x)", fIndex, (unsigned)mode, (int)depth, (unsigned)fCurId);
     if (depth != 0) return kIOReturnUnsupportedMode;
+    IOReturn result;
     if (mode == kModeId) {
-        if (fCurId == kModeId) return applyMode() ? kIOReturnSuccess : kIOReturnError;
-        const IOReturn rc = switchMode(kModeId, fBootMode, fBootW, fBootH, 0);
-        if (rc == kIOReturnSuccess) nvu_zero(&fCurDT, sizeof fCurDT);
-        return rc;
+        result = fCurId == kModeId
+            ? (applyMode() ? kIOReturnSuccess : kIOReturnError)
+            : switchMode(kModeId, fBootMode, fBootW, fBootH, 0);
+        if (result == kIOReturnSuccess) nvu_zero(&fCurDT, sizeof fCurDT);
+    } else {
+        int i = dtIndex(mode);
+        if (i < 0) return kIOReturnUnsupportedMode;
+        if (mode == fCurId && dtIsCurrent(fDT[i])) {
+            result = fModeSet ? kIOReturnSuccess : (applyMode() ? kIOReturnSuccess : kIOReturnError);
+        } else {
+            struct NvKmsKapiDisplayMode m = {};
+            if (!edidModeFor(&fDT[i], &m)) dtToKapi(&fDT[i], &m);
+            NvU32 w = 0, h = 0; dtSurfaceSize(&fDT[i], &w, &h);
+            const IODetailedTimingInformationV2 dt = fDT[i];
+            result = switchMode(mode, m, w, h, dt.scalerFlags & kIOScaleRotateFlags);
+            if (result == kIOReturnSuccess) {
+                fCurDT = dt;
+                publishCursorGeometry(&dt);
+            }
+        }
     }
-    int i = dtIndex(mode);
-    if (i < 0) return kIOReturnUnsupportedMode;
-    if (mode == fCurId && dtIsCurrent(fDT[i])) return fModeSet ? kIOReturnSuccess : (applyMode() ? kIOReturnSuccess : kIOReturnError);
-    struct NvKmsKapiDisplayMode m = {};
-    if (!edidModeFor(&fDT[i], &m)) dtToKapi(&fDT[i], &m);
-    NvU32 w = 0, h = 0; dtSurfaceSize(&fDT[i], &w, &h);
-    const IODetailedTimingInformationV2 dt = fDT[i];
-    const IOReturn rc = switchMode(mode, m, w, h, dt.scalerFlags & kIOScaleRotateFlags);
-    if (rc == kIOReturnSuccess) {
-        fCurDT = dt;
-        publishCursorGeometry(&dt);
-    }
-    return rc;
+    if (result == kIOReturnSuccess) refreshDisplayAudioProperties();
+    return result;
 }
 void NVRMNVDAFramebuffer::publishStartupTiming()
 {
@@ -3260,8 +3400,9 @@ IOReturn NVRMNVDAFramebuffer::switchMode(IODisplayModeID id, const struct NvKmsK
     if (fSubmissionFaulted) return kIOReturnNotReady;
     if (!fKms || !fDev || !fMem || fConsoleAperture) return kIOReturnNotReady;
     NvU32 pitch = 0;
-    if (!nvrmCheckedPitch(w, fPitchAlign, &pitch)) return kIOReturnBadArgument;
-    if (!w || !h || (NvU64)pitch * h > fMemBytes) {
+    if (!nvrmKmsRasterValid(w, h) || !nvrmKmsRasterValid(m.timings.hVisible, m.timings.vVisible) ||
+        !nvrmCheckedPitch(w, fPitchAlign, &pitch)) return kIOReturnBadArgument;
+    if ((NvU64)pitch * h > fMemBytes) {
         FBLOG("switchMode 0x%x: %ux%u pitch %u needs %llu B, the scanout holds %llu -- REFUSED",
               (unsigned)id, w, h, pitch, (unsigned long long)pitch * h, (unsigned long long)fMemBytes);
         return kIOReturnNoMemory;
@@ -3284,8 +3425,8 @@ IOReturn NVRMNVDAFramebuffer::switchMode(IODisplayModeID id, const struct NvKmsK
         hr->modeSetConfig.mode = m;
         hr->flags.activeChanged = hr->flags.displaysChanged = hr->flags.modeChanged = NV_TRUE;
         struct NvKmsKapiLayerRequestedConfig *lr = &hr->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
-        lr->config.surface = ns; lr->config.srcWidth = w; lr->config.srcHeight = h;
-        lr->config.dstWidth = m.timings.hVisible; lr->config.dstHeight = m.timings.vVisible;
+        lr->config.surface = ns; lr->config.srcWidth = (NvU16)w; lr->config.srcHeight = (NvU16)h;
+        lr->config.dstWidth = (NvU16)m.timings.hVisible; lr->config.dstHeight = (NvU16)m.timings.vVisible;
         lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE; lr->config.minPresentInterval = 1;
         lr->flags.surfaceChanged = lr->flags.srcXYChanged = lr->flags.srcWHChanged = lr->flags.dstXYChanged = lr->flags.dstWHChanged = NV_TRUE;
         nvrmUnownedHeadsOff(cfg);
@@ -3512,7 +3653,7 @@ IOReturn NVRMNVDAFramebuffer::getInformationForDisplayMode(IODisplayModeID mode,
             (!fRotationEnabled || !(d.horizontalScaled == rw && d.verticalScaled == rh));
         info->refreshRate = tot ? (UInt32)((d.pixelClock << 16) / tot) : (60u << 16);
         info->maxDepthIndex = 0;
-        info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | (fRotationEnabled ? kDisplayModeAcceleratorBackedFlag : 0) | (scaled ? kDisplayModeNotPresetFlag : 0);
+        info->flags = kDisplayModeValidFlag | kDisplayModeSafeFlag | (fRotationEnabled ? kDisplayModeAcceleratorBackedFlag : 0) | (scaled ? kDisplayModeNotPresetFlag | kDisplayModeValidForHiResFlag : 0);
         if (!scaled && d.horizontalActive == fBootW && d.verticalActive == fBootH)
             info->flags |= (fTransform ? 0 : kDisplayModeNativeFlag) | (fRotationEnabled ? kDisplayModeDefaultFlag : 0);
         info->imageWidth = fEdidMmW; info->imageHeight = fEdidMmH;
@@ -4099,8 +4240,8 @@ bool NVRMNVDAFramebuffer::flipToMemory(struct NvKmsKapiMemory *mem, unsigned w, 
     }
     struct NvKmsKapiLayerRequestedConfig *lr = &hr->layerRequestedConfig[NVKMS_KAPI_LAYER_PRIMARY_IDX];
     lr->config.surface = surf;
-    lr->config.srcWidth = w; lr->config.srcHeight = h;
-    lr->config.dstWidth = fRasterW; lr->config.dstHeight = fRasterH;
+    lr->config.srcWidth = (NvU16)w; lr->config.srcHeight = (NvU16)h;
+    lr->config.dstWidth = (NvU16)fRasterW; lr->config.dstHeight = (NvU16)fRasterH;
     lr->config.compParams.compMode = NVKMS_COMPOSITION_BLENDING_MODE_OPAQUE;
     lr->config.minPresentInterval = pure ? (NvU8)(gFlipInterval < 0 ? 0 : gFlipInterval > 4 ? 4 : gFlipInterval) : 0;
     lr->config.tearing = NV_FALSE;
@@ -4297,7 +4438,7 @@ bool NVRMNVDAFramebuffer::setHeadPower(bool awake)
         }
         const bool ok = reflip();
         // A rejected wake must remain retryable on the next power request.
-        if (ok) fHeadSlept = false;
+        if (ok) { fHeadSlept = false; publishDisplayAudioProperties(); }
         FBLOG("display wake: head %u mode and surface committed again -> %s (rc %d)", fHead, ok ? "ok" : "FAILED", fReflipRc);
         return ok;
     }

@@ -7,9 +7,11 @@ Other macOS versions keep the existing unrotated mode/scaler path.
 
 ## Current implementation
 
-The local candidate adapts the rotation commit
+The implementation adapts the rotation commit
 [`0700c208`](https://github.com/nullmoth/nvidia-macos-driver/commit/0700c208dc4e1ea511d406f2e79e3796fcf9eb66)
 from upstream PR 398. Its separate cross-process surface-busy/wait commit is excluded.
+Upstream 2.6.3 includes that same rotation commit; the fork keeps one implementation
+with its later timing-ID, identity, cursor and lifetime repairs.
 WindowServer rotates the desktop into the physical raster. The driver's normal
 presentation path scans it out; there is no additional rotation compute pass,
 CPU frame copy, output pool or framebuffer. The earlier 180° pixel correction
@@ -112,8 +114,10 @@ Install matching NVRMFB, Tahoe NVAccel and NVMTLDriver from this candidate. Runt
 markers are `NVRMRotationImplementationVersion=14` and
 `NVAccelNativeRotationProtocol=1`. Nonzero rotation probes require a matching
 accelerator on the same PCI device; restoring Standard remains independent of it.
-The release package versions/dependencies stay 2.5.5. The signed translator,
-main RM, NVK, codecs and firmware are reused unchanged. Kext signing is not required.
+Package versions/dependencies follow the release base (currently 2.6.3). Use its
+matching RM, codecs and firmware, plus the fork's rebuilt graphics components.
+Native Minecraft/Wine runtimes and the matching NVK renderer are retained when
+their sources and ABI are unchanged. Kext signing is not required.
 
 ```sh
 python3 tools/rotation/build.py --output out/native-rotation-fb --package-base ~/Downloads/pkgroot

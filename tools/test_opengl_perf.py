@@ -33,6 +33,7 @@ fixture = r'''
 #define NVMTL_E78_HAS(m,i) (!(m) || (((m)[(i)>>6] >> ((i)&63)) & 1))
 #define NVMTL_TABLES_PER_PAGE 256
 enum { NVMTL_E78_H3, E78C_SETREUSE, E78C_SETNEW };
+enum { NVMTL_SLOT_BUF=1 };
 ''' + slot_type + '\n' + table_limit + '\n' + table_type + r'''
 typedef struct { nvk_buffer buffer; } nvmtl_address_page;
 static nvk_buffer g_dummyBuf;
@@ -51,8 +52,7 @@ static int nvmtl_address_snapshot(nvk_cmdbuf *c, uint32_t which, VkDescriptorBuf
 static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint32_t hi,
         const uint64_t *mask, const uint64_t *tb, VkDescriptorSet from, const uint64_t *cm,
         const VkDescriptorBufferInfo *uniform) {
-    // These cases exercise the original address-table pipeline; promotion has separate fixtures.
-    assert(!uniform);
+    if (uniform) assert(uniform->buffer && uniform->range && uniform->offset==0);
     allocations++; copies += from != VK_NULL_HANDLE;
     c->dyn_out[which]=0; c->tab_out[which]=NULL;
     if (NVMTL_E78_HAS(mask,NVMTL_ADDRESS_BINDING)) {
@@ -115,6 +115,22 @@ int main(void) {
     p.bmask[1] |= 1;
     nvmtl_snapshot_set_c(&c,0,&p); assert(allocations==9 && copies>=1);
     enabled=0; nvmtl_snapshot_set_c(&c,0,&p); assert(allocations==10);
+    enabled=1; p.bmask[0]&=~1ull; p.gl_uniform_layout=1;
+    p.gl_uniform_slot[0]=8; p.gl_uniform_range[0]=80;
+    table.s[0][7]=(nvmtl_slot){.kind=NVMTL_SLOT_BUF,.h=(void *)77,.size=65536};
+    c.address_count=1;
+    VkDescriptorSet uniform=nvmtl_snapshot_set_c(&c,0,&p); assert(allocations==11);
+    for(unsigned i=1;i<16;i++) {
+        table.s[0][7].off=i*256; table.dirty[0]=1; table.chg[0][0]=1ull<<7;
+        assert(nvmtl_snapshot_set_c(&c,0,&p)==uniform && allocations==11);
+        assert(c.gl_uniform_dyn[0]==i*256);
+    }
+    p.gl_uniform_range[0]=96;
+    assert(nvmtl_snapshot_set_c(&c,0,&p)!=uniform && allocations==12);
+    table.s[0][7].h=(void *)78;
+    nvmtl_snapshot_set_c(&c,0,&p); assert(allocations==13);
+    p.gl_uniform_layout=0;
+    nvmtl_snapshot_set_c(&c,0,&p); assert(allocations==14);
     puts("PASS: unchanged/offset-only reuse, table-page rollover, texel/image masks, direct buffers, recycled sets, growing masks, opt-out");
 }
 '''

@@ -2074,7 +2074,7 @@ pub(super) fn build_stage_input(
             all_defs.entry(id).or_insert_with(|| g.clone());
         }
     }
-    let mut block_decorated: HashSet<Word> = HashSet::new();
+    let mut block_decorated: HashSet<Word> = HashSet::default();
     for (var, struct_ty) in &buffer_structs {
         if block_decorated.insert(*struct_ty) {
             decorate_block_struct(ctx, *struct_ty, &all_defs);
@@ -2120,7 +2120,7 @@ pub(super) fn build_stage_input(
         );
     }
     lower_patch_control_point_calls(ctx, entry_idx, vert, &all_defs)?;
-    lower_buffer_address_facts(ctx, entry_idx, kern)?;
+    lower_buffer_address_facts(ctx, entry_idx, BufferAddressRoles { kern, vert, frag })?;
 
     Ok(defs)
 }
@@ -2719,7 +2719,7 @@ impl Ctx {
         ty: Word,
         defs: &HashMap<Word, Instruction>,
     ) -> Word {
-        let mut memo = HashMap::new();
+        let mut memo = HashMap::default();
         self.clone_type_for_record_array_element_inner(ty, defs, &mut memo)
     }
 
@@ -2783,7 +2783,7 @@ mod tests {
 
     #[test]
     fn typed_buffer_alias_elements_include_numeric_vectors() {
-        let defs = HashMap::from([
+        let defs = crate::fxhash::map_from([
             (
                 1,
                 Instruction::new(
@@ -2823,7 +2823,7 @@ mod tests {
 
     #[test]
     fn tess_coord_binding_preserves_float3_and_only_truncates_float2() {
-        let mut defs = HashMap::new();
+        let mut defs = HashMap::default();
         defs.insert(1, ty(Op::TypeFloat, 1, vec![Operand::LiteralBit32(32)]));
         defs.insert(
             2,
@@ -2857,7 +2857,7 @@ mod tests {
 
     #[test]
     fn fragment_input_needs_flat_only_for_integer_and_double() {
-        let mut defs = HashMap::new();
+        let mut defs = HashMap::default();
         defs.insert(
             1,
             ty(
@@ -2902,7 +2902,7 @@ mod tests {
 
     #[test]
     fn type_contains_bool_descends_through_vectors() {
-        let mut defs = HashMap::new();
+        let mut defs = HashMap::default();
         defs.insert(1, ty(Op::TypeBool, 1, vec![]));
         defs.insert(2, ty(Op::TypeFloat, 2, vec![Operand::LiteralBit32(32)]));
         defs.insert(
@@ -2930,7 +2930,7 @@ mod tests {
 
     #[test]
     fn layout_types_reachable_from_walks_nested_struct_and_array_members() {
-        let mut defs = HashMap::new();
+        let mut defs = HashMap::default();
         defs.insert(
             1,
             ty(

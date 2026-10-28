@@ -16,8 +16,61 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.6.2 at `6e37546`**, from `upstream/main`, integrated on
-2026-10-27. The preceding base was 2.5.5 at `bf23ca7`, integrated on 2026-10-26.
+The current upstream base is **2.6.3 at `190a4d4`**, from `upstream/main`, integrated on
+2026-10-28. The preceding base was 2.6.2 at `6e37546`, integrated on 2026-10-27.
+
+## Upstream 2.6.3 integration
+
+Nine files had textual conflicts: the changelog, framebuffer, plugin device/event/library/Vulkan
+sources, GL performance fixture, translator inliner and wrapper. Preserve both release histories.
+The merge includes the following equivalences and decisions:
+
+- Upstream now includes the original GL constant-buffer/shadow PR and native rotation adaptation.
+  Keep each implementation once. Retain the later 16-sampler retry, bounded vector-prefix loads,
+  descriptor-array/pointer-escape guards, committed GL resource snapshots and the stronger cursor,
+  identity and current-mode repairs. Keep both physical-address fallback and uniform-table exports.
+- Take the typed immutable pointer-field forwarding, instruction-metadata parsing, native math,
+  buffer-helper/write-only shader repairs, MPS imageblock handling and Fx hashing. Preserve the
+  fork's sampler/A8/threadgroup retry options and AIR-based uniform eligibility.
+- Take the submit-ahead queue and part-retirement locking; lower the fork's committed-resource
+  uses under that same retirement lock. Keep uncertain-fence quarantine, conditional WindowServer
+  completion and capture/page-off ordering. The separate PR 398 foreign-process busy-tag polling
+  remains excluded, as in the prior fork; it is not required by native rotation or the new caches.
+- Take retained host-page imports/readback, application surface-upload scheduling, sampler-slot
+  restoration, framebuffer-fetch descriptor reuse and asynchronous shader-cache writes/touches.
+  Keep per-surface publication locking, descriptor/sampler caches, submission-copy discovery,
+  strict stencil detection, bounded badge mip tracking and release `-O2`.
+- Keep ANGLE Metal enabled by default for every app, with existing overrides and the opt-out.
+  Upstream's broader browser/framework detector still narrows the policy and is unnecessary here.
+  Retain the tested Chromium GPU-process/bridge-access decoder policy and native service delegation.
+- Take backlight persistence, display-audio mapping/refresh, raster bounds and HiDPI mode flags.
+  Keep the DVI startup timing repair, Tahoe-only rotation/opt-outs, scale-list ownership, per-head
+  identities and stable current timing IDs. Successful modesets refresh audio and cursor geometry.
+- Take upstream's main RM BAR1 placement/utilization and optional Intel-panel/HDA changes. Reuse
+  its matching release RM and unchanged NVK renderer rather than trying to link unavailable vendor
+  Darwin archives. Both OS accelerator variants must include the new utilization interface.
+
+Git's automatic merge silently concatenated both cursor-position transforms. Replace that result
+with the fork's existing locked 64-bit coordinate path; otherwise positions would rotate twice.
+Keep its kernel-priority ONCE worker, exported cancellation and accepted-work drain. The ordinary
+audio worker joins the generic cleanup list; the cursor remains outside that list.
+
+Use the official **2.6.3** package for RM, HDA/Intel extensions, codecs, firmware, installer and
+version metadata. Rebuild the release plugin, translator, NVRMFB and both 15/26 NVAccel variants;
+retain the coordinated AGDC stable-slot binary after source/hash verification. Include both the
+Minecraft runtime and compact Wine/NVK provider/DXVK pair. Their sources and renderer ABI are
+unchanged by this merge. Release preparation does not overwrite the manual Downloads/pkgroot.
+
+Validation records are under `out/upstream-2.6.3-merge-20261028-111911/`. The native translator's
+full library run reports 2191 passes, 17 failures and one ignored test; all 17 failures also occur
+on untouched upstream 2.6.3 under the same tools. The wrapper has 43 passes and two ignored tests;
+two tests needing unpublished local AIR files are filtered explicitly. Focused shader integration
+and host tests cover the retained repairs and new cache/audio/retirement behavior. This is not a
+fully passing upstream suite, a hardware boot, a four-monitor repair confirmation or an FPS result.
+The release plugin/translator, framebuffer and both accelerator variants compile. Thirty host
+scripts, two C++ harnesses, 22 focused Rust integration cases and the GL C-ABI translation checks
+pass. Package manifests/signatures and isolated Tahoe kernel-collection linking pass. Sequoia
+kernel linking, physical boot and application/multi-monitor testing remain outstanding.
 
 ## Native NVK runtime for Minecraft 26.3
 
@@ -119,9 +172,9 @@ Enable rotation only on Darwin 25, preserving property/`nvrmrotation=0` opt-outs
 Use implementation marker 14 and native accelerator protocol 1. Reject nonzero
 probes without a matching accelerator on the same PCI device; Standard restore
 remains available. Rebuild NVRMFB, Tahoe NVAccel and the release plugin together.
-This is a selected rotation adaptation; upstream 2.5.5 does not change the
-framebuffer or contain this rotation implementation. The separate surface-busy
-wait from PR 398 remains excluded.
+Upstream 2.6.3 now includes the original rotation adaptation. Keep its fork repairs
+once rather than applying rotation twice. The separate surface-busy wait from
+PR 398 remains excluded.
 
 The four-monitor RTX 3070 report exposes wrong-monitor rotation, mode fallback
 and mirroring; initial snapshots alone missed later failures. The candidate
@@ -157,7 +210,7 @@ both DVI and HDMI modesets succeeded and the user confirmed output. That test
 used shared controller grouping. Other GPUs/adapters and independent four-head
 rotation remain unqualified. See [DVI modes](DVI-MODES.md).
 
-## Upstream 2.6.2 integration
+## Historical upstream 2.6.2 integration
 
 Upstream adds four commits after 2.5.5, changing only `package/install.sh` and
 `CHANGELOG.md`. Resolve the changelog conflict by retaining the fork entries and

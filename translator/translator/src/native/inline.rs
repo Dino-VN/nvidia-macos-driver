@@ -1,5 +1,5 @@
+use crate::fxhash::{HashMap, HashSet};
 use super::lex::split_top_level;
-use std::collections::{HashMap, HashSet};
 
 pub(super) fn inline_direct_function_pointer_consumers(
     san_ll: &str,
@@ -38,7 +38,7 @@ pub(super) fn inline_direct_function_pointer_consumers(
         let Some((consumer, function)) = selected else {
             return source;
         };
-        let targets = HashSet::from([consumer]);
+        let targets = crate::fxhash::set_from([consumer]);
         let Some(inlined) = try_inline(&source, Some((&targets, &function, None))) else {
             return source;
         };
@@ -157,7 +157,7 @@ pub(super) fn inline_pointer_select_consumers(
     let mut source = san_ll.to_string();
     let mut changed = false;
     for (selected, consumer) in selected_consumers {
-        let targets = HashSet::from([consumer]);
+        let targets = crate::fxhash::set_from([consumer]);
         if let Some(inlined) = try_inline(&source, Some((&targets, selected.as_str(), entry_name)))
         {
             changed |= inlined != source;
@@ -179,7 +179,7 @@ pub(super) fn inline_cursor_call_sites(
     let mut source = san_ll.to_string();
     let mut changed = false;
     for (callee, argument) in ordered {
-        let targets = HashSet::from([format!("@{}", callee.trim_start_matches('@'))]);
+        let targets = crate::fxhash::set_from([format!("@{}", callee.trim_start_matches('@'))]);
         if let Some(inlined) = try_inline(&source, Some((&targets, argument.as_str(), None))) {
             changed |= inlined != source;
             source = inlined;
@@ -664,7 +664,7 @@ fn try_inline(
 ) -> Option<String> {
     let items = parse_items(san_ll)?;
 
-    let mut internal: HashMap<String, (DefSig, Vec<String>)> = HashMap::new();
+    let mut internal: HashMap<String, (DefSig, Vec<String>)> = HashMap::default();
     let mut has_any_func = false;
     for it in &items {
         if let Item::Func(f) = it {
@@ -782,7 +782,7 @@ fn drop_dead_internal_functions(items: Vec<Item>) -> Vec<Item> {
             Item::Func(f) => symbol_runs(&f.body),
         })
         .collect();
-    let mut live: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut live: crate::fxhash::HashSet<String> = crate::fxhash::HashSet::default();
     loop {
         let mut changed = false;
         for (item_index, it) in items.iter().enumerate() {
@@ -845,7 +845,7 @@ fn contains_bytes(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn symbol_runs(lines: &[String]) -> HashSet<&str> {
-    let mut runs = HashSet::new();
+    let mut runs = HashSet::default();
     for line in lines {
         let bytes = line.as_bytes();
         let mut i = 0;
@@ -943,7 +943,7 @@ fn render(items: &[Item], trailing_newline: bool) -> String {
 }
 
 fn internal_callgraph_has_cycle(internal: &HashMap<String, (DefSig, Vec<String>)>) -> bool {
-    let mut edges: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut edges: HashMap<&str, Vec<String>> = HashMap::default();
     for (name, (_, body)) in internal {
         let mut callees = Vec::new();
         for line in body {
@@ -1060,7 +1060,7 @@ fn inline_one(
 
     let (local_values, local_labels) = collect_callee_locals(callee_body)?;
 
-    let mut value_map: HashMap<String, String> = HashMap::new();
+    let mut value_map: HashMap<String, String> = HashMap::default();
     for (p, a) in sig.params.iter().zip(call.args.iter()) {
         value_map.insert(p.clone(), a.clone());
     }
@@ -1075,7 +1075,7 @@ fn inline_one(
         value_map.insert(p.clone(), a.clone());
     }
 
-    let mut label_map: HashMap<String, String> = HashMap::new();
+    let mut label_map: HashMap<String, String> = HashMap::default();
     for l in &local_labels {
         label_map.insert(l.clone(), format!("{prefix}.{l}"));
     }
@@ -1162,10 +1162,10 @@ fn inline_one(
             return None;
         }
         if non_void.len() == 1 {
-            let mut return_value = HashMap::new();
+            let mut return_value = HashMap::default();
             return_value.insert(result.clone(), non_void[0].0.clone());
             for line in &mut after_relabeled {
-                *line = rename_line(line, &return_value, &HashMap::new());
+                *line = rename_line(line, &return_value, &HashMap::default());
             }
         } else {
             let ret_ty = if !call.ret_ty.is_empty() {
@@ -1202,7 +1202,7 @@ fn inline_single_block_leaf(
     let prefix = format!(".inl{}", *counter);
     *counter += 1;
     let (local_values, _) = collect_callee_locals(callee_body)?;
-    let mut value_map = HashMap::new();
+    let mut value_map = HashMap::default();
     for (parameter, argument) in sig.params.iter().zip(&call.args) {
         value_map.insert(parameter.clone(), argument.clone());
     }
@@ -1226,7 +1226,7 @@ fn inline_single_block_leaf(
             });
             continue;
         }
-        replacement.push(rename_line(line, &value_map, &HashMap::new()));
+        replacement.push(rename_line(line, &value_map, &HashMap::default()));
     }
     let returned = returned?;
     let mut after = body[idx + 1..].to_vec();
@@ -1234,9 +1234,9 @@ fn inline_single_block_leaf(
         if returned.is_empty() {
             return None;
         }
-        let result_map = HashMap::from([(result.clone(), returned)]);
+        let result_map = crate::fxhash::map_from([(result.clone(), returned)]);
         for line in &mut after {
-            *line = rename_line(line, &result_map, &HashMap::new());
+            *line = rename_line(line, &result_map, &HashMap::default());
         }
     }
     let mut new_body = Vec::with_capacity(body.len() + replacement.len());
@@ -1318,8 +1318,8 @@ fn block_label_id(line: &str) -> Option<&str> {
 fn collect_callee_locals(body: &[String]) -> Option<(Vec<String>, Vec<String>)> {
     let mut values: Vec<String> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
-    let mut seen_v: HashSet<String> = HashSet::new();
-    let mut seen_l: HashSet<String> = HashSet::new();
+    let mut seen_v: HashSet<String> = HashSet::default();
+    let mut seen_l: HashSet<String> = HashSet::default();
     for line in body {
         if let Some(bare) = block_label_id(line) {
             if seen_l.insert(bare.to_string()) {
@@ -1438,19 +1438,19 @@ mod tests {
 
     #[test]
     fn rename_is_token_accurate() {
-        let mut vm = HashMap::new();
+        let mut vm = HashMap::default();
         vm.insert("%1".to_string(), "%.inl0.1".to_string());
         let line = "  %10 = add i32 %1, %11";
-        let out = rename_line(line, &vm, &HashMap::new());
+        let out = rename_line(line, &vm, &HashMap::default());
         assert_eq!(out, "  %10 = add i32 %.inl0.1, %11", "got: {out}");
     }
 
     #[test]
     fn rename_maps_label_positions() {
-        let mut lm = HashMap::new();
+        let mut lm = HashMap::default();
         lm.insert("5".to_string(), ".inl0.5".to_string());
         let line = "  br label %5";
-        let out = rename_line(line, &HashMap::new(), &lm);
+        let out = rename_line(line, &HashMap::default(), &lm);
         assert_eq!(out, "  br label %.inl0.5", "got: {out}");
     }
 
@@ -1617,7 +1617,7 @@ define i32 @main(i32 %0) {
             !out.contains("call i32 @inner"),
             "inner call remains:\n{out}"
         );
-        let prefixes: std::collections::HashSet<&str> = out
+        let prefixes: crate::fxhash::HashSet<&str> = out
             .match_indices(".inl")
             .filter_map(|(i, _)| out[i..].split('.').nth(1))
             .collect();
@@ -1825,6 +1825,35 @@ out:
         assert!(!text.contains("switch "), "{text}");
         assert!(text.contains("label %a, label %.swf1.n1") && text.contains(".swf1.n1:"), "{text}");
         assert!(text.contains("icmp eq i32 %t, 13") && text.contains("label %b, label %out"), "{text}");
+    }
+
+    #[test]
+    fn a_switch_whose_default_opens_with_a_phi_folds_and_the_phi_names_the_last_test_block() {
+        // MPS's depthwise convolution: case 7 falls through into case 8, and the default merges with a phi
+        let mut f = FuncBlock {
+            header: "define void @k(i32 %t) {".to_string(),
+            body: "entry:
+  switch i32 %t, label %out [
+    i32 7, label %seven
+    i32 8, label %eight
+  ]
+seven:
+  br label %eight
+eight:
+  br label %out
+out:
+  %p = phi i32 [ 1, %eight ], [ %t, %entry ]
+  ret void"
+                .lines()
+                .map(str::to_string)
+                .collect(),
+        };
+        assert!(fold_switches_to_branches_in(&mut f));
+        let text = f.body.join("\n");
+        assert!(!text.contains("switch "), "{text}");
+        assert!(text.contains("label %eight, label %out"), "the last test block takes the default edge:\n{text}");
+        assert!(text.contains("[ %t, %.swf1.n1 ]"), "the phi names the block the default edge now comes from:\n{text}");
+        assert!(!text.contains("[ %t, %entry ]"), "{text}");
     }
 
     #[test]
@@ -2130,10 +2159,18 @@ mod b52_equiv_tests {
 pub(crate) fn inline_and_forward_object_fields(san_ll: &str) -> Option<String> {
     let inlined = try_inline(san_ll, None).unwrap_or_else(|| san_ll.to_string());
     let mut items = parse_items(&inlined)?;
+    let named_types = inlined.lines().filter_map(|line| {
+        let (name, definition) = line.split_once(" = type ")?;
+        Some((name.to_string(), super::parse::parse_type(definition).ok()?))
+    }).collect::<HashMap<_, _>>();
     let mut changed = inlined != san_ll;
     for item in &mut items {
         let Item::Func(f) = item else { continue };
-        if forward_object_fields_in(f) {
+        // a second round sees the objects the first one emptied of readers (the texture env) as write-only (#419)
+        for _ in 0..4 {
+            if !forward_object_fields_in(f, &named_types) {
+                break;
+            }
             changed = true;
         }
         if fold_switches_to_branches_in(f) {
@@ -2215,10 +2252,21 @@ fn fold_switches_to_branches_in(f: &mut FuncBlock) -> bool {
                 None => groups.push((target.clone(), vec![value.clone()])),
             }
         }
-        if groups.is_empty()
-            || groups.iter().any(|g| g.0 == default || target_has_phi(&f.body, &g.0))
-            || (groups.len() > 1 && target_has_phi(&f.body, &default))
-        {
+        if groups.is_empty() || groups.iter().any(|g| g.0 == default || target_has_phi(&f.body, &g.0)) {
+            i = end + 1;
+            continue;
+        }
+        // A default that opens with phis takes its edge from the chain's last test block instead of the switch block,
+        // so their entries for the switch block are renamed. MPS's depthwise convolution (Geekbench) inlines a switch
+        // whose case 7 falls through into case 8 and whose default merges with a phi; left a switch, the structurizer
+        // found no merge for it.
+        let switch_block = f.body[..i]
+            .iter()
+            .rev()
+            .find_map(|l| block_label_id(l).map(str::to_string))
+            .or_else(|| (!f.body[..i].iter().any(|l| block_label_id(l).is_some())).then(|| "entry".to_string()));
+        let default_phi_edge = groups.len() > 1 && target_has_phi(&f.body, &default);
+        if default_phi_edge && switch_block.is_none() {
             i = end + 1;
             continue;
         }
@@ -2246,6 +2294,24 @@ fn fold_switches_to_branches_in(f: &mut FuncBlock) -> bool {
         }
         let n = lines.len();
         f.body.splice(i..=end, lines);
+        if default_phi_edge {
+            if let Some(from) = &switch_block {
+                let last = format!("%{tag}.n{}", groups.len() - 1);
+                let from = format!("%{from} ]");
+                if let Some(at) = f.body.iter().position(|l| block_label_id(l) == Some(default.as_str())) {
+                    for line in f.body[at + 1..].iter_mut() {
+                        let t = line.trim();
+                        if t.is_empty() || t.starts_with(';') {
+                            continue;
+                        }
+                        if !t.contains(" = phi ") {
+                            break;
+                        }
+                        *line = line.replace(&from, &format!("{last} ]"));
+                    }
+                }
+            }
+        }
         i += n;
         changed = true;
     }
@@ -2258,8 +2324,8 @@ fn fold_switches_to_branches_in(f: &mut FuncBlock) -> bool {
 fn fold_single_value_phis_in(f: &mut FuncBlock) -> bool {
     let mut changed = false;
     for _ in 0..8 {
-        let mut map: HashMap<String, String> = HashMap::new();
-        let mut drop: HashSet<usize> = HashSet::new();
+        let mut map: HashMap<String, String> = HashMap::default();
+        let mut drop: HashSet<usize> = HashSet::default();
         for (i, line) in f.body.iter().enumerate() {
             if !is_phi_line(line) {
                 continue;
@@ -2288,7 +2354,7 @@ fn fold_single_value_phis_in(f: &mut FuncBlock) -> bool {
         if map.is_empty() {
             break;
         }
-        let empty = HashMap::new();
+        let empty = HashMap::default();
         let body = std::mem::take(&mut f.body);
         f.body = body
             .into_iter()
@@ -2442,18 +2508,16 @@ fn split_sampler_phi_samples_in(f: &mut FuncBlock) -> bool {
     changed
 }
 
-fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
+fn forward_object_fields_in(f: &mut FuncBlock, named_types: &HashMap<String, super::ir::LlType>) -> bool {
     let first_label = f
         .body
         .iter()
         .enumerate()
         .skip(1)
-        .find(|(_, l)| {
-            !l.starts_with(' ') && !l.starts_with('\t') && l.split_whitespace().next().is_some_and(|w| w.ends_with(':'))
-        })
+        .find(|(_, line)| super::lex::strip_comment(line).trim().ends_with(':'))
         .map(|(i, _)| i)
         .unwrap_or(f.body.len());
-    let mut allocas: HashSet<String> = HashSet::new();
+    let mut allocas: HashSet<String> = HashSet::default();
     for line in &f.body {
         let t = line.trim();
         if let Some((name, rest)) = t.split_once(" = ") {
@@ -2466,7 +2530,7 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
         return false;
     }
     // field pointers: %g = getelementptr inbounds <T>, ptr %alloca, <indices>  ->  (alloca, indices)
-    let mut field_of: HashMap<String, (String, String)> = HashMap::new();
+    let mut field_of: HashMap<String, (String, String)> = HashMap::default();
     for line in &f.body {
         let t = line.trim();
         let Some((name, rest)) = t.split_once(" = ") else { continue };
@@ -2478,8 +2542,54 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             field_of.insert(name.to_string(), (base.to_string(), indices.to_string()));
         }
     }
+    // write-only allocas: once the callee is inlined, ANGLE's texture-env object only receives the addresses of the
+    // texture and sampler locals and is never read. Storing an address into such an object is not an escape; counted as
+    // one, the sampler local kept its load, the emitter lost the store of the sampler handle, and the shader read its
+    // sampler index through a null address (a GPU MMU fault in Chrome WebGL2, #419; patch by eisda).
+    let write_only: HashSet<String> = allocas
+        .iter()
+        .filter(|a| {
+            let fields: Vec<&String> = field_of.iter().filter(|(_, (b, _))| b == *a).map(|(g, _)| g).collect();
+            let mut casts: Vec<String> = Vec::new();
+            for line in &f.body {
+                let t = line.trim();
+                if !mentions(t, a) {
+                    continue;
+                }
+                let Some((name, rest)) = t.split_once(" = ") else { return false };
+                if name == a.as_str() && rest.starts_with("alloca ") {
+                    continue;
+                }
+                if field_of.get(name).is_some_and(|(b, _)| b == *a) {
+                    continue;
+                }
+                if rest.starts_with("bitcast ptr ") && rest.ends_with(" to ptr") {
+                    casts.push(name.to_string());
+                    continue;
+                }
+                return false;
+            }
+            f.body.iter().all(|line| {
+                let t = line.trim();
+                let field_ok = fields.iter().all(|g| {
+                    !mentions(t, g)
+                        || t.split_once(" = ").is_some_and(|(n, _)| n == g.as_str())
+                        || t.strip_prefix("store ").and_then(|s| s.rsplit_once(", ptr ")).is_some_and(|(v, addr)| {
+                            !mentions(v, g) && addr.split(',').next().unwrap_or("").trim() == g.as_str()
+                        })
+                });
+                let cast_ok = casts.iter().all(|c| {
+                    !mentions(t, c)
+                        || t.split_once(" = ").is_some_and(|(n, _)| n == c.as_str())
+                        || t.contains("@llvm.lifetime.")
+                });
+                field_ok && cast_ok
+            })
+        })
+        .cloned()
+        .collect();
     // escapes: an alloca or one of its fields handed to anything but a store/load address or a lifetime marker
-    let mut escaped: HashSet<String> = HashSet::new();
+    let mut escaped: HashSet<String> = HashSet::default();
     for line in &f.body {
         let t = line.trim();
         if t.contains("call ") && !t.contains("@llvm.lifetime.") {
@@ -2495,8 +2605,12 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             }
         }
         if let Some(stored) = t.strip_prefix("store ") {
-            // the alloca or a field pointer stored as a value escapes
-            if let Some((value, _)) = stored.split_once(", ptr ") {
+            // the alloca or a field pointer stored as a value escapes, unless it lands in a write-only object
+            if let Some((value, addr)) = stored.split_once(", ptr ") {
+                let addr = addr.split(',').next().unwrap_or("").trim();
+                if field_of.get(addr).is_some_and(|(b, _)| write_only.contains(b)) {
+                    continue;
+                }
                 for a in &allocas {
                     if mentions(value, a) {
                         escaped.insert(a.clone());
@@ -2510,9 +2624,103 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             }
         }
     }
+    // Extending the entry-only rule needs an alias proof as well as dominance.
+    // Accept only direct, constant-index fields of the same aggregate type.
+    // An address used by anything else can hide a clobber of any field.
+    let mut nonentry_unsafe = escaped.clone();
+    let mut root_types = HashMap::<String, String>::default();
+    let mut field_paths = HashMap::<String, (String, Vec<i64>)>::default();
+    for (field, (root, indices)) in &field_of {
+        let path = indices.split(',').map(|index| {
+            let words = index.split_whitespace().collect::<Vec<_>>();
+            (words.len() == 2 && words[0].starts_with('i'))
+                .then(|| words[1].parse::<i64>().ok()).flatten()
+        }).collect::<Option<Vec<_>>>();
+        if let Some(path) = path.filter(|path| path.first() == Some(&0)) {
+            field_paths.insert(field.clone(), (root.clone(), path));
+        } else {
+            nonentry_unsafe.insert(root.clone());
+        }
+        if !root.trim_start_matches('%').chars().all(is_name_char)
+            || !field.trim_start_matches('%').chars().all(is_name_char)
+        {
+            nonentry_unsafe.insert(root.clone());
+        }
+    }
+    let paths = field_paths.values().collect::<Vec<_>>();
+    for (root, path) in &paths {
+        if paths.iter().any(|(other_root, other)| {
+            other_root == root && other != path
+                && (other.starts_with(path) || path.starts_with(other))
+        }) {
+            nonentry_unsafe.insert(root.clone());
+        }
+    }
+    let mut lifetime_casts = HashSet::default();
+    for line in &f.body {
+        let Some((name, rest)) = line.trim().split_once(" = ") else { continue };
+        if rest.starts_with("bitcast ") && (allocas.iter().any(|root| mentions(rest, root))
+            || field_of.keys().any(|field| mentions(rest, field)))
+            && f.body.iter().filter(|use_line| mentions(use_line, name))
+                .all(|use_line| def_lhs(use_line) == Some(name)
+                    || is_local_lifetime_call(use_line))
+        {
+            lifetime_casts.insert(name.to_string());
+        }
+        let Some((root, _)) = field_of.get(name) else { continue };
+        let Some(gep) = rest.strip_prefix("getelementptr inbounds ")
+            .or_else(|| rest.strip_prefix("getelementptr ")) else { continue };
+        let Some((source_type, _)) = gep.split_once(", ptr ") else { continue };
+        if !field_paths.get(name).is_some_and(|(_, path)| {
+            pointer_field_type(source_type, path, named_types)
+        }) {
+            nonentry_unsafe.insert(root.clone());
+        }
+        if root_types.insert(root.clone(), source_type.to_string())
+            .is_some_and(|previous| previous != source_type)
+        {
+            nonentry_unsafe.insert(root.clone());
+        }
+    }
+    for line in &f.body {
+        let text = line.trim();
+        let lhs = def_lhs(line);
+        let locals = text.split('%').skip(1).map(|tail| {
+            format!("%{}", tail.chars().take_while(|c| is_name_char(*c)).collect::<String>())
+        }).collect::<HashSet<_>>();
+        let used_roots = locals.iter().filter_map(|name| {
+            if allocas.contains(name) { Some(name.as_str()) }
+            else { field_of.get(name).map(|(root, _)| root.as_str()) }
+        }).collect::<HashSet<_>>();
+        for root in used_roots {
+            let root_used = locals.contains(root);
+            let fields = locals.iter().filter(|field| field_of.get(*field).is_some_and(|(owner, _)| owner == root))
+                .map(String::as_str).collect::<Vec<_>>();
+            if !root_used && fields.is_empty() { continue; }
+            let own_alloca = lhs == Some(root) && text.contains(" = alloca ");
+            let field_definition = lhs.is_some_and(|name| field_of.get(name).is_some_and(|(owner, _)| owner == root));
+            let lifetime = is_local_lifetime_call(text)
+                || lhs.is_some_and(|name| lifetime_casts.contains(name));
+            let field_access = !root_used && !text.contains("volatile") && !text.contains("atomic")
+                && fields.iter().all(|field| {
+                    // A field address may only be a load/store destination;
+                    // passing or storing the address itself escapes the object.
+                    let Some((_, address)) = text.rsplit_once(", ptr ") else { return false };
+                    let address = address.split(',').next().unwrap_or("").trim();
+                    address == *field && (text.starts_with("store ptr ")
+                        || text.contains(" = load ptr,") || text.contains(" = load ptr addrspace("))
+                        && !mentions(text.split_once(", ptr ").map(|(prefix, _)| prefix).unwrap_or(text), field)
+                });
+            if !(own_alloca || field_definition || lifetime || field_access) {
+                nonentry_unsafe.insert(root.to_string());
+            }
+        }
+    }
+    let flow = local_field_flow(f);
     // stores of pointers into fields: key -> (value, line)
-    let mut stores: HashMap<(String, String), Vec<(String, usize)>> = HashMap::new();
-    let mut any_store: HashMap<(String, String), usize> = HashMap::new();
+    let mut stores: HashMap<(String, String), Vec<(String, usize)>> = HashMap::default();
+    let mut any_store: HashMap<(String, String), usize> = HashMap::default();
+    let mut canonical_stores = HashMap::<(String, Vec<i64>), usize>::default();
     for (i, line) in f.body.iter().enumerate() {
         let t = line.trim();
         let Some(stored) = t.strip_prefix("store ") else { continue };
@@ -2520,6 +2728,9 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
         let addr = addr.split(',').next().unwrap_or("").trim();
         let Some(key) = field_of.get(addr).cloned() else { continue };
         *any_store.entry(key.clone()).or_default() += 1;
+        if let Some(path) = field_paths.get(addr) {
+            *canonical_stores.entry(path.clone()).or_default() += 1;
+        }
         // `ptr addrspace(N) %v` first: "ptr " also prefixes it, and read that way the value was "addrspace(2) %v", so a
         // buffer pointer kept in an object field was never forwarded (Blender Eevee's light_cull_buf, re-read in the light loop)
         let value = value.trim();
@@ -2530,8 +2741,8 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             }
         }
     }
-    let mut value_map: HashMap<String, String> = HashMap::new();
-    let mut drop: HashSet<usize> = HashSet::new();
+    let mut value_map: HashMap<String, String> = HashMap::default();
+    let mut drop: HashSet<usize> = HashSet::default();
     for (i, line) in f.body.iter().enumerate() {
         let t = line.trim();
         let Some((name, rest)) = t.split_once(" = ") else { continue };
@@ -2546,9 +2757,25 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             continue;
         }
         let Some([(value, at)]) = stores.get(key).map(|v| v.as_slice()) else { continue };
-        if *at >= first_label || *at >= i {
+        if *at >= i {
             continue;
         }
+        if *at >= first_label && (nonentry_unsafe.contains(&key.0)
+            || field_paths.get(addr).and_then(|path| canonical_stores.get(path)) != Some(&1)
+            // A memory slot can reinterpret pointer address spaces. Replacing
+            // its load by the stored SSA value requires the same pointer type.
+            || !super::parse::parse_type_prefix(
+                f.body[*at].trim().strip_prefix("store ").unwrap_or("")
+            ).ok().is_some_and(|stored| {
+                matches!(stored, super::ir::LlType::Ptr(_))
+                    && super::parse::parse_type(&rest[..pos]).ok() == Some(stored)
+            })
+            || !flow.as_ref().is_some_and(|(positions, dominance)| {
+                let from = positions[*at]; let to = positions[i];
+                dominance[from].is_some() && dominance[to].is_some()
+                    && (from == to || crate::dominators::dominates_interval(dominance, from, to))
+            }))
+        { continue; }
         value_map.insert(name.to_string(), value.clone());
         drop.insert(i);
     }
@@ -2569,7 +2796,7 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
             (k.clone(), v)
         })
         .collect();
-    let empty = HashMap::new();
+    let empty = HashMap::default();
     let body = std::mem::take(&mut f.body);
     f.body = body
         .into_iter()
@@ -2578,6 +2805,54 @@ fn forward_object_fields_in(f: &mut FuncBlock) -> bool {
         .map(|(_, line)| rename_line(&line, &resolved, &empty))
         .collect();
     true
+}
+
+fn pointer_field_type(source: &str, path: &[i64], named: &HashMap<String, super::ir::LlType>) -> bool {
+    use super::ir::LlType;
+    let Ok(mut ty) = super::parse::parse_type(source) else { return false };
+    for index in path.iter().skip(1) {
+        let mut seen = HashSet::default();
+        while let LlType::Named(name) = &ty {
+            if !seen.insert(name.clone()) { return false; }
+            let Some(resolved) = named.get(name) else { return false };
+            ty = resolved.clone();
+        }
+        let Ok(index) = usize::try_from(*index) else { return false };
+        ty = match ty {
+            LlType::Struct(fields) => match fields.get(index) { Some(field) => field.clone(), None => return false },
+            LlType::Array(element, count) if index < count as usize => *element,
+            _ => return false,
+        };
+    }
+    matches!(ty, LlType::Ptr(_))
+}
+
+fn local_field_flow(f: &FuncBlock) -> Option<(Vec<usize>, Vec<Option<(usize, usize)>>)> {
+    if f.body.iter().any(|line| super::lex::strip_comment(line).trim().ends_with(':')
+        && block_label_id(line).is_none())
+    { return None; }
+    let lines = f.body.iter().map(String::as_str).collect::<Vec<_>>();
+    let blocks = super::cfg::split_source_body_blocks(&lines, "%m2v.field.entry".to_string(), &HashMap::default()).ok()?;
+    if blocks.iter().any(|block| block.typed.is_none()) { return None; }
+    let names = blocks.iter().enumerate().map(|(index, block)| (block.name.clone(), index)).collect::<HashMap<_, _>>();
+    let successors = blocks.iter().map(|block| {
+        block.typed.as_ref()?.terminator.successors().into_iter()
+            .map(|name| names.get(name).copied()).collect::<Option<Vec<_>>>()
+    }).collect::<Option<Vec<_>>>()?;
+    let predecessors = crate::dominators::build_predecessors(&successors);
+    let (_, dominance, _) = crate::dominators::dominance(&successors, &predecessors);
+    let mut current = 0;
+    let positions = f.body.iter().map(|line| {
+        if let Some(label) = block_label_id(line) { current = *names.get(&format!("%{label}"))?; }
+        Some(current)
+    }).collect::<Option<Vec<_>>>()?;
+    Some((positions, dominance))
+}
+
+fn is_local_lifetime_call(line: &str) -> bool {
+    parse_call(super::lex::strip_comment(line)).is_some_and(|call| matches!(call.callee.as_str(),
+        "@llvm.lifetime.start.p0" | "@llvm.lifetime.end.p0"
+        | "@llvm.lifetime.start.p0i8" | "@llvm.lifetime.end.p0i8"))
 }
 
 /// `text` names the value `name` (not just a longer name starting with it)
@@ -2601,7 +2876,7 @@ pub(crate) fn forward_builder_pointer_fields(san_ll: &str) -> std::borrow::Cow<'
     let Some(mut items) = parse_items(san_ll) else {
         return std::borrow::Cow::Borrowed(san_ll);
     };
-    let mut builders: HashMap<String, Vec<(Vec<String>, usize)>> = HashMap::new();
+    let mut builders: HashMap<String, Vec<(Vec<String>, usize)>> = HashMap::default();
     for item in &items {
         if let Item::Func(f) = item {
             if let Some((name, fields)) = builder_pointer_fields(f) {
@@ -2615,7 +2890,7 @@ pub(crate) fn forward_builder_pointer_fields(san_ll: &str) -> std::borrow::Cow<'
     let mut changed = false;
     for item in &mut items {
         let Item::Func(f) = item else { continue };
-        let mut results: HashMap<String, (&Vec<(Vec<String>, usize)>, Vec<String>)> = HashMap::new();
+        let mut results: HashMap<String, (&Vec<(Vec<String>, usize)>, Vec<String>)> = HashMap::default();
         for line in &f.body {
             if let Some(call) = parse_call(line) {
                 if let (Some(result), Some(fields)) = (call.result, builders.get(&call.callee)) {
@@ -2626,7 +2901,7 @@ pub(crate) fn forward_builder_pointer_fields(san_ll: &str) -> std::borrow::Cow<'
         if results.is_empty() {
             continue;
         }
-        let mut value_map: HashMap<String, String> = HashMap::new();
+        let mut value_map: HashMap<String, String> = HashMap::default();
         let mut drop = Vec::new();
         for (n, line) in f.body.iter().enumerate() {
             let Some((dst, agg, path)) = parse_extractvalue(line) else { continue };
@@ -2643,7 +2918,7 @@ pub(crate) fn forward_builder_pointer_fields(san_ll: &str) -> std::borrow::Cow<'
         if value_map.is_empty() {
             continue;
         }
-        let empty = HashMap::new();
+        let empty = HashMap::default();
         let body = std::mem::take(&mut f.body);
         f.body = body
             .into_iter()
@@ -2684,7 +2959,7 @@ fn builder_pointer_fields(f: &FuncBlock) -> Option<(String, Vec<(Vec<String>, us
     if !sig.internal {
         return None;
     }
-    let mut chain: HashMap<String, (String, Vec<String>, String)> = HashMap::new();
+    let mut chain: HashMap<String, (String, Vec<String>, String)> = HashMap::default();
     let mut ret = None;
     for line in &f.body {
         let t = line.trim();

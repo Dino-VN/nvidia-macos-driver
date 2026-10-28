@@ -13,6 +13,7 @@ pub mod env_vars;
 mod fc_air_specialize;
 mod fc_specialize;
 pub(crate) mod float16;
+pub mod fxhash;
 pub mod ift_runtime;
 mod layout;
 pub mod linked_functions;
@@ -205,7 +206,7 @@ fn stage_buffer_layouts<'a>(
     frag: Option<&'a meta::FragMeta>,
     vert: Option<&'a meta::VertMeta>,
     kern: Option<&'a meta::KernMeta>,
-) -> Option<&'a std::collections::HashMap<u32, meta::AirType>> {
+) -> Option<&'a crate::fxhash::HashMap<u32, meta::AirType>> {
     match stage {
         passes::Stage::Fragment => frag.map(|meta| &meta.buffer_layouts),
         passes::Stage::Vertex => vert.map(|meta| &meta.buffer_layouts),
@@ -1095,7 +1096,7 @@ fn finish_module(
         .local_pointer_field_stores
         .iter()
         .map(|fact| fact.id)
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<crate::fxhash::HashSet<_>>();
     if native::lower_unobserved_bda_aggregate_pointer_fields_module(&mut out)? {
         native::eliminate_dead_values_module(&mut out, &preserved_pointer_facts);
     }
@@ -1137,6 +1138,7 @@ fn finish_module(
     passes::drop_unrequired_capabilities(&mut out);
     reflect::decorate_unwritten_descriptors(&mut out);
     let _ = b78_tcg::state_readonly_psb(&mut out, kern, options.descriptor_layout);
+    native::decay_short_access_chains_module(&mut out);
     if let Some(failure) = native::owned_module_failure(&out) {
         if let Some(path) = env_vars::retry_dump() {
             let _ = std::fs::write(path, assemble_finished_module(&out));

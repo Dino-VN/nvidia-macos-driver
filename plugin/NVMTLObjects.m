@@ -107,6 +107,10 @@ __attribute__((constructor)) static void nvmtl_conf_knobs(void)
     if (!f) { if (forgot) nvlog("conf: forgot %u inherited knob(s); no conf file", forgot); return; }
     char line[512];
     unsigned took = 0;
+    // The last line for a key wins: the installer keeps the user's own block ("my settings, kept on update") at the end
+    // of the file, and the first match used to win, so a shipped value of the same key above it silently beat the
+    // user's (#399). Keys set by an earlier line of this file may be replaced; the real environment still wins.
+    char fromFile[64][48]; unsigned nFromFile = 0;
     while (fgets(line, sizeof line, f)) {
         char *p = line;
         while (*p == ' ' || *p == '\t') p++;
@@ -120,12 +124,21 @@ __attribute__((constructor)) static void nvmtl_conf_knobs(void)
         end = val + strlen(val);
         while (end > val && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
         if (strncmp(key, "NVMTL_", 6) && strncmp(key, "NVK_", 4) && strncmp(key, "NVRM_", 5)) continue;
-        if (getenv(key)) continue;
-        if (setenv(key, val, 0) == 0) { took++;
-            int k = snprintf(recbuf + recn, sizeof recbuf - recn, "%s%s=%s", recn ? ";" : "", key, val);
-            if (k > 0 && (size_t)k < sizeof recbuf - recn) recn += (size_t)k; else recbuf[recn] = 0; }
+        bool ours = false;
+        for (unsigned i = 0; i < nFromFile; i++) if (!strcmp(fromFile[i], key)) { ours = true; break; }
+        if (getenv(key) && !ours) continue;
+        if (setenv(key, val, 1) == 0) { if (ours) { nvlog("conf: %s=%s (a later line of the file replaces an earlier one)", key, val); continue; }
+            took++;
+            if (nFromFile < 64 && strlen(key) < sizeof fromFile[0]) strcpy(fromFile[nFromFile++], key); }
     }
     fclose(f);
+    // NVMTL_CONF_SET records the values this file set, as they stand after every line, so a child process forgets
+    // exactly these (an override recorded at its first value would no longer match and be kept as if user-set)
+    for (unsigned i = 0; i < nFromFile; i++) {
+        const char *v = getenv(fromFile[i]); if (!v) continue;
+        int k = snprintf(recbuf + recn, sizeof recbuf - recn, "%s%s=%s", recn ? ";" : "", fromFile[i], v);
+        if (k > 0 && (size_t)k < sizeof recbuf - recn) recn += (size_t)k; else { recbuf[recn] = 0; break; }
+    }
     if (recn) setenv("NVMTL_CONF_SET", recbuf, 1);
     if (took || forgot) nvlog("conf: %u knob(s) read from /Library/GPUBundles/nvmtl/nvrm610.conf, %u inherited conf knob(s) forgotten first (the environment still wins)", took, forgot);
 }
@@ -1051,12 +1064,13 @@ static int nvmtl_noseed(void) { static uint64_t next; static int on; uint64_t no
         if (!on && was) nvlog("G17 experiment off: surface-out bumps the seed again"); }
     return on; }
 static void nvmtl_census(const char *what, uint32_t w, uint32_t h, int surf) {
-    static struct { const char *what; uint32_t w, h; int surf; } seen[48]; static int n;
-    @synchronized([NSObject class]) {
-        for (int i = 0; i < n; i++) if (seen[i].what == what && seen[i].w == w && seen[i].h == h && seen[i].surf == surf) return;
-        if (n == 48) return;
-        seen[n].what = what; seen[n].w = w; seen[n].h = h; seen[n].surf = surf; n++;
-    }
+    static struct { const char *what; uint32_t w, h; int surf; } seen[48]; static int n; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+    if (__atomic_load_n(&n, __ATOMIC_RELAXED) == 48) return;   // full: every later pass skips the lock
+    os_unfair_lock_lock(&lk);
+    for (int i = 0; i < n; i++) if (seen[i].what == what && seen[i].w == w && seen[i].h == h && seen[i].surf == surf) { os_unfair_lock_unlock(&lk); return; }
+    if (n == 48) { os_unfair_lock_unlock(&lk); return; }
+    seen[n].what = what; seen[n].w = w; seen[n].h = h; seen[n].surf = surf; __atomic_store_n(&n, n + 1, __ATOMIC_RELAXED);
+    os_unfair_lock_unlock(&lk);
     nvlog("G14 census: %s %ux%u iosurface=%d (first time in this process)", what, w, h, surf);
 }
 static void nvmtl_frame_dump(const char *tag, const void *base, size_t row, uint32_t w, uint32_t h);
@@ -1174,6 +1188,7 @@ void nvmtl_texture_desc_swizzle(NVMTLTexture *t, MTLTextureDescriptor *d) {
     if (!_parent) nvmtl_vk_image_destroy(&_i);
     if (_stTwin.img) nvmtl_vk_image_destroy(&_stTwin);
     if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
+    if (!_parent) nvmtl_vk_host_pages_drop(&_hostPages);
     if (_surfOwned && _surf) CFRelease(_surf);
     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;
                     if (_subPlaced && c) { _subPlaced = NO; [h nvmtlGiveRange:_heapOffset length:c]; }
@@ -1228,6 +1243,13 @@ static bool nvmtl_surfin_import(void) {
     if (on < 0) { const char *u = getenv("NVMTL_SURFIN_UPLOAD"); on = !(u && !strcmp(u, "cpu")); }
     return on;
 }
+// NVMTL_SURFOUT_READBACK=cpu: surface-out reads back through the staging buffer and a CPU copy (nvmtl_vk_image_read)
+// instead of the GPU writing the surface's own pages
+static bool nvmtl_surfout_import(void) {
+    static int on = -1;
+    if (on < 0) { const char *u = getenv("NVMTL_SURFOUT_READBACK"); on = !(u && !strcmp(u, "cpu")); }
+    return on;
+}
 - (void)nvmtlSurfaceIn {
     NVMTLTexture *r = _parent ? _parent : self;
     if (!r->_surf) return;
@@ -1247,7 +1269,7 @@ static bool nvmtl_surfin_import(void) {
     int rc = -1;
     if (base && row && nvmtl_surfin_import()) {
         const size_t off = (size_t)((uint8_t *)base - (uint8_t *)IOSurfaceGetBaseAddress(r->_surf));
-        rc = nvmtl_vk_image_write_host(r->_q, &r->_i, base, row, IOSurfaceGetAllocSize(r->_surf) - off);
+        rc = nvmtl_vk_image_write_host(r->_q, &r->_i, base, row, IOSurfaceGetAllocSize(r->_surf) - off, &r->_hostPages);
     }
     if (rc) rc = (base && row) ? nvmtl_vk_image_write(r->_q, &r->_i, base, row) : -1;
     if (!rc && r->_i.bpp == 4) { char tag[24]; snprintf(tag, sizeof tag, "in%u-", (unsigned)IOSurfaceGetID(r->_surf)); nvmtl_frame_dump(tag, base, row, r->_i.w, r->_i.h); }
@@ -1310,7 +1332,12 @@ static void nvmtl_surface_remark_later(NVMTLTexture *r, uint32_t seed) {
     if (IOSurfaceLock(r->_surf, lockopt, NULL) != kIOReturnSuccess) { nvlog("G13 surface-out: IOSurfaceLock FAILED"); return NO; }
     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
     size_t row = IOSurfaceGetBytesPerRowOfPlane(r->_surf, (uint32_t)r->_plane);
-    int rc = (base && row) ? nvmtl_vk_image_read(r->_q, &r->_i, base, row) : -1;
+    int rc = -1;
+    if (base && row && nvmtl_surfout_import()) {
+        const size_t off = (size_t)((uint8_t *)base - (uint8_t *)IOSurfaceGetBaseAddress(r->_surf));
+        rc = nvmtl_vk_image_read_host(r->_q, &r->_i, base, row, IOSurfaceGetAllocSize(r->_surf) - off, &r->_hostPages);
+    }
+    if (rc) rc = (base && row) ? nvmtl_vk_image_read(r->_q, &r->_i, base, row) : -1;
     if (!rc && r->_i.bpp == 4) { char tag[24]; snprintf(tag, sizeof tag, "out%u-", (unsigned)IOSurfaceGetID(r->_surf)); nvmtl_frame_dump(tag, base, row, r->_i.w, r->_i.h); }
     uint32_t seed = 0; IOReturn unlocked = IOSurfaceUnlock(r->_surf, lockopt, &seed); if (lockopt) seed = IOSurfaceGetSeed(r->_surf);
     if (rc || unlocked != kIOReturnSuccess) { nvlog("G13 surface-out: readback FAILED (%ux%u)", r->_i.w, r->_i.h); return NO; }
@@ -1642,6 +1669,10 @@ id gNVMTLMainDevice = nil;
 
 extern NSData *nvmtl_translate_samplers(NVMTLFunction *, NSDictionary *, uint32_t, NSString **);
 extern NSData *nvmtl_translate_variant(NVMTLFunction *, NSDictionary *, NSDictionary *, NSString **);
+// facts about a module's text that newFunctionWithName asks for on every call; kept on the text (NVMTLLibraryLoad.m)
+enum { NVMTL_AIRF_KNOWN = 1, NVMTL_AIRF_DYLD_TABLE = 2, NVMTL_AIRF_ISECT_TABLE = 4 };
+uint32_t nvmtl_air_text_flags(NSString *ll);
+static char gNVMTLEntrySpvAssoc;
 @interface NVMTLCIBinding : NSObject { @public NSString *_name; NVMTLType *_t; } @end
 @implementation NVMTLCIBinding
 - (NSString *)name { return _name ?: @""; }
@@ -2386,13 +2417,17 @@ extern NSData *nvmtl_compile_library_entry(NSData *, NSString *, NSString *, NSS
 
     NSData *air = _fns[name];
     NSString *ll = _airs[name], *stage = _stages[name];
+    // The library index hands every library made from the same file the same bitcode objects, so the entry's SPIR-V is
+    // kept on its bitcode: a library made again (VideoToolbox makes one per transfer) neither hashes nor reads it again.
+    NSData *known = air ? objc_getAssociatedObject(air, &gNVMTLEntrySpvAssoc) : nil;
     NSString *why = nil;
-    NSData *spv = nvmtl_compile_library_entry(air, ll, stage, name, &why);
+    NSData *spv = known ?: nvmtl_compile_library_entry(air, ll, stage, name, &why);
     if (!spv) {
         if (error) *error = [NSError errorWithDomain:@"NVMTL" code:3
                                            userInfo:@{NSLocalizedDescriptionKey:why ?: @"entry translation failed"}];
         return nil;
     }
+    if (!known && air) objc_setAssociatedObject(air, &gNVMTLEntrySpvAssoc, spv, OBJC_ASSOCIATION_RETAIN);
 
     @synchronized(self) {
         NSData *won = _compiledFns[name];
@@ -2410,12 +2445,13 @@ extern NSData *nvmtl_compile_library_entry(NSData *, NSString *, NSString *, NSS
         NVMTLFunction *f = [NVMTLFunction new]; f->_spirv = nil; f->_fname = name; f->_stage = _stages[name];
         f->_air = _airs[name]; f->_lib = self; return f;
     }
-    if (spv && [_airs[name] rangeOfString:@"@air.dyld_lib_table"].location != NSNotFound) {
+    const uint32_t af = spv ? nvmtl_air_text_flags(_airs[name]) : 0;
+    if (spv && (af & NVMTL_AIRF_DYLD_TABLE)) {
         nvlog("library: \"%s\" was compiled against a dynamic library - DEFERRED to pipeline creation", name.UTF8String);
         NVMTLFunction *f = [NVMTLFunction new]; f->_spirv = nil; f->_fname = name; f->_stage = (_stages[name] ?: @"");
         f->_air = _airs[name]; f->_lib = self; f->_needsLink = YES; return f;
     }
-    if (spv && [_airs[name] rangeOfString:@"!\"air.intersection_function_table\""].location != NSNotFound) {
+    if (spv && (af & NVMTL_AIRF_ISECT_TABLE)) {
         nvlog("library: \"%s\" takes an intersection function table - DEFERRED to pipeline creation", name.UTF8String);
         NVMTLFunction *f = [NVMTLFunction new]; f->_spirv = nil; f->_fname = name; f->_stage = (_stages[name] ?: @"");
         f->_air = _airs[name]; f->_lib = self; f->_needsLink = YES; return f;
@@ -3983,6 +4019,8 @@ void nvmtl_heap_back(NVMTLHeap *h, NSUInteger size, int shared) {
     _used += len;
     atomic_fetch_add(&gHAPlaced, 1); atomic_fetch_add(&gHALive, len);
     atomic_fetch_add(rec ? &gHTRecycled : &gHTPlaced, 1); nvmtl_heaptex_census(rec ? "recycled" : "placed");
+    // automatic heaps land here, not in -newTextureWithDescriptor:offset:; without this the descriptor's swizzle was lost
+    nvmtl_texture_desc_swizzle(t, d);
     return t;
 }
 - (id<MTLTexture>)newTextureWithDescriptor:(MTLTextureDescriptor *)d {
@@ -4638,6 +4676,15 @@ static void nvmtl_zprobe_drain(void) {
     { NSArray *b = _bufAt[@(i)]; if (b) _bufAt[@(i)] = @[b[0], @(off)]; }
     if (nvmtl_vk_bind_buffer_offset(&_cb->_c, NVMTL_SET_VERTEX, (uint32_t)i, off))
         nvlog("compute setBufferOffset: nothing bound at index %lu", (unsigned long)i);
+}
+// MPS (Lanczos scale, used by video players) sets an imageblock size on compute encoders.
+// The translator keeps a kernel's imageblock cells in per-thread private memory and derives
+// the block extent from the threadgroup size, so no encoder state is needed; without this
+// method the call is an unrecognized selector and the app aborts.
+- (void)setImageblockWidth:(NSUInteger)w height:(NSUInteger)h {
+    static int logged;
+    if (!logged++) nvlog("compute setImageblockWidth:%lu height:%lu (imageblock lives in thread-private memory)",
+                         (unsigned long)w, (unsigned long)h);
 }
 - (void)setThreadgroupMemoryLength:(NSUInteger)len atIndex:(NSUInteger)i {
     if (!_tgLen) _tgLen = [NSMutableDictionary new];

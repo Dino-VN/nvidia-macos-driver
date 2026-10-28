@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 const char *nvmtl_image_ident(const void *addr, char *out, size_t n);
-typedef struct { void *buf; void *mem; void *map; size_t size; size_t alloc; int placed; void *pool; size_t poff; int imported; int bar1; size_t moff; int sparse, sysmem; } nvk_buffer;
+typedef struct { void *buf; void *mem; void *map; size_t size; size_t alloc; int placed; void *pool; size_t poff; int imported; int bar1; size_t moff; int sparse, sysmem; int mtype1; /* memory type + 1 when known */ } nvk_buffer;
 #include "nvmtl_sample_positions.h"
 typedef struct { void *img; void *mem; void *view; uint32_t w, h; size_t alloc; uint32_t layout; uint32_t mips; uint32_t fmt, bpp; uint32_t storage, mtl_type, layers; int placed; uint32_t bw, bh; uint32_t samples; uint32_t sysmem; uint32_t vkflags, usage;  uint32_t vfl;  uint64_t up_token; } nvk_image;
 #define NVMTL_NVAR 16
@@ -70,6 +70,9 @@ typedef struct { void *cb; void *fb; void *pool; void *dset[2]; void *depth_view
                  unsigned in_rp, occlusion_reset; uint32_t wseq;
                  void *fetchview[NVMTL_NCOL];   /* the open pass's colour views, read by [[color(n)]] framebuffer fetch */
                  unsigned fetch_draw, topo;   /* the bound pipeline reads [[color(n)]] in this pass; last MTLPrimitiveType set */
+                 /* the last framebuffer fetch set made in this command buffer and what it points at: a draw whose pass
+                    and mask are the same reuses it (Core Animation draws hundreds of fetch draws per pass) */
+                 void *fetch_last_set; uint32_t fetch_last_mask; void *fetch_last_view[NVMTL_NCOL];
                  /* stencil export emulation (nvmtl_semu_draw): the bound pipeline's layout when it exports stencil, and the
                     stencil reference / write masks / depth write last set, which each per-bit pass changes and restores */
                  void *semu_layout; uint32_t st_ref[2], st_wmask[2]; int depth_write;
@@ -183,6 +186,8 @@ int  nvmtl_vk_sampler_create(int linear, int repeat, nvk_sampler *out);
 int  nvmtl_vk_sampler_create_desc(const nvmtl_sampler_desc *desc, nvk_sampler *out);
 void nvmtl_vk_sampler_destroy(nvk_sampler *s);
 int  nvmtl_vk_bind_sampler(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_sampler *s);
+int  nvmtl_vk_bind_parked_sampler(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_sampler *s);
+void nvmtl_vk_parked_samplers_keep(nvk_cmdbuf *c, uint32_t set, uint32_t keep);
 void nvmtl_vk_cmd_bind_set(nvk_cmdbuf *c, nvk_pipeline *p);
 int  nvmtl_vk_compute_pipeline_create(const void *cs, size_t n, nvk_pipeline *out);
 void nvmtl_vk_cmd_dispatch(nvk_cmdbuf *c, nvk_pipeline *p, uint32_t gx, uint32_t gy, uint32_t gz);
@@ -217,7 +222,9 @@ extern void (*nvmtl_pre_release_hook)(void *);
 extern void (*nvmtl_pre_submit_hook)(void);
 int  nvmtl_vk_image_read(nvk_queue *q, nvk_image *img, void *dst, size_t row_bytes);
 int  nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes);
-int  nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes);
+int  nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache);
+int  nvmtl_vk_image_read_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache);
+void nvmtl_vk_host_pages_drop(nvk_buffer *cache);
 int  nvmtl_vk_copy_buffer(nvk_queue *q, nvk_buffer *src, size_t srcOff, nvk_buffer *dst, size_t dstOff, size_t size);
 int  nvmtl_vk_image_create_mips(uint32_t w, uint32_t h, int bgra, uint32_t mips, nvk_image *out);
 int  nvmtl_vk_image_create_ex(uint32_t w, uint32_t h, uint32_t vkfmt, uint32_t bpp, int a8, uint32_t mips, nvk_image *out);

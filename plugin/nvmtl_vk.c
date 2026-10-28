@@ -696,6 +696,14 @@ static int nvmtl_vk_initialize(void)
         setenv("NVRM_FLUSH_TIMEOUT_MS", budget, 1);
         nvlog("vk: GPU wait budget %s ms for %s (WindowServer keeps 5000 - a frozen desktop is worse than a dropped frame)", budget, getprogname());
     }
+    // A cache dir set by another process's plugin is inherited: loginwindow runs as root before login, has no writable
+    // HOME and so gets root's user cache dir below, and every app it opens at login started with that path and could
+    // not write it ("Failed to create ... for shader cache (Permission denied) --- disabling": NAK recompiled every
+    // start). One this process cannot use is dropped, and the rules below choose again.
+    { const char *mc = getenv("MESA_SHADER_CACHE_DIR");
+      if (mc && *mc && access(mc, W_OK) != 0 && mkdir(mc, 0700) != 0) {
+          nvlog("vk: %s inherited MESA_SHADER_CACHE_DIR=%s, which it cannot write - choosing its own", getprogname(), mc);
+          unsetenv("MESA_SHADER_CACHE_DIR"); } }
     if (!getenv("MESA_SHADER_CACHE_DIR") && !getenv("XDG_CACHE_HOME") && !getenv("NVMTL_NO_MESA_CACHE_DIR")) {
         const char *home = getenv("HOME");
         if (!home || access(home, W_OK) != 0) {
@@ -1346,7 +1354,7 @@ static int nvmtl_vk_buffer_create_body(size_t size, int host_visible, nvk_buffer
         VkResult r2 = r1 == VK_SUCCESS ? pvkMapMemory(g_dev, bm, 0, VK_WHOLE_SIZE, 0, &bp) : r1;
         VkResult r3 = r2 == VK_SUCCESS ? pvkBindBufferMemory(g_dev, out->buf, bm, 0) : r2;
         if (r3 == VK_SUCCESS) {
-            out->mem = bm; out->map = bp; out->alloc = mr.size; out->bar1 = 1; g_alloc_bytes += mr.size; g_bar1_bytes += mr.size; g_buf_made++;
+            out->mem = bm; out->map = bp; out->alloc = mr.size; out->bar1 = 1; out->mtype1 = bt + 1; g_alloc_bytes += mr.size; g_bar1_bytes += mr.size; g_buf_made++;
             { static int said; if (!said++) nvlog("vk: shared buffer of %zu bytes placed in VRAM through BAR1 (type %d)", size, bt); }
             return 0; }
         if (bp) pvkUnmapMemory(g_dev, bm);
@@ -1376,7 +1384,7 @@ static int nvmtl_vk_buffer_create_body(size_t size, int host_visible, nvk_buffer
             return -1;
         }
     } else VKCK(nvmtl_opaque_AllocateMemory(g_dev, &mai, NULL, &out->mem), "vkAllocateMemory(buffer)");
-    out->alloc = mr.size;
+    out->alloc = mr.size; out->mtype1 = mt + 1;
     if (!host_visible) nvmtl_vk_budget_charge(mr.size);
     VKCK(pvkBindBufferMemory(g_dev, out->buf, out->mem, 0), "vkBindBufferMemory");
     if (host_visible) { VkResult mr_ = pvkMapMemory(g_dev, out->mem, 0, VK_WHOLE_SIZE, 0, &out->map); if (mr_ != VK_SUCCESS) {
@@ -1456,7 +1464,7 @@ int nvmtl_vk_buffer_import_host(void *ptr, size_t size, nvk_buffer *out)
         nvlog("vk: vkBindBufferMemory refused the imported allocation");
         pvkFreeMemory(g_dev, (VkDeviceMemory)out->mem, NULL); pvkDestroyBuffer(g_dev, (VkBuffer)out->buf, NULL);
         out->buf = NULL; out->mem = NULL; return -1; }
-    out->map = ptr; out->alloc = size; out->imported = 1;
+    out->map = ptr; out->alloc = size; out->imported = 1; out->mtype1 = mt + 1;
     g_alloc_bytes += size; g_buf_made++;
     { static int said; if (!said++) nvlog("vk: imported the caller's pages as device memory — %zu bytes at %p, memory type %d", size, ptr, mt); }
     return 0;
@@ -2200,9 +2208,11 @@ typedef struct { nvmtl_slot s[2][NVMTL_NBIND];
                  uint64_t chg[2][4]; uint64_t texgen[2]; const void *emb_fn[2]; uint64_t emb_gen[2]; uint32_t emb_n[2];
                  uint64_t emb_key[2][NVMTL_EMB_KEYMAX];
                  uint32_t lastdyn[2]; void *lasttab[2];
-                 uint64_t lasttb[2][4];
+                 uint64_t lasttb[2][4];   /* the texel-buffer mask the last set was written with */
                  uint32_t lastgl[2]; VkBuffer lastubuf[2]; VkDeviceSize lasturange[2];
-               } nvmtl_bindtable;   /* the texel-buffer mask the last set was written with */
+                 /* samplers a shader brought itself, parked in sampler slots it leaves free, and what each displaced */
+                 uint32_t park_mask[2]; uint8_t park_kind[2][NVMTL_NSAMP], park_saved_kind[2][NVMTL_NSAMP];
+                 void *park_h[2][NVMTL_NSAMP], *park_saved[2][NVMTL_NSAMP]; } nvmtl_bindtable;
 
 static VkDescriptorSetLayout g_setLayout;
 static VkDescriptorSetLayout g_glUniformLayout;
@@ -2526,8 +2536,11 @@ static int ensure_descriptors_locked(void)
     }
     if (g_mutable && nvmtl_vk_texel_view_create(&g_dummyBuf, 0, 256, VK_FORMAT_R8G8B8A8_UNORM, 1, &g_dummyTexAlias, &g_dummyTexView, NULL)) {
         nvlog("vk: par3 NO texel dummy — texture buffers are turned OFF for this process (the layout stays mutable)"); g_mutable = 0; }
+    /* The sampler a shader gets at a slot nothing was bound to. A Metal constexpr sampler defaults to mip_filter::none,
+     * so this one reads level 0 only: with maxLod unclamped it picked a mip level, and CoreAnimation's Dock badge digit (a
+     * 108x108 texture with seven never-filled levels, drawn into 46 px) sampled an empty level and vanished (I-057, N-127). */
     VkSamplerCreateInfo sci = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.maxLod = VK_LOD_CLAMP_NONE;
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR; sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; sci.maxLod = 0.25f;
     VKCK(nvmtl_sampler_acquire(&sci, &g_dummySampler), "sampler acquire (dummy)");
     nvmtl_vk_zero_dummies();
     if (g_bindless) {
@@ -3290,7 +3303,49 @@ int nvmtl_vk_bind_texture(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_image
 int nvmtl_vk_bind_sampler(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_sampler *s)
 {
     if (index >= NVMTL_NSAMP) { nvlog("bind sampler: index %u is outside [0,%d)", index, NVMTL_NSAMP); return -1; }
+    // the app set this slot itself, so a sampler parked here has nothing to hand back
+    if (set <= 1 && c->table) ((nvmtl_bindtable *)c->table)->park_mask[set] &= ~(1u << index);
     return nvmtl_bind_slot(c, set, NVMTL_NBUF + NVMTL_NTEX + index, s ? NVMTL_SLOT_SAMP : NVMTL_SLOT_NONE, s ? s->s : NULL, 0);
+}
+/* Metal keeps an app's sampler in its slot while a shader with its own constexpr or argument-buffer sampler draws. Vulkan
+   has no such samplers, so the translator parks them in slots the shader leaves free. Keep what each one displaced and put
+   it back once a shader no longer needs the slot: Core Animation binds a linear sampler once, then its Dock upscale read a
+   parked nearest sampler and drew 32x32 blocks (#363). NVMTL_NO_SAMPLER_RESTORE=1 keeps the old behaviour. */
+static int nvmtl_sampler_restore_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("NVMTL_NO_SAMPLER_RESTORE"); on = !(e && *e && *e != '0');
+        nvlog("vk: app samplers displaced by a shader's own sampler are %s (NVMTL_NO_SAMPLER_RESTORE=%s)", on ? "put back" : "left overwritten (OLD)", e ? e : "unset"); }
+    return on;
+}
+int nvmtl_vk_bind_parked_sampler(nvk_cmdbuf *c, uint32_t set, uint32_t index, nvk_sampler *s)
+{
+    if (!nvmtl_sampler_restore_on()) return nvmtl_vk_bind_sampler(c, set, index, s);
+    if (index >= NVMTL_NSAMP || set > 1) { nvlog("bind parked sampler: index %u set %u out of range", index, set); return -1; }
+    const uint32_t b = NVMTL_NBUF + NVMTL_NTEX + index, bit = 1u << index;
+    nvmtl_bindtable *t = (nvmtl_bindtable *)c->table;
+    const uint8_t kind = t ? t->s[set][b].kind : NVMTL_SLOT_NONE;
+    void *h = t ? t->s[set][b].h : NULL;
+    const int parked = t && (t->park_mask[set] & bit) && kind == t->park_kind[set][index] && h == t->park_h[set][index];
+    int r = nvmtl_bind_slot(c, set, b, s ? NVMTL_SLOT_SAMP : NVMTL_SLOT_NONE, s ? s->s : NULL, 0);
+    if (r) return r;
+    t = (nvmtl_bindtable *)c->table;
+    if (!parked) { t->park_saved_kind[set][index] = kind; t->park_saved[set][index] = h; }
+    t->park_kind[set][index] = t->s[set][b].kind; t->park_h[set][index] = t->s[set][b].h;
+    t->park_mask[set] |= bit;
+    return 0;
+}
+void nvmtl_vk_parked_samplers_keep(nvk_cmdbuf *c, uint32_t set, uint32_t keep)
+{
+    nvmtl_bindtable *t = c ? (nvmtl_bindtable *)c->table : NULL;
+    if (!t || set > 1) return;
+    for (uint32_t drop = t->park_mask[set] & ~keep; drop; drop &= drop - 1) {
+        const uint32_t i = (uint32_t)__builtin_ctz(drop), b = NVMTL_NBUF + NVMTL_NTEX + i;
+        const nvmtl_slot *sl = &t->s[set][b];
+        if (sl->kind == t->park_kind[set][i] && sl->h == t->park_h[set][i])
+            nvmtl_bind_slot(c, set, b, t->park_saved_kind[set][i], t->park_saved[set][i], 0);
+        t->park_mask[set] &= ~(1u << i);
+    }
 }
 
 int nvmtl_vk_sample_positions_backend(void) { return nvmtl_vk_init() == 0 && g_sample_locations; }
@@ -3410,7 +3465,20 @@ static void nvmtl_fetch_barrier(nvk_cmdbuf *c)
     pvkCmdPipelineBarrier(c->cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                           VK_DEPENDENCY_BY_REGION_BIT, 1, &mb, 0, NULL, 0, NULL);
 }
+static VkDescriptorSet nvmtl_fetch_set_make(nvk_cmdbuf *c, uint32_t mask);
 static VkDescriptorSet nvmtl_fetch_set(nvk_cmdbuf *c, uint32_t mask)
+{
+    // One set per pass and mask, not one per draw: the set only names the pass's colour views, which do not change
+    // between the draws of a pass, and allocating and writing it for each draw cost WindowServer about a millisecond
+    // per frame of window drag.
+    if (c->fetch_last_set && c->fetch_last_mask == mask && !memcmp(c->fetch_last_view, c->fetchview, sizeof c->fetchview))
+        return (VkDescriptorSet)c->fetch_last_set;
+    VkDescriptorSet set = nvmtl_fetch_set_make(c, mask);
+    c->fetch_last_set = (void *)set; c->fetch_last_mask = mask;
+    memcpy(c->fetch_last_view, c->fetchview, sizeof c->fetchview);
+    return set;
+}
+static VkDescriptorSet nvmtl_fetch_set_make(nvk_cmdbuf *c, uint32_t mask)
 {
     VkDescriptorSet set = VK_NULL_HANDLE; VkDescriptorPool pool = VK_NULL_HANDLE;
     pthread_mutex_lock(&g_desc_lock);
@@ -5900,6 +5968,7 @@ static void nvmtl_cmd_retire(nvk_cmdbuf *c)
         pthread_mutex_unlock(&g_desc_lock);
     }
     free(c->sets); c->sets = NULL; c->nsets = c->capsets = 0; c->nobind = 0; c->skipped = 0;
+    c->fetch_last_set = NULL;   // freed with the sets above
     free(c->table); c->table = NULL;
     nvmtl_address_page *page = c->address_pages;
     const int keep = nvmtl_keep_verdict(c->wseq);
@@ -6442,7 +6511,7 @@ int nvmtl_vk_buffer_migrate(nvk_buffer *b, int to_sysmem)
     g_alloc_bytes -= b->alloc; g_alloc_bytes += mr.size;
     if (to_sysmem) { g_res3_off++; g_res3_off_b += b->alloc; }
     else { nvmtl_vk_budget_charge(mr.size); g_res3_on++; g_res3_on_b += mr.size; }
-    b->mem = nm; b->alloc = mr.size; b->sysmem = to_sysmem ? 1 : 0;
+    b->mem = nm; b->alloc = mr.size; b->sysmem = to_sysmem ? 1 : 0; b->mtype1 = mt + 1;
     return 0;
 }
 
@@ -6534,17 +6603,50 @@ static void nvmtl_copy_from_surface(void *dst, const void *src, size_t n)
 // The caller holds the surface lock across the call, and the import is released before it returns.
 // Non-zero when the pages cannot be imported (block-compressed format, base or length not a multiple of the import
 // alignment, no host import on this device); the caller then uses nvmtl_vk_image_write.
-int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes)
+// Imported surface pages for the host copies below. With a cache (the texture's own), the import is made once and
+// reused while the surface keeps the same pages: importing pins the pages and maps them on the GPU, two RM calls each
+// way, which cost more than the copy itself when it was redone for every frame (a 1080p window, every present).
+// A kept import also keeps the surface's pages wired, so the bytes kept per process are capped (NVMTL_HOST_PAGES_MB,
+// default 256, 0 = never keep); past the cap a copy imports and releases its pages as before.
+static _Atomic uint64_t g_host_pages_kept;
+static uint64_t nvmtl_host_pages_cap(void)
+{
+    static int64_t cap = -1;
+    if (cap < 0) { const char *e = getenv("NVMTL_HOST_PAGES_MB"); cap = (e && *e) ? (int64_t)atoll(e) << 20 : (int64_t)256 << 20; if (cap < 0) cap = 0; }
+    return (uint64_t)cap;
+}
+void nvmtl_vk_host_pages_drop(nvk_buffer *cache)
+{
+    if (!cache) return;
+    if (cache->buf) { atomic_fetch_sub(&g_host_pages_kept, (uint64_t)cache->size); nvmtl_vk_buffer_destroy(cache); }
+    memset(cache, 0, sizeof *cache);
+}
+static nvk_buffer *nvmtl_host_pages(nvk_buffer *cache, void *base, size_t bytes, nvk_buffer *tmp)
+{
+    if (cache && cache->buf && cache->map == base && cache->size == bytes) return cache;
+    if (cache && cache->buf) nvmtl_vk_host_pages_drop(cache);   // the surface's pages moved or it was resized
+    nvk_buffer *b = tmp;
+    if (cache && atomic_fetch_add(&g_host_pages_kept, (uint64_t)bytes) + bytes <= nvmtl_host_pages_cap()) b = cache;
+    else if (cache) atomic_fetch_sub(&g_host_pages_kept, (uint64_t)bytes);
+    if (nvmtl_vk_buffer_import_host(base, bytes, b)) {
+        if (b == cache) atomic_fetch_sub(&g_host_pages_kept, (uint64_t)bytes);
+        memset(b, 0, sizeof *b); return NULL;
+    }
+    return b;
+}
+static void nvmtl_host_pages_done(nvk_buffer *cache, nvk_buffer *hb) { if (hb && hb != cache) nvmtl_vk_buffer_destroy(hb); }
+int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache)
 {
     const size_t bpp = img->bpp ? img->bpp : 4;
     // bufferRowLength counts texels, so the row pitch has to be a whole number of them
     if (img->bw > 1 || img->bh > 1 || !row_bytes || row_bytes % bpp || row_bytes < (size_t)img->w * bpp) return -1;
     if (g_host_align) bytes = (bytes + g_host_align - 1) & ~(g_host_align - 1);
     if ((size_t)img->h * row_bytes > bytes) return -1;
-    nvk_buffer hb;
-    if (nvmtl_vk_buffer_import_host(base, bytes, &hb)) return -1;
+    nvk_buffer tmp, *hp = nvmtl_host_pages(cache, base, bytes, &tmp);
+    if (!hp) return -1;
+    nvk_buffer hb = *hp;
     nvk_cmdbuf c;
-    if (nvmtl_vk_cmd_begin(q, &c)) { nvmtl_vk_buffer_destroy(&hb); return -1; }
+    if (nvmtl_vk_cmd_begin(q, &c)) { nvmtl_host_pages_done(cache, hp); return -1; }
     VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
     VkImageMemoryBarrier toDst = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -6559,11 +6661,35 @@ int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t r
     pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toRead);
     img->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const int rc = nvmtl_vk_submit_wait_at(&c, "surface upload (imported pages)");
-    nvmtl_vk_buffer_destroy(&hb);
+    nvmtl_host_pages_done(cache, hp);
     return rc;
+}
+
+// A CPU-written IOSurface is uploaded at bind time (nvmtlSurfaceIn). Waiting for that copy put one GPU round trip
+// into every bind of a changed surface: Chromium with CPU raster binds a fresh tile surface per draw and its GPU
+// process spent its scroll frames in these waits. The copy now takes the async region
+// path: it has its own staging buffer, queue order and its SHADER_READ barrier put it before the draw that samples
+// the image, and the handle is finished before a readback, destroy or re-upload. Apps only: WindowServer's surfaces
+// keep the synchronous upload. NVMTL_ASYNC_SURFACE_UPLOAD=0 turns it off.
+static __thread int g_up_force_async;   // set by nvmtl_vk_image_write for one surface upload
+static int nvmtl_async_surface_upload(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("NVMTL_ASYNC_SURFACE_UPLOAD"), *me = getprogname();
+        on = e ? e[0] == '1' : !(me && !strcmp(me, "WindowServer"));
+        nvlog("vk: async surface upload %s (NVMTL_ASYNC_SURFACE_UPLOAD=%s)", on ? "ON" : "OFF", e ? e : "unset");
+    }
+    return on;
 }
 int nvmtl_vk_image_write(nvk_queue *q, nvk_image *img, const void *src, size_t row_bytes)
 {
+    if (nvmtl_async_surface_upload() && img->bw <= 1 && img->bh <= 1 && (img->layers ? img->layers : 1) == 1) {
+        g_up_force_async = 1;
+        const int rc = nvmtl_vk_image_write_region_level_layer(q, img, src, row_bytes, 0, 0, img->w, img->h, 0, 0);
+        g_up_force_async = 0;
+        return rc;
+    }
     const size_t bpp = img->bpp ? img->bpp : 4;
     const uint32_t cols = nvmtl_blocks(img->w, img->bw), rows = nvmtl_blocks(img->h, img->bh);
     if (row_bytes < (size_t)cols * bpp) { nvlog("image_write: bytesPerRow %zu < %u blocks * %zu B", row_bytes, cols, bpp); return -1; }
@@ -6632,6 +6758,38 @@ int nvmtl_vk_image_read(nvk_queue *q, nvk_image *img, void *dst, size_t row_byte
     const uint8_t *src = (const uint8_t *)stage.map;
     for (uint32_t y = 0; y < rows; y++) memcpy((uint8_t *)dst + y * row_bytes, src + (size_t)y * cols * bpp, (size_t)cols * bpp);
     return 0;
+}
+// The readback counterpart of nvmtl_vk_image_write_host: the GPU copies the image straight into the surface's own
+// pages (imported as a buffer), so a surface without family VRAM (a 256 MB BAR1 that is full refuses whole windows)
+// costs one copy on the GPU instead of a copy into the staging buffer plus a CPU memcpy of every row.
+int nvmtl_vk_image_read_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache)
+{
+    const size_t bpp = img->bpp ? img->bpp : 4;
+    if (img->bw > 1 || img->bh > 1 || !row_bytes || row_bytes % bpp || row_bytes < (size_t)img->w * bpp) return -1;
+    if (g_host_align) bytes = bytes & ~(g_host_align - 1);   // never import past the surface's allocation
+    if (!img->h || (size_t)(img->h - 1) * row_bytes + (size_t)img->w * bpp > bytes) return -1;
+    nvmtl_vk_image_upload_barrier(img);   // a readback must observe a pending async upload: finish it first
+    nvk_buffer tmp, *hp = nvmtl_host_pages(cache, base, bytes, &tmp);
+    if (!hp) return -1;
+    nvk_buffer hb = *hp;
+    nvk_cmdbuf c;
+    if (nvmtl_vk_cmd_begin(q, &c)) { nvmtl_host_pages_done(cache, hp); return -1; }
+    VkImageSubresourceRange range = { nvmtl_barrier_aspect(img), 0, 1, 0, 1 };
+    VkImageMemoryBarrier toSrc = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
+        VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+        (VkImageLayout)img->layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
+    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &toSrc);
+    img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    VkBufferImageCopy bic = { 0, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
+    pvkCmdCopyImageToBuffer(c.cb, img->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, hb.buf, 1, &bic);
+    // the CPU reads these pages after the fence: make the transfer writes visible to host reads
+    VkMemoryBarrier toHost = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };
+    pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &toHost, 0, NULL, 0, NULL);
+    const int rc = nvmtl_vk_submit_wait_at(&c, "surface readback (imported pages)");
+    nvmtl_host_pages_done(cache, hp);
+    return rc;
 }
 
 static void img_to(nvk_cmdbuf *c, nvk_image *img, VkImageLayout to,
@@ -6749,7 +6907,7 @@ int nvmtl_vk_image_write_region_level_layer(nvk_queue *q, nvk_image *img, const 
     // can be left in flight; sync keeps the shared per-thread staging buffer and waits (the default path).
     nvmtl_up_state upst = { img->up_token };
     uint64_t finish_first = 0;
-    const nvmtl_up_submit mode = nvmtl_up_before_upload(&upst, nvmtl_async_tex_upload(), &finish_first);
+    const nvmtl_up_submit mode = nvmtl_up_before_upload(&upst, nvmtl_async_tex_upload() || g_up_force_async, &finish_first);
     nvmtl_asyncup *au = NULL;
     nvk_buffer *stageb, stage_sync;
     nvk_cmdbuf local_cb, *c;
@@ -7772,7 +7930,7 @@ int nvmtl_vk_buffer_create_placed(size_t size, nvk_heap *heap, size_t offset, nv
     if (pvkBindBufferMemory(g_dev, out->buf, (VkDeviceMemory)heap->mem, offset) != VK_SUCCESS) {
         pvkDestroyBuffer(g_dev, (VkBuffer)out->buf, NULL); memset(out, 0, sizeof *out); return -1;
     }
-    out->mem = heap->mem; out->placed = 1; out->alloc = 0;
+    out->mem = heap->mem; out->placed = 1; out->alloc = 0; out->mtype1 = (int)heap->memtype + 1;
     out->moff = offset;
     out->map = heap->map ? (char *)heap->map + offset : NULL;
     g_buf_made++;
@@ -7882,7 +8040,9 @@ static int nvmtl_vk_image_create_buffer_alias_lifetime_body(uint32_t w, uint32_t
     VkMemoryRequirements mr; pvkGetImageMemoryRequirements(g_dev, (VkImage)out->img, &mr);
     uint32_t all = g_memp.memoryTypeCount >= 32 ? 0xffffffffu : ((1u << g_memp.memoryTypeCount) - 1u);
     size_t at = b->moff + offset;
-    const char *why = (mr.memoryTypeBits & all) != all ? "memory types" : (mr.alignment && at % mr.alignment) ? "alignment" : NULL;
+    // every buffer records its memory type; a linear image need only accept that one (ANV's take types 0-1 of 0-3)
+    const uint32_t need = b->mtype1 ? 1u << (b->mtype1 - 1) : all;
+    const char *why = (mr.memoryTypeBits & need) != need ? "memory types" : (mr.alignment && at % mr.alignment) ? "alignment" : NULL;
     if (why) {
         nvlog("buffer texture: refused on %s - image types 0x%x of 0x%x, bind at %zu (buffer %zu + %zu) vs alignment %llu",
               why, mr.memoryTypeBits, all, at, b->moff, offset, (unsigned long long)mr.alignment);

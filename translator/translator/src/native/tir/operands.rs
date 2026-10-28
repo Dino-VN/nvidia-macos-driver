@@ -1,12 +1,12 @@
 use super::*;
+use crate::fxhash::HashMap;
 use crate::native::ir::{LlGep, LlType, LlValue, TypedValue};
-use crate::native::lex::{matching_paren, strip_comment};
+use crate::native::lex::{matching_paren, split_instruction_operands, strip_comment};
 use crate::native::parse::{
     parse_call, parse_constant_vector, parse_identity_ptr_bitcast, parse_load,
     parse_phi_incoming_values, parse_type, parse_typed_value, parse_value, parse_vector_i32_values,
     split_top_level, strip_call_prefix, LlCall, LlLoad,
 };
-use std::collections::HashMap;
 
 pub(in crate::native) fn resolve_identity_ptr_bitcast(line: &str) -> Option<(String, String)> {
     parse_identity_ptr_bitcast(strip_comment(line).trim())
@@ -129,7 +129,7 @@ pub(in crate::native) fn resolve_aggregate_indices(line: &str, opcode: &str) -> 
     };
     let rest = line.split_once(" = ")?.1.trim();
     let after_opcode = rest[opcode.len()..].trim_start();
-    let parts = split_top_level(after_opcode, ',');
+    let parts = split_instruction_operands(after_opcode);
     if parts.len() <= skip {
         return None;
     }
@@ -143,7 +143,7 @@ pub(in crate::native) fn resolve_shuffle_mask(line: &str) -> Option<(u32, Vec<u3
     let rest = line.split_once(" = ")?.1.trim();
     let opcode = rest.split_whitespace().next().unwrap_or("");
     let after_opcode = rest[opcode.len()..].trim_start();
-    let parts = split_top_level(after_opcode, ',');
+    let parts = split_instruction_operands(after_opcode);
     if parts.len() != 3 {
         return None;
     }
@@ -233,7 +233,7 @@ pub(in crate::native) fn resolve_operands(line: &str) -> Vec<TirOperand> {
             }
         }
         "phi" => resolve_phi_operands(after_opcode),
-        "extractelement" | "insertelement" | "shufflevector" => split_top_level(after_opcode, ',')
+        "extractelement" | "insertelement" | "shufflevector" => split_instruction_operands(after_opcode)
             .iter()
             .map(|c| operand_from_chunk(c.trim()))
             .collect(),
@@ -431,7 +431,7 @@ pub(in crate::native) fn collect_value_names(s: &str, out: &mut Vec<String>) {
 }
 
 pub(in crate::native) fn dedup_keep_order(names: Vec<String>, result: Option<&str>) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::fxhash::HashSet::default();
     names
         .into_iter()
         .filter(|n| Some(n.as_str()) != result && seen.insert(n.clone()))

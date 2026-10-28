@@ -53,7 +53,7 @@ struct NVRMNVDAFramebuffer{
  NvU32 fW=1920,fH=1080,fRasterW=1920,fRasterH=1080,fBootW=1920,fBootH=1080,fScalerMaxW=7680,fScalerMaxH=4320;
  NvU32 fPitch=7680,fBootPitch=7680,fPitchAlign=256;
  UInt16 fEdidMmW=480,fEdidMmH=270;NvKmsKapiDisplayMode fMode{},fBootMode{};Kms kms,*fKms=&kms;
- void *fDev=this;unsigned fDisplay=1,publishes=0,switches=0;
+ void *fDev=this;unsigned fDisplay=1,publishes=0,switches=0,audioRefreshes=0;
  void dtSurfaceSize(const IODetailedTimingInformationV2 *,NvU32 *,NvU32 *)const;
  bool dtIsCurrent(const IODetailedTimingInformationV2 &)const;bool dtIsBootRaster(const IODetailedTimingInformationV2 &)const;
  static void dtToKapi(const IODetailedTimingInformationV2 *,NvKmsKapiDisplayMode *);
@@ -69,6 +69,7 @@ struct NVRMNVDAFramebuffer{
  void setProperty(const char *,OSObject *){}void setProperty(const char *,unsigned long long,unsigned){}
  void removeProperty(const char *){}void publishRotatedSizes(){}void publishStartupTiming(){++publishes;}
  void publishCursorGeometry(const IODetailedTimingInformationV2 *){}
+ void refreshDisplayAudioProperties(){++audioRefreshes;}
  bool edidModeFor(const IODetailedTimingInformationV2 *,NvKmsKapiDisplayMode *){return false;}
  bool applyMode(){return true;}
  IOReturn switchMode(IODisplayModeID id,const NvKmsKapiDisplayMode &mode,NvU32 w,NvU32 h,UInt32 transform){
@@ -127,13 +128,15 @@ int main(){
   // The previous ID remains a usable alias without becoming the current ID.
   IOTimingInformation alias{};assert(f.getTimingInfoForDisplayMode(0x1234,&alias)==0);
   assert(alias.detailedInfo.v2.detailedTimingModeID==0x1234&&f.dtIsCurrent(alias.detailedInfo.v2));
-  assert(f.setDisplayMode(0x9999,0)==0&&f.switches==switches);
+  unsigned audio=f.audioRefreshes;
+  assert(f.setDisplayMode(0x9999,0)==0&&f.switches==switches&&f.audioRefreshes==audio+1);
   // Another replacement, then an unchanged list, must not revive an older ID.
   rebuilt.detailedTimingModeID=0xaaaa;OSArray again;again.values.emplace_back(rebuilt);
   assert(f.setDetailedTimings(&again)==0);stableCurrent(f,0xaaaa);
   assert(f.getTimingInfoForDisplayMode(0x9999,&alias)==0&&f.dtIsCurrent(alias.detailedInfo.v2));
   assert(f.setDetailedTimings(&again)==0);stableCurrent(f,0xaaaa);
-  assert(f.setDisplayMode(0xaaaa,1)==kIOReturnUnsupportedMode);stableCurrent(f,0xaaaa);
+  audio=f.audioRefreshes;
+  assert(f.setDisplayMode(0xaaaa,1)==kIOReturnUnsupportedMode&&f.audioRefreshes==audio);stableCurrent(f,0xaaaa);
   ++cases;
  }
  // Native unrotated timings must produce a complete rotated copy, not mirror-only synthetic modes.
