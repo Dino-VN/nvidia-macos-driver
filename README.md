@@ -12,6 +12,7 @@ testing is done on an RTX 5060, so other cards may have problems that haven't be
 - Problems: [troubleshooting](docs/TROUBLESHOOTING.md), then Send logs from the 1401 app
 - Installing macOS from Windows: [1401](https://github.com/nullmoth/1401)
 - How it works: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)
+- Experimental Zink on NVK: [build, validation and native OpenGL bridge research](docs/ZINK-OPENGL.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 If your PC doesn't boot macOS with OpenCore yet, set that up first with the

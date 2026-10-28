@@ -44,7 +44,7 @@ rollback_install() {
     rm -rf "$EXT/$k.kext" || failed=1
     [ ! -e "$BK/$k.kext" ] || ditto "$BK/$k.kext" "$EXT/$k.kext" || failed=1
   done
-  for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do
+  for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl DinoZinkGLDriver.bundle nvmtl-allow.txt; do
     rm -rf "$GB/$b" || failed=1
     [ ! -e "$BK/$b" ] || ditto "$BK/$b" "$GB/$b" || failed=1
   done
@@ -189,6 +189,15 @@ for target in 15 26; do
     [ -f "$HERE/Library/NullMoth/kexts/$target/NVAccel.kext/Contents/Info.plist" ] || die "this package lacks the complete macOS $target accelerator"
 done
 ok "every file matches SHA256SUMS and both OS accelerators are present"
+GLD_BUNDLE=""
+if [ -d "$HERE/Library/GPUBundles/DinoZinkGLDriver.bundle" ]; then
+  GLD_BUNDLE=DinoZinkGLDriver.bundle
+  GLD_INFO="$HERE/Library/GPUBundles/$GLD_BUNDLE/Contents/Info.plist"
+  GLD_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :DinoVerifiedOSBuild' "$GLD_INFO" 2>/dev/null) || die "native GLD build identity is missing"
+  [ "$GLD_BUILD" = "$BUILD" ] || die "this native OpenGL package requires macOS build $GLD_BUILD; this Mac runs $BUILD (no driver changes made)"
+  [ "$MAJ" = 26 ] || die "native GLD is currently verified only on macOS 26 (no driver changes made)"
+  [ -x "$HERE/Library/GPUBundles/nvmtl/gld_bundle_probe" ] || die "native GLD lookup checker is missing"
+fi
 RUNTIME_PREFLIGHT="$SELF/nullmoth-runtime-check.sh"
 [ -x "$RUNTIME_PREFLIGHT" ] || die "runtime compatibility checker is missing"
 /bin/bash "$RUNTIME_PREFLIGHT" "$HERE" "$v" || die "userland runtime cannot load on this macOS version"
@@ -325,7 +334,7 @@ printf '%s\n' "$BUILD" > "$BK/macos-build" || die "record backup macOS build"
 # ditto, not cp -Rp: cp re-applies file flags through symlinks and stopped on nvmtl/libvulkan.dylib with "chflags: Too
 # many levels of symbolic links" (Mac 1.10 logs 10-10, 2 uploads); ditto keeps links, flags and xattrs, as the restore does.
 for k in $KEXTS; do [ ! -e "$EXT/$k.kext" ] || backup_copy "$k" ditto "$EXT/$k.kext" "$BK/$k.kext"; done
-for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do [ ! -e "$GB/$b" ] || backup_copy "$b" ditto "$GB/$b" "$BK/$b"; done
+for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl DinoZinkGLDriver.bundle nvmtl-allow.txt; do [ ! -e "$GB/$b" ] || backup_copy "$b" ditto "$GB/$b" "$BK/$b"; done
 [ ! -f "$KC" ] || backup_copy "kernel collection" cp -p "$KC" "$BK/AuxiliaryKernelExtensions.kc"
 [ ! -d /Library/NullMoth/kexts ] || backup_copy "cached accelerators" ditto /Library/NullMoth/kexts "$BK/kexts"
 [ ! -f /Library/NullMoth/os-major ] || backup_copy "OS record" cp -p /Library/NullMoth/os-major "$BK/os-major"
@@ -383,7 +392,7 @@ done
 MYCONF_START='# --- my settings, kept on update ---'; MYCONF_END='# --- end my settings ---'
 [ ! -f "$GB/nvmtl/nvrm610.conf" ] || sed -n "/^$MYCONF_START\$/,/^$MYCONF_END\$/p" "$GB/nvmtl/nvrm610.conf" \
   | grep -E "^($MYCONF_START|$MYCONF_END|(NVMTL|NVK|NVRM)_[A-Z0-9_]+=[A-Za-z0-9._-]{0,64})\$" > "$T/my-conf" || : > "$T/my-conf"
-for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl; do rm -rf "$GB/$b" && ditto "$HERE/Library/GPUBundles/$b" "$GB/$b" || die "copy $b (restore from $BK)"; done
+for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl ${GLD_BUNDLE:+"$GLD_BUNDLE"}; do rm -rf "$GB/$b" && ditto "$HERE/Library/GPUBundles/$b" "$GB/$b" || die "copy $b (restore from $BK)"; done
 if [ -s "$T/my-conf" ] && [ -f "$GB/nvmtl/nvrm610.conf" ]; then
   cat "$T/my-conf" >> "$GB/nvmtl/nvrm610.conf" || die "keep your settings in nvrm610.conf (restore from $BK)"
   ok "kept your settings in nvrm610.conf ($(grep -cvE '^#' "$T/my-conf") line(s))"
@@ -420,11 +429,11 @@ if [ -f "$KPDB" ] && [ -x /usr/bin/sqlite3 ]; then
       || echo "   note: the approval record for $k is read-only here; macOS may ask to allow it again"
   done
 fi
-chown -R root:wheel "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" "$GB/nvmtl-allow.txt" || die "bundle permissions"
+chown -R root:wheel ${GLD_BUNDLE:+"$GB/$GLD_BUNDLE"} "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" "$GB/nvmtl-allow.txt" || die "bundle permissions"
 # WindowServer runs as _windowserver and must read the bundles and the allow list. WAS: cp under the app's privileged
 # helper (umask 077) left nvmtl-allow.txt at 0600, WindowServer got no Metal device, and CoreDisplay aborted
 # ("Failed to create MetalDevice") on every start: the crash loop after install on many machines.
-chmod -R go-w,a+rX "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" && chmod 644 "$GB/nvmtl-allow.txt" || die "bundle permissions"
+chmod -R go-w,a+rX ${GLD_BUNDLE:+"$GB/$GLD_BUNDLE"} "$GB/NVMTLDriver.bundle" "$GB/NVIDIAShared.bundle" "$GB/nvmtl" && chmod 644 "$GB/nvmtl-allow.txt" || die "bundle permissions"
 sudo -u _windowserver /bin/test -r "$GB/nvmtl-allow.txt" || die "WindowServer cannot read $GB/nvmtl-allow.txt (restore from $BK)"
 # Create the shared shader caches the plugin looks for. Without them NVMTL_AIRCACHE_DIR never resolves, so
 # WindowServer, which compiles the compositor's pipelines on demand, re-translates them from scratch at every start
@@ -445,6 +454,9 @@ for c in $CACHEKEPT; do
 done
 chown -R _windowserver:wheel "$GB/nvmtl/aircache" "$GB/nvmtl/spvcache" || die "shader cache owner"
 chmod 0755 "$GB/nvmtl/aircache" "$GB/nvmtl/spvcache" || die "shared shader cache permissions"
+if [ -n "$GLD_BUNDLE" ]; then
+  "$GB/nvmtl/gld_bundle_probe" DinoZinkGLDriver || die "macOS does not trust the installed OpenGL bundle (restore from $BK)"
+fi
 NEWKC="$KC.nullmoth-install-new"; rm -f "$NEWKC"
 kmutil create -n aux --volume-root / ${KARG[@]+"${KARG[@]}"} -B $KB -S $KS --repository "$EXT" -A "$NEWKC" -z >"$T/kmutil2.log" 2>&1 || die "live kernel collection build failed (restore from $BK)"
 [ -s "$NEWKC" ] || die "live kernel collection build produced no output (restore from $BK)"
@@ -493,7 +505,7 @@ case "\$v" in %0[2-9a-f]|%[1-9a-f]?) ;; *) exit 0;; esac
 [ -d "\$BK/NVRM.kext" ] || { echo "\$(date) the driver turned itself off but its backup \$BK is gone" >> \$LOG; done_job; exit 0; }
 echo "\$(date) the new driver did not bring the display up twice; restoring the previous driver from \$BK" >> \$LOG
 for k in $KEXTS; do rm -rf "$EXT/\$k.kext"; [ ! -e "\$BK/\$k.kext" ] || ditto "\$BK/\$k.kext" "$EXT/\$k.kext"; done
-for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl nvmtl-allow.txt; do rm -rf "$GB/\$b"; [ ! -e "\$BK/\$b" ] || ditto "\$BK/\$b" "$GB/\$b"; done
+for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl DinoZinkGLDriver.bundle nvmtl-allow.txt; do rm -rf "$GB/\$b"; [ ! -e "\$BK/\$b" ] || ditto "\$BK/\$b" "$GB/\$b"; done
 rm -rf /Library/NullMoth/kexts "$FW"
 [ ! -d "\$BK/kexts" ] || ditto "\$BK/kexts" /Library/NullMoth/kexts
 [ ! -d "\$BK/nvfw" ] || ditto "\$BK/nvfw" "$FW"

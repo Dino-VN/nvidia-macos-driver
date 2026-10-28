@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Research candidate: merge into IOKitPersonalities/NVAccel only after a
+     usable GLD ABI bridge is verified. The diagnostic bundle declines GLD readiness. -->
+<plist version="1.0"><dict>
+<key>IOGLBundleName</key><string>DinoZinkGLDriver</string>
+</dict></plist>
