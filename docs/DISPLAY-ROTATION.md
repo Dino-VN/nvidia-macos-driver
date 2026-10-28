@@ -50,7 +50,7 @@ unique numeric serials and extension blocks remain unchanged.
 
 ## Multiple displays and identities
 
-The four-monitor RTX 3070 report demonstrated wrong-monitor rotation and unwanted
+The earlier four-monitor RTX 3070 report demonstrated wrong-monitor rotation and unwanted
 mirroring, including 1080×1080 fallback modes. Its mixed-angle trial also entered
 mirroring in the later snapshot, so the earlier extended snapshot was insufficient
 to establish success. All four registry IDs/indices had the same IOService path.
@@ -61,9 +61,8 @@ framebuffer starts, such as `NVRMDisplay@0/NVRMFramebuffer` and
 registry ID and refuses a selected path that resolves to another framebuffer.
 Modes, transforms, cursor geometry and owned scale lists remain per instance.
 
-The path repair and native mode handling are local candidates. The PR author
-reports two working 2560×1440 displays on an RTX 4080 Super; that does not qualify
-this adaptation or the four-monitor RTX 3070. Test each head and angle manually,
+The PR author reports two working 2560×1440 displays on an RTX 4080 Super.
+The fork's later four-monitor user confirmation is recorded below. Test each head and angle manually,
 confirm the selected physical monitor, extended layout, native pixels/refresh,
 cursor alignment and restoration, then test mixed angles. Laptop iGPU/dGPU routing
 is a separate investigation. Mirroring/scaled desktops, HDR, hotplug, sleep/wake
@@ -71,8 +70,8 @@ and long-running behavior remain unqualified.
 
 ### Four-monitor controller repair
 
-The next RTX 3070 report has distinct indexed paths and correct transform targeting,
-but still enters mirroring. Independent controller tests were incomplete: late
+The next RTX 3070 capture had distinct indexed paths and correct transform targeting,
+but still entered mirroring. Independent controller tests were incomplete: late
 registry edits cannot establish that an already cached controller was recreated,
 and NVAccel/NVRMAGDC both used `IOFBDependentIndex` as their driver slot.
 
@@ -103,10 +102,23 @@ to 1080×1080 bounds. Controller separation alone is not a confirmed repair.
 The consistent-mode-ID change targets the query-dependent answer seen in those
 captures. Host tests exercise the actual reporting and timing-table methods,
 including successive renumbering, reused IDs, absent active modes, full tables
-and four independent heads. Whether it prevents the affected desktop's mirroring
-still requires hardware testing, with regression checks on the working
-single-monitor and laptop/external configurations. It is not a proven diagnosis
-of CoreDisplay's mirror decision.
+and four independent heads. Its individual contribution to the affected desktop's
+behavior has not been isolated. It is not a proven diagnosis of CoreDisplay's
+mirror decision.
+
+### User confirmation — 2026-10-28
+
+The tester for the four-monitor RTX 3070 setup subsequently confirmed that all
+four displays work correctly. Their screenshot shows both Dell P2214H displays
+in portrait alongside two landscape displays. The maintainer also reports working
+rotation with the RTX 2060 SUPER's second DVI-connected monitor.
+
+Record these as successful user-reported configurations. The four-monitor report
+does not identify the exact installed release or binary hashes, or isolate the
+cause of the earlier mirroring. It does not establish which individual repair was
+necessary. Retain the display identities and consistent timing-ID reporting;
+independent-controller splitting remains disabled in the published package.
+HDR, hotplug, sleep/wake and long-running behavior remain outside this report.
 
 ## Build and validation
 

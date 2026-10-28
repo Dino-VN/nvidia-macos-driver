@@ -11,7 +11,7 @@
 - Merge upstream rendering/cache, shader-translation, backlight, display-audio, HiDPI, GPU-utilization and BAR1 repairs.
 - Keep later fork rotation/current-mode and cursor lifetime repairs, decoder/ANGLE policy, OpenGL/MoltenVK optimizations and the native Minecraft/Wine runtimes. Upstream now includes the original rotation and GL uniform-buffer/shadow work; include each once.
 - Retain the guarded 16-sampler and vector-prefix shader repairs. Resolve cursor transforms once and combine audio refresh with the fork's cursor geometry and stable mode identities.
-- See [Fork merge notes](docs/FORK-MERGE-NOTES.md) for validation and the upstream-baseline test failures. The four-monitor mirroring candidate still needs hardware validation.
+- The four-monitor tester subsequently confirmed working mixed portrait/landscape rotation on 2026-10-28. See [Display rotation](docs/DISPLAY-ROTATION.md) for the user report and its limits, and [Fork merge notes](docs/FORK-MERGE-NOTES.md) for build validation.
 
 ## Fork integration with upstream 2.6.2
 

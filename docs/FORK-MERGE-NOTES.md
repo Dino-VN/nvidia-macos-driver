@@ -197,11 +197,13 @@ Upstream 2.6.3 now includes the original rotation adaptation. Keep its fork repa
 once rather than applying rotation twice. The separate surface-busy wait from
 PR 398 remains excluded.
 
-The four-monitor RTX 3070 report exposes wrong-monitor rotation, mode fallback
-and mirroring; initial snapshots alone missed later failures. The candidate
-still needs physical testing on that desktop. PR-author dual-monitor results
-and prior single-monitor results qualify neither this port nor laptop iGPU/dGPU
-routing. See [Display rotation](DISPLAY-ROTATION.md) for tests and limitations.
+Earlier four-monitor RTX 3070 captures exposed wrong-monitor rotation, mode fallback
+and mirroring; initial snapshots alone missed later failures. On 2026-10-28 the
+same tester confirmed all four displays working, with both Dell P2214H displays
+in portrait. The maintainer also reports working rotation with the second DVI
+monitor on RTX 2060 SUPER. Exact four-monitor release/binary identity and the
+necessity of individual repairs were not established. See
+[Display rotation](DISPLAY-ROTATION.md) for the reports and remaining test limits.
 
 The local controller-separation test adds `NVRMDisplayIndex` as the stable driver
 slot, preferred by both NVAccel and NVRMAGDC with the older dependent-index fallback.
@@ -209,10 +211,12 @@ Keep PCI ownership, range/type/duplicate checks and Intel slot 4. When explicitl
 enabled, secondary heads receive distinct controller IDs before family startup,
 with local dependent index zero; head zero keeps the Intel-compatible legacy group.
 `nvfbcontrollers=0`, rotation disablement and non-Tahoe kernels preserve shared
-grouping. The three kexts must be staged together. Host checks pass, but the affected
-four-head test still mirrored with this repair installed. The later consistent
-timing-ID repair passes host mode/metadata tests; its effect on that hardware
-remains unverified. Do not describe either candidate as a proven mirroring fix.
+grouping. The three kexts must be staged together. Host checks pass, but the earlier
+four-head capture still mirrored with this repair installed. The later consistent
+timing-ID repair passes host mode/metadata tests. The subsequent successful user
+report does not isolate either change as the mirroring fix. Keep controller
+splitting disabled in ordinary packages and retain the independent identity and
+timing-reporting correctness repairs.
 
 ## DVI startup timing validation
 
