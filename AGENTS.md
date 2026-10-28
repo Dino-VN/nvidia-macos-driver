@@ -57,7 +57,13 @@ require a new binary release. Update only the repositories and artifacts that ne
 
 Use [the Wine native NVK release](https://github.com/HighDelay/nvidia-macos-driver/releases/tag/v2.6.2-wine-nvk)
 as the delivery and release-description reference. Keep the Minecraft README link at the top,
-`What has been added` with relevant commit links, actual test results/hardware, the all-app
+immediately followed by this Wine/CrossOver heading:
+
+```markdown
+### For Wine/Crossover native NVK, please read [this](https://github.com/HighDelay/nvidia-macos-driver#wine--crossover-native-vulkan)
+```
+
+Keep `What has been added` with relevant commit links, actual test results/hardware, the all-app
 ANGLE Metal default, installation instructions, and the existing boot warning and recovery
 steps. Keep entries brief and remove redundant links/details from older releases. Include
 Wine/NVK and YAAGL setup links when relevant. Maintain release notes in the GitHub release
