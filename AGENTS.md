@@ -14,12 +14,14 @@ identify the commits, required behavior and validation limits.
 
 ## Fork releases and debugging packages
 
-Standing user instructions, confirmed 2026-10-28: when completing requested implementation
-updates or upstream merges for the forks below, build, validate, commit, push and publish
-the affected releases. Publishing is already authorized; do not stop after pushing source
-or uploading a draft to ask for the same approval again. A later instruction to work locally,
-hold a release or wait for testing takes precedence. Documentation-only changes do not
-require a new binary release. Update only the repositories and artifacts that need changing.
+Standing user instructions, updated 2026-10-28: when completing requested implementation
+updates or upstream merges for the forks below, build, validate, commit, push and prepare
+the affected releases as GitHub drafts. Upload and verify the complete assets and release
+notes, then give the user the draft link for review. Publish only after the user explicitly
+approves that release. This approval requirement replaces the earlier automatic-publication
+instruction. A later instruction to work locally, hold a release or wait for testing takes
+precedence. Documentation-only changes do not require a new binary release. Update only
+the repositories and artifacts that need changing.
 
 | Fork | Release contents |
 | --- | --- |
@@ -47,11 +49,12 @@ require a new binary release. Update only the repositories and artifacts that ne
 4. YAAGL continues to use that installed provider by default. Its archives contain launchers
    only: Wine downloads during setup, while NVK and DXVK come from the driver. Preserve this
    arrangement instead of adding another runtime bundle or an independent DXVK download.
-5. Push the relevant source commits before publishing assets. Use versioned tags pointing
+5. Push the relevant source commits before uploading assets. Use versioned tags pointing
    to the intended pushed commits and record the provenance of reused components. Upload
-   the archives and checksums, verify the uploaded sizes/digests, and publish regular public
-   releases marked Latest, with draft and prerelease disabled, unless the user requests
-   otherwise. Report the release links and validation limits when finished.
+   the archives and checksums to a draft release and verify the uploaded sizes/digests.
+   Present the complete draft and validation limits, then wait for the user's explicit
+   approval before publishing. After approval, publish a regular public release marked
+   Latest, with draft and prerelease disabled, unless the user requests otherwise.
 
 ### Driver release format
 
