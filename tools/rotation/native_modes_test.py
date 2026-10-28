@@ -9,8 +9,11 @@ names = ['void NVRMNVDAFramebuffer::dtSurfaceSize(', 'static void dtRasterTurned
          'IOReturn NVRMNVDAFramebuffer::validateDetailedTiming(',
          'IOReturn NVRMNVDAFramebuffer::setDetailedTimings(',
          'IOReturn NVRMNVDAFramebuffer::getCurrentDisplayMode(',
+         'IOReturn NVRMNVDAFramebuffer::getPixelInformation(',
          'IOReturn NVRMNVDAFramebuffer::setDisplayMode(']
 methods = '\n'.join(method(FB, name) for name in names)
+enumeration = '\n'.join(method(FB, name).replace(' override', '') for name in [
+    'IOItemCount getDisplayModeCount()', 'IOReturn getDisplayModes(', 'bool listBootMode() const'])
 fixture = r'''
 #include <IOKit/graphics/IOGraphicsTypes.h>
 #include <IOKit/IOReturn.h>
@@ -27,7 +30,6 @@ enum {kModeId=1};
 #define FBLOG(...) ((void)0)
 static void nvu_zero(void *p,size_t n){memset(p,0,n);}
 static void nvu_copy(void *p,const void *q,size_t n){memcpy(p,q,n);}
-static bool OSCompareAndSwap(UInt32 old,UInt32 n,volatile UInt32 *p){if(*p!=old)return false;*p=n;return true;}
 struct OSObject{virtual ~OSObject(){};};
 struct OSData:OSObject{
  std::vector<unsigned char> bytes;
@@ -47,8 +49,9 @@ struct NVRMNVDAFramebuffer{
  bool fRotationEnabled=true,fModeSet=true,fBootInDT=false;unsigned fIndex=0,fNDT=0,fValidateCalls=0,fValidateOk=0,fEdidHits=0;
  static const unsigned kMaxMacTimings=224;
  IODetailedTimingInformationV2 fDT[256]{},fCurDT{};
- IODisplayModeID fCurId=1;volatile UInt32 fNewIdOnce=0;UInt32 fTransform=0,fCurTransform=0;
+ IODisplayModeID fCurId=1;UInt32 fTransform=0,fCurTransform=0;
  NvU32 fW=1920,fH=1080,fRasterW=1920,fRasterH=1080,fBootW=1920,fBootH=1080,fScalerMaxW=7680,fScalerMaxH=4320;
+ NvU32 fPitch=7680,fBootPitch=7680,fPitchAlign=256;
  UInt16 fEdidMmW=480,fEdidMmH=270;NvKmsKapiDisplayMode fMode{},fBootMode{};Kms kms,*fKms=&kms;
  void *fDev=this;unsigned fDisplay=1,publishes=0,switches=0;
  void dtSurfaceSize(const IODetailedTimingInformationV2 *,NvU32 *,NvU32 *)const;
@@ -58,8 +61,11 @@ struct NVRMNVDAFramebuffer{
  IOReturn getTimingInfoForDisplayMode(IODisplayModeID,IOTimingInformation *);
  IOReturn validateDetailedTiming(void *,IOByteCount);IOReturn setDetailedTimings(OSArray *);
  IOReturn getCurrentDisplayMode(IODisplayModeID *,IOIndex *);IOReturn setDisplayMode(IODisplayModeID,IOIndex);
+ IOReturn getPixelInformation(IODisplayModeID,IOIndex,IOPixelAperture,IOPixelInformation *);
  int dtIndex(IODisplayModeID id)const{for(unsigned i=0;i<fNDT;i++)if((IODisplayModeID)fDT[i].detailedTimingModeID==id)return i;return -1;}
- unsigned addKmsRefreshModes(unsigned n){return n;}
+ std::vector<IODetailedTimingInformationV2> extraTimings;
+ unsigned addKmsRefreshModes(unsigned n){for(const auto &d:extraTimings){if(n==256)break;fDT[n++]=d;}return n;}
+ @@ENUMERATION@@
  void setProperty(const char *,OSObject *){}void setProperty(const char *,unsigned long long,unsigned){}
  void removeProperty(const char *){}void publishRotatedSizes(){}void publishStartupTiming(){++publishes;}
  void publishCursorGeometry(const IODetailedTimingInformationV2 *){}
@@ -81,6 +87,24 @@ static IODetailedTimingInformationV2 timing(unsigned w,unsigned h,unsigned hz,un
 static void adopt(NVRMNVDAFramebuffer &f,const IODetailedTimingInformationV2 &d){
  f.fNDT=1;f.fDT[0]=d;assert(f.setDisplayMode(d.detailedTimingModeID,0)==0);
 }
+static void stableCurrent(NVRMNVDAFramebuffer &f,IODisplayModeID expected){
+ const unsigned switches=f.switches;const auto saved=f.fCurDT;
+ for(unsigned query=0;query<32;++query){
+  IODisplayModeID reported=0;IOIndex depth=99;
+  assert(f.getCurrentDisplayMode(&reported,&depth)==0&&reported==expected&&depth==0);
+  IOTimingInformation ti{};assert(f.getTimingInfoForDisplayMode(reported,&ti)==0);
+  assert(ti.flags&kIODetailedTimingValid);
+  assert((IODisplayModeID)ti.detailedInfo.v2.detailedTimingModeID==reported);
+  assert(f.dtIsCurrent(ti.detailedInfo.v2));
+  IODisplayModeInformation mi{};assert(f.getInformationForDisplayMode(reported,&mi)==0);
+  assert(mi.refreshRate&&mi.nominalWidth==(saved.horizontalScaled?saved.horizontalScaled:saved.horizontalActive));
+  assert(mi.nominalHeight==(saved.verticalScaled?saved.verticalScaled:saved.verticalActive));
+  IOPixelInformation pi{};assert(f.getPixelInformation(reported,depth,kIOFBSystemAperture,&pi)==0);
+  assert(pi.activeWidth==mi.nominalWidth&&pi.activeHeight==mi.nominalHeight);
+  assert(f.getCurrentDisplayMode(nullptr,nullptr)==0);
+ }
+ assert(f.switches==switches&&f.fCurId==expected&&memcmp(&f.fCurDT,&saved,sizeof saved)==0);
+}
 int main(){
  unsigned cases=0;
  for(auto size:{std::pair<unsigned,unsigned>{1280,720},{1920,1080},{2560,1440},{3440,1440},{3840,2160},{5120,1440},{7680,4320}})
@@ -98,10 +122,18 @@ int main(){
   IOTimingInformation info{};assert(f.getTimingInfoForDisplayMode(d.detailedTimingModeID,&info)==0);
   assert(info.detailedInfo.v2.horizontalActive==size.first&&info.detailedInfo.v2.verticalActive==size.second);
   auto rebuilt=d;rebuilt.detailedTimingModeID=0x9999;OSArray array;array.values.emplace_back(rebuilt);
-  assert(f.setDetailedTimings(&array)==0);IODisplayModeID reported=0;
-  assert(f.getCurrentDisplayMode(&reported,nullptr)==0&&reported==0x9999);
-  if(transform)assert(f.getCurrentDisplayMode(&reported,nullptr)==0&&reported==0x1234);
-  else assert(f.fCurId==0x9999);
+  unsigned switches=f.switches;assert(f.setDetailedTimings(&array)==0);
+  stableCurrent(f,0x9999);assert(f.switches==switches&&f.fCurDT.detailedTimingModeID==0x9999);
+  // The previous ID remains a usable alias without becoming the current ID.
+  IOTimingInformation alias{};assert(f.getTimingInfoForDisplayMode(0x1234,&alias)==0);
+  assert(alias.detailedInfo.v2.detailedTimingModeID==0x1234&&f.dtIsCurrent(alias.detailedInfo.v2));
+  assert(f.setDisplayMode(0x9999,0)==0&&f.switches==switches);
+  // Another replacement, then an unchanged list, must not revive an older ID.
+  rebuilt.detailedTimingModeID=0xaaaa;OSArray again;again.values.emplace_back(rebuilt);
+  assert(f.setDetailedTimings(&again)==0);stableCurrent(f,0xaaaa);
+  assert(f.getTimingInfoForDisplayMode(0x9999,&alias)==0&&f.dtIsCurrent(alias.detailedInfo.v2));
+  assert(f.setDetailedTimings(&again)==0);stableCurrent(f,0xaaaa);
+  assert(f.setDisplayMode(0xaaaa,1)==kIOReturnUnsupportedMode);stableCurrent(f,0xaaaa);
   ++cases;
  }
  // Native unrotated timings must produce a complete rotated copy, not mirror-only synthetic modes.
@@ -135,7 +167,59 @@ int main(){
  NVRMNVDAFramebuffer first,second;adopt(first,timing(1920,1080,75,0x30,8));adopt(second,timing(2560,1440,165,0,9));
  auto saved=second.fCurDT;OSArray change;change.values.emplace_back(timing(1920,1080,75,0x30,44));first.setDetailedTimings(&change);
  assert(second.fCurId==9&&!second.fCurTransform&&memcmp(&saved,&second.fCurDT,sizeof saved)==0);
- printf("PASS: %u native mode/refresh/angle cases through 8K; timing renumber/alias, full-raster guards, 224 timings, disabled scaled path and independent heads\n",cases);
+ // A reused previous ID must continue to describe its new timing, not be shadowed by an alias.
+ NVRMNVDAFramebuffer reused;auto active=timing(1920,1080,75,0x60,0x80002001);
+ adopt(reused,active);OSArray reuse;reuse.values.emplace_back(timing(1920,1080,60,0,0x80002001));
+ auto renumbered=active;renumbered.detailedTimingModeID=0x80003000;reuse.values.emplace_back(renumbered);
+ assert(reused.setDetailedTimings(&reuse)==0&&reused.fNDT==2);stableCurrent(reused,0x80003000);
+ assert(reused.fDT[reused.dtIndex(0x80002001)].pixelClock!=active.pixelClock);
+ assert(reused.setDisplayMode(0x80002001,0)==0&&reused.fCurTransform==0&&reused.fMode.timings.refreshRate==60000);
+ // If the active timing disappears, preserve it rather than silently report the boot timing.
+ NVRMNVDAFramebuffer missing;auto boot=timing(1920,1080,60,0,0x80001000);
+ NVRMNVDAFramebuffer::dtToKapi(&boot,&missing.fBootMode);adopt(missing,active);OSArray absent;
+ absent.values.emplace_back(timing(1920,1080,60,0,0x80001000));
+ assert(missing.setDetailedTimings(&absent)==0&&missing.fNDT==2);stableCurrent(missing,0x80002001);
+ // If that ID is reused too, allocate an unoccupied per-head ID without overwriting supplied entries.
+ OSArray collision;collision.values.emplace_back(timing(1920,1080,60,0,0x80002001));
+ collision.values.emplace_back(timing(1920,1080,60,0,0x20000));
+ collision.values.emplace_back(timing(1920,1080,60,0,0x20001));
+ assert(missing.setDetailedTimings(&collision)==0&&missing.fNDT==4);stableCurrent(missing,0x20002);
+ assert(missing.fDT[missing.dtIndex(0x80002001)].pixelClock!=active.pixelClock);
+ OSArray empty;assert(missing.setDetailedTimings(&empty)==0&&missing.fNDT==1);stableCurrent(missing,0x20002);
+ // Clearing the list keeps the active identity; enumeration republishes it with complete metadata.
+ assert(missing.setDetailedTimings(nullptr)==0&&missing.fNDT==0&&missing.fCurId==0x20002);
+ std::vector<IODisplayModeID> listed(missing.getDisplayModeCount());
+ assert(!listed.empty()&&missing.getDisplayModes(listed.data())==0);
+ unsigned activeEntries=0;for(auto id:listed)if(id==0x20002)++activeEntries;
+ assert(activeEntries==1);stableCurrent(missing,0x20002);
+ // Initial boot-mode adoption still uses the firmware timing, without a modeset.
+ NVRMNVDAFramebuffer starting;starting.fModeSet=false;starting.fBootMode=missing.fBootMode;
+ OSArray initial;initial.values.emplace_back(boot);
+ assert(starting.setDetailedTimings(&initial)==0&&starting.fCurId==(IODisplayModeID)boot.detailedTimingModeID);
+ assert(starting.fBootInDT&&starting.switches==0);
+ // Full generated tables sacrifice one extra NVKMS mode, never a macOS entry or the active mode.
+ NVRMNVDAFramebuffer full;adopt(full,active);OSArray packed;
+ for(unsigned i=0;i<224;++i)packed.values.emplace_back(timing(1920,1080,60,0,0x80010000+i));
+ for(unsigned i=0;i<32;++i)full.extraTimings.push_back(timing(1920,1080,60,0,0x10000+i*256));
+ assert(full.setDetailedTimings(&packed)==0&&full.fNDT==256);stableCurrent(full,0x80002001);
+ for(unsigned i=0;i<224;++i)assert(full.fDT[i].detailedTimingModeID==0x80010000+i);
+ // No alias capacity is needed to adopt an existing matching entry, including the last generated slot.
+ NVRMNVDAFramebuffer matchFull;adopt(matchFull,active);matchFull.extraTimings=full.extraTimings;
+ matchFull.extraTimings.back()=renumbered;
+ assert(matchFull.setDetailedTimings(&packed)==0&&matchFull.fNDT==256);stableCurrent(matchFull,0x80003000);
+ // A matching current ID wins over an earlier equivalent ID, and refreshes its saved descriptor.
+ OSArray sameId;sameId.values.emplace_back(active);renumbered.minPixelClock=renumbered.pixelClock;
+ sameId.values.emplace_back(renumbered);assert(matchFull.setDetailedTimings(&sameId)==0);
+ stableCurrent(matchFull,0x80003000);assert(matchFull.fCurDT.minPixelClock==renumbered.pixelClock);
+ // All four heads stay independent during both logged Dell sequences (180 and 270 degrees).
+ for(unsigned transform:{0x60u,0x50u}){
+  NVRMNVDAFramebuffer heads[4];
+  for(unsigned i=0;i<4;++i){heads[i].fIndex=i;adopt(heads[i],timing(1920,1080,i==0?240:60,i==2?transform:0,0x80002001));}
+  auto target=heads[2].fCurDT;target.detailedTimingModeID=0x80003000;OSArray update;update.values.emplace_back(target);
+  assert(heads[2].setDetailedTimings(&update)==0);
+  for(unsigned i=0;i<4;++i)stableCurrent(heads[i],i==2?0x80003000:0x80002001);
+ }
+ printf("PASS: %u native size/refresh/angle cases through 8K; repeat-query metadata, successive rebuilds, aliases/ID reuse, missing/full tables, enumeration and four independent heads\n",cases);
 }
 '''
-run(fixture.replace('@@METHODS@@', methods))
+run(fixture.replace('@@METHODS@@', methods).replace('@@ENUMERATION@@', enumeration))

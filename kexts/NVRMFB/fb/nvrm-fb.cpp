@@ -313,7 +313,6 @@ class NVRMNVDAFramebuffer : public IOFramebuffer {
     bool dtIsCurrent(const IODetailedTimingInformationV2 &d) const;
     bool dtIsBootRaster(const IODetailedTimingInformationV2 &d) const;
     IODetailedTimingInformationV2 fCurDT = {};
-    volatile UInt32 fNewIdOnce = 0;
     NvU32 fPitchAlign = 256;
     NvU32 fScalerMaxW = 0, fScalerMaxH = 0;
     // Widest raster offered when it fits the scanout memory. Separate from the scaler limit: a 5120x1440 monitor whose
@@ -2943,7 +2942,6 @@ void NVRMNVDAFramebuffer::publishCursorGeometry(const IODetailedTimingInformatio
 IOReturn NVRMNVDAFramebuffer::setDisplayMode(IODisplayModeID mode, IOIndex depth)
 {
     FBLOG("fb%u setDisplayMode 0x%x depth %d (current 0x%x)", fIndex, (unsigned)mode, (int)depth, (unsigned)fCurId);
-    fNewIdOnce = 0;
     if (depth != 0) return kIOReturnUnsupportedMode;
     if (mode == kModeId) {
         if (fCurId == kModeId) return applyMode() ? kIOReturnSuccess : kIOReturnError;
@@ -2975,10 +2973,7 @@ void NVRMNVDAFramebuffer::publishStartupTiming()
 }
 IOReturn NVRMNVDAFramebuffer::getCurrentDisplayMode(IODisplayModeID *mode, IOIndex *depth)
 {
-    IODisplayModeID id = fCurId;
-    const UInt32 once = fNewIdOnce;
-    if (once && OSCompareAndSwap(once, 0, &fNewIdOnce)) id = (IODisplayModeID)once;
-    if (mode) *mode = id;
+    if (mode) *mode = fCurId;
     if (depth) *depth = 0;
     return kIOReturnSuccess;
 }
@@ -3392,7 +3387,7 @@ IOReturn NVRMNVDAFramebuffer::validateDetailedTiming(void *description, IOByteCo
 IOReturn NVRMNVDAFramebuffer::setDetailedTimings(OSArray *array)
 {
     if (!array) {
-        fNDT = 0; fBootInDT = false; fNewIdOnce = 0; removeProperty(kIOFBDetailedTimingsKey);
+        fNDT = 0; fBootInDT = false; removeProperty(kIOFBDetailedTimingsKey);
         if (fCurId != kModeId) FBLOG("setDetailedTimings(NULL) while 0x%x is on the head -- it stays until the next setDisplayMode", (unsigned)fCurId);
         return kIOReturnSuccess;
     }
@@ -3405,28 +3400,47 @@ IOReturn NVRMNVDAFramebuffer::setDetailedTimings(OSArray *array)
     }
     const unsigned fromMac = n;
     publishRotatedSizes();
-    fNewIdOnce = 0;
     n = addKmsRefreshModes(n);
+    unsigned fromKms = n - fromMac;
     fNDT = n;
     setProperty(kIOFBDetailedTimingsKey, array);
     fBootInDT = false;
-    if (fRotationEnabled && fCurId != kModeId && fModeSet && (dtIndex(fCurId) < 0 || !dtIsCurrent(fDT[dtIndex(fCurId)]))) {
-        int found = -1;
+    if (fRotationEnabled && fCurId != kModeId && fModeSet) {
+        const IODisplayModeID previousId = fCurId;
+        const int previous = dtIndex(previousId);
+        int found = previous >= 0 && dtIsCurrent(fDT[previous]) ? previous : -1;
         for (unsigned i = 0; i < n && found < 0; i++) if (dtIsCurrent(fDT[i])) found = (int)i;
-        if (found >= 0 && fCurTransform) {
-            fNewIdOnce = fDT[found].detailedTimingModeID;
-            FBLOG("fb%u setDetailedTimings: rotated mode on the head is dt 0x%x now; 0x%x kept, the new ID answered once",
-                  fIndex, (unsigned)fNewIdOnce, (unsigned)fCurId);
-            found = -1;
-        }
         if (found >= 0) {
-            FBLOG("fb%u setDetailedTimings: the mode on the head (raster %ux%u, desktop %ux%u, rotation 0x%x) is dt 0x%x now, was 0x%x",
-                  fIndex, fRasterW, fRasterH, fCurDT.horizontalScaled, fCurDT.verticalScaled, (unsigned)fCurTransform,
-                  fDT[found].detailedTimingModeID, (unsigned)fCurId);
+            // A timing-list rebuild can renumber the active mode without a
+            // modeset. Every observer must see the same ID and timing record;
+            // a query must never consume a one-time replacement ID.
             fCurId = (IODisplayModeID)fDT[found].detailedTimingModeID;
-        } else if (n < sizeof fDT / sizeof fDT[0] && fCurDT.pixelClock) {
-            fDT[n] = fCurDT; fDT[n].detailedTimingModeID = (UInt32)fCurId; n++; fNDT = n;
-            FBLOG("fb%u setDetailedTimings: the mode on the head (dt 0x%x) is not in the new list; kept as an alias", fIndex, (unsigned)fCurId);
+            fCurDT = fDT[found];
+            if (fCurId != previousId) {
+                FBLOG("fb%u setDetailedTimings: active timing ID 0x%x -> 0x%x (no modeset)",
+                      fIndex, (unsigned)previousId, (unsigned)fCurId);
+                // A caller may still refer to the previous list. Keep that ID
+                // usable only if it has not been reassigned by the new list.
+                if (previous < 0 && n < sizeof fDT / sizeof fDT[0]) {
+                    fDT[n] = fCurDT; fDT[n].detailedTimingModeID = (UInt32)previousId; n++; fNDT = n;
+                }
+            }
+        } else if (fCurDT.pixelClock) {
+            UInt32 activeId = (UInt32)previousId;
+            if (previous >= 0) {
+                // The old ID now names another mode. Retain the actual active
+                // timing under an unused driver ID, outside the NVKMS range
+                // (0x10000..0x1ffff). At most 256 entries can be occupied.
+                activeId = 0x20000u;
+                while (dtIndex((IODisplayModeID)activeId) >= 0) ++activeId;
+            }
+            // macOS is capped at 224 entries. If NVKMS filled the remainder,
+            // replace its last extra mode rather than lose the active timing.
+            if (n == sizeof fDT / sizeof fDT[0]) { --n; --fromKms; }
+            fDT[n] = fCurDT; fDT[n].detailedTimingModeID = activeId;
+            fCurId = (IODisplayModeID)activeId; fCurDT = fDT[n]; n++; fNDT = n;
+            FBLOG("fb%u setDetailedTimings: active timing absent from new list; retained as 0x%x (was 0x%x, no modeset)",
+                  fIndex, (unsigned)fCurId, (unsigned)previousId);
         }
     }
     if (fCurId == kModeId || dtIndex(fCurId) < 0 || (fRotationEnabled && !dtIsCurrent(fDT[dtIndex(fCurId)]))) {
@@ -3439,8 +3453,8 @@ IOReturn NVRMNVDAFramebuffer::setDetailedTimings(OSArray *array)
             break;
         }
     } else fBootInDT = true;
-    FBLOG("fb%u setDetailedTimings: %u timing(s) installed (%u from macOS, %u refresh rates from NVKMS; %u malformed, %u offered), current 0x%x, EDID matches so far %u",
-          fIndex, n, fromMac, n - fromMac, bad, array->getCount(), (unsigned)fCurId, fEdidHits);
+    FBLOG("fb%u setDetailedTimings: %u timing(s) installed (%u from macOS, %u refresh rates from NVKMS, %u mode aliases; %u malformed, %u offered), current 0x%x, EDID matches so far %u",
+          fIndex, n, fromMac, fromKms, n - fromMac - fromKms, bad, array->getCount(), (unsigned)fCurId, fEdidHits);
     for (unsigned i = 0; i < n && i < 24; i++)
         FBLOG("  dt 0x%x raster %ux%u desktop %ux%u rotation 0x%x pclk %llu", fDT[i].detailedTimingModeID, fDT[i].horizontalActive, fDT[i].verticalActive,
               fDT[i].horizontalScaled, fDT[i].verticalScaled, (unsigned)(fDT[i].scalerFlags & kIOScaleRotateFlags), (unsigned long long)fDT[i].pixelClock);

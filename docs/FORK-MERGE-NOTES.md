@@ -100,6 +100,11 @@ its physical raster. Keep conditional completion/capture synchronization.
 Retain the native rotated-mode publication, timing-ID matching and aliases,
 224-entry macOS timing capacity, full-raster/reflection/allocation checks,
 aligned timing copies and per-display cursor bitmap/hotspot/geometry mapping.
+Keep the consistent current-mode-ID repair: adopt a matching replacement ID and
+its descriptor persistently, and make `getCurrentDisplayMode` a read-only query.
+Do not restore `fNewIdOnce` or an equivalent query-consumed answer. Preserve the
+previous ID only when unambiguous and capacity permits; retain an omitted active
+timing without shadowing a reassigned ID or reporting the boot mode as active.
 Existing scaling overrides must survive; replace/remove only the scale array
 published by this instance. A first-frame reconnect must use the deferred
 connection worker, never call the family from inside the presentation gate.
@@ -130,8 +135,10 @@ Keep PCI ownership, range/type/duplicate checks and Intel slot 4. When explicitl
 enabled, secondary heads receive distinct controller IDs before family startup,
 with local dependent index zero; head zero keeps the Intel-compatible legacy group.
 `nvfbcontrollers=0`, rotation disablement and non-Tahoe kernels preserve shared
-grouping. The three kexts must be staged together. Host checks pass, but four-head
-hardware validation is pending; do not describe this candidate as a proven fix.
+grouping. The three kexts must be staged together. Host checks pass, but the affected
+four-head test still mirrored with this repair installed. The later consistent
+timing-ID repair passes host mode/metadata tests; its effect on that hardware
+remains unverified. Do not describe either candidate as a proven mirroring fix.
 
 ## DVI startup timing validation
 

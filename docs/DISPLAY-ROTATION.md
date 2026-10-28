@@ -23,6 +23,15 @@ Up to 224 macOS timings are kept, reserving the remaining table for driver modes
 and active aliases. Current timings are matched by raster, desktop size, transform,
 pixel clock, totals and sync geometry when macOS renumbers their IDs.
 
+Timing-list replacements now adopt the matching current ID and its descriptor
+persistently. Reading the current mode has no side effects; different callers
+receive the same answer until a mode or timing-list change. The previous ID stays
+usable as an alias when the new table has room and has not reassigned it. If the
+active timing is absent, it is retained; a reused ID gets an unused driver ID
+starting at `0x20000` instead of shadowing another mode. A full table sacrifices
+one extra NVKMS entry to retain the actual active timing, preserving every accepted
+macOS entry. These bookkeeping changes do not perform a physical modeset.
+
 The cursor bitmap, hotspot and position map into the same raster. Geometry and
 hotspots are published under the cursor-state lock; coordinate arithmetic uses
 64-bit intermediates and bounded output. The kernel-priority ONCE cursor worker,
@@ -82,8 +91,20 @@ to enable it in a test package. `nvfbcontrollers=0` restores the existing shared
 grouping; the boot argument overrides the property. Rotation-disabled and non-Tahoe
 boots keep shared grouping. Install matching **NVRMFB, NVAccel and NVRMAGDC** together.
 Production-method host checks cover all four slots, the Intel slot, ownership,
-duplicate/invalid slots, legacy fallback and grouping opt-outs. Hardware validation
-of the four-monitor mirroring repair is still pending.
+duplicate/invalid slots, legacy fallback and grouping opt-outs. The subsequent
+four-monitor capture confirmed this coordinated repair was loaded but still
+mirrored all heads. Separate manual Dell 180° and 270° captures reproduced the
+failure after successful physical mode commits, during CoreDisplay layout
+restoration; the HDMI display became mirror master. The 270° case also collapsed
+to 1080×1080 bounds. Controller separation alone is not a confirmed repair.
+
+The consistent-mode-ID change targets the query-dependent answer seen in those
+captures. Host tests exercise the actual reporting and timing-table methods,
+including successive renumbering, reused IDs, absent active modes, full tables
+and four independent heads. Whether it prevents the affected desktop's mirroring
+still requires hardware testing, with regression checks on the working
+single-monitor and laptop/external configurations. It is not a proven diagnosis
+of CoreDisplay's mirror decision.
 
 ## Build and validation
 

@@ -11,6 +11,8 @@ native = '6fc2b8101218b872dce8a723d86f865b09947259'
 upstream_base = '46779055f68208baa5ddfb9b2e9c77ed028e1d59'
 upstream = 'bf23ca740e55d86bac987fb68fb5164ac1237941'
 retained = '6ca72cbf96fc19c48ae824f6dcb4c5463e78da80'
+# Accepted Minecraft/Wine runtime integration after the original rotation baseline.
+runtime_retained = '35630051a34007ca68bce973c6a1b2dec97917ec'
 
 
 def historical(revision, path):
@@ -29,12 +31,12 @@ def with_upstream_changes(path):
 changed = ['plugin/NVMTLObjects.m', 'plugin/nvmtl_vk.c', 'plugin/nvmtl_vk.h']
 for path in changed:
     assert (ROOT / path).read_bytes() == with_upstream_changes(path), path
-for path in subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', retained, 'plugin', 'translator', 'nvk', 'runtime', 'build'], cwd=ROOT, text=True).splitlines():
+for path in subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', runtime_retained, 'plugin', 'translator', 'nvk', 'runtime', 'build'], cwd=ROOT, text=True).splitlines():
     # stage_package's new AGDC bundle replacement is covered by the package
     # copy/hash tests; it is the only intended change under these directories.
     if path in changed or path == 'build/stage_package.py':
         continue
-    assert (ROOT / path).read_bytes() == historical(retained, path), path
+    assert (ROOT / path).read_bytes() == historical(runtime_retained, path), path
 assert (ROOT / 'plugin/NVMTLEventSync.m').read_bytes() == historical(base, 'plugin/NVMTLEventSync.m')
 
 accel_path = 'kexts/NVRM/accel/nvrm-accel.cpp'
@@ -75,4 +77,4 @@ assert 'notifyConnectionChanged(1);' in flip and 'fConnect.proc(' not in flip
 assert not re.search(r'\bthread_call_cancel_wait\s*\(', FB)
 assert 'THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE' in FB
 assert 'while (OSAddAtomic(0, &fCursorOutstanding)) IOSleep(1);' in FB
-print('PASS: reviewed controller-slot and DVI validation changes only; native rotation rendering, decoder/ANGLE/-O2, translator/NVK/Minecraft, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved')
+print('PASS: native rotation rendering, decoder/ANGLE/-O2, translator/NVK/Minecraft, cursor ONCE/drain, scanout/BAR1/parking/power and deferred family callback preserved; controller-slot and DVI guards retained')
