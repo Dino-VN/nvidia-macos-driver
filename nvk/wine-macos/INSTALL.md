@@ -26,11 +26,16 @@ over MoltenVK has **not** been measured.
 - The matched, repaired DXVK **3.1.1** `d3d11.dll` / `dxgi.dll` pair supplied with
   the runtime. Stock 3.1.1 can crash when a game requests an unsupported shared texture.
 
-**Verified:** ZZZ gameplay on RTX 2060 SUPER / Tahoe 26.7.1 using YAAGL's Wine
-11.0-1 build, including characters, scenery, UI and FPS overlay. Windows Vulkan
-readback/presentation and D3D11 depth/blend/shared-texture probes also pass.
-Genshin Impact, Honkai: Star Rail, commercial CrossOver releases, other Wine builds
+**Verified:** ZZZ and Honkai: Star Rail Global D3D11 gameplay on RTX 2060 SUPER /
+Tahoe 26.7.1 using YAAGL's Wine 11.0-1 build, including characters, scenery,
+UI and FPS overlay. Windows Vulkan readback/presentation and D3D11
+depth/blend/shared-texture probes also pass.
+Genshin Impact, CN gameplay, commercial CrossOver releases, other Wine builds
 and physical Sequoia hardware have **not** been qualified.
+
+**D3D12 via vkd3d-proton is [work in progress](README.md#d3d12-work-in-progress),
+not included in current releases.** ZZZ is the planned first D3D12 game test;
+the instructions below continue to use the verified D3D11 route.
 
 ## YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
 
@@ -44,11 +49,13 @@ The driver alone does not install the launcher or game.
 3. Select **Settings → Wine → NVIDIA NVK + DXVK (local, experimental)**.
 4. Install or select the game directory, then launch. This backend creates a
    separate `wineprefix-nvk`, selects D3D11, installs the matched DLLs and enables
-   the FPS/frame-time/device overlay. Its packaged defaults enable YAAGL's existing
-   Steam Patch and timeout fix; HSR retains its Jadeite launch handling.
+   the FPS/frame-time/device overlay. ZZZ's packaged defaults enable YAAGL's
+   existing Steam Patch and timeout fix; both default off for HSR and GI. HSR
+   uses its Jadeite launch route with the required `--` separator.
 
 All three games have launcher configurations, including global/CN variants.
-**Only ZZZ gameplay is verified so far.** See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
+**ZZZ and HSR Global gameplay are verified; GI and CN gameplay remain unqualified.**
+See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
 YAAGL requires `/Library/GPUBundles/nvmtl/wine` for both Vulkan and DXVK. There
 is no bundled renderer fallback or separate DXVK download. To update DXVK,
 replace both DLLs in the driver runtime and regenerate its manifest/checksums.

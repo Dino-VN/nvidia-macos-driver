@@ -91,8 +91,13 @@ has not been measured**.
 
 Requires this fork's matching driver/runtime, Intel macOS **Sequoia 15.5+** or
 **Tahoe 26**, and a compatible x64 Wine build. This integration supports x64
-D3D11, not D3D12. **ZZZ gameplay is verified on RTX 2060 SUPER / Tahoe with YAAGL
-Wine 11.0-1. GI, HSR and commercial CrossOver have not been qualified.**
+D3D11. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
+Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
+GI, CN gameplay and commercial CrossOver remain unqualified.**
+
+**D3D12 via vkd3d-proton is [work in progress](nvk/wine-macos/README.md#d3d12-work-in-progress).**
+It is not included in current releases; D3D11 remains the default. ZZZ is the
+planned first D3D12 game test.
 
 ### YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
 

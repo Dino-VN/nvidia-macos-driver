@@ -26,18 +26,33 @@ CPU, but currently waits on the CPU for each presentation copy to finish.
 - The compact provider and a compatible external Wine installation. YAAGL uses
   the installed driver provider and downloads the pinned Wine build on setup.
   The full-bundle developer builder below remains available for offline probes.
-- D3D11. This backend does not support D3D12.
+- D3D11. D3D12 via vkd3d-proton is work in progress and is not included in
+  current releases.
 
 On RTX 2060 SUPER / Tahoe 26.7.1, real Windows Vulkan GPU readback and window
 presentation, two-window presentation, and a textured D3D11/DXVK probe passed.
 The D3D11 probe completed 300 presents, 600 textured draws, depth/blend checks,
-11 staging readbacks and a resize. ZZZ gameplay through YAAGL Wine 11.0-1 is
-user-confirmed, including characters, scenery, UI and the FPS overlay.
-Genshin Impact and Honkai: Star Rail share the new backend and D3D11 launch
-handling, in global and CN builds. Their gameplay remains untested.
+11 staging readbacks and a resize. ZZZ and Honkai: Star Rail Global D3D11
+gameplay through YAAGL Wine 11.0-1 are user-confirmed, including characters,
+scenery, UI and the FPS overlay. HSR 4.6.0 was confirmed with Steam Patch and
+the timeout fix off, using its Jadeite launch route with the required `--`
+separator. Genshin Impact and CN gameplay remain unqualified.
 No controlled FPS comparison has been made.
 Physical Sequoia testing, commercial CrossOver releases and other GPU families
 remain unqualified.
+
+## D3D12 work in progress
+
+An optional vkd3d-proton integration is being developed locally for the path
+`D3D12 → vkd3d-proton → Wine Vulkan → native NVK → NVIDIA GPU`, sharing DXVK's
+DXGI component. It is not included in current driver or launcher releases.
+ZZZ is the first planned game test; its proposed DX12 toggle will remove the
+forced D3D11 argument when enabled, while D3D11 remains the default.
+
+Host capability screening found no minimum-feature blocker on the tested RTX
+2060 SUPER. D3D12 device creation, shader execution, synchronization, presentation
+and gameplay have not been validated. This does not establish D3D12 support or
+a performance improvement.
 
 ## Setup with YAAGL
 
@@ -61,8 +76,9 @@ graphics settings are local to the launched processes.
 The tested backend also defaults to `dxvk.enableDescriptorBuffer = False` and
 logs `Binding model: Legacy`. The descriptor-buffer path rendered ZZZ scenery
 but lost characters and HUD text; switching to descriptor sets restored both.
-The FPS/frame-time/device HUD is enabled by default. ZZZ gameplay rendering is
-user-confirmed; GI/HSR and sustained stability/performance remain unqualified.
+The FPS/frame-time/device HUD is enabled by default. ZZZ and HSR Global gameplay
+rendering are user-confirmed; GI, CN gameplay and sustained stability/performance
+remain unqualified.
 
 DXVK may report an AMD PCI vendor to D3D11 applications as its normal NVIDIA/NVAPI
 workaround. Check its Vulkan device/driver log and actual loaded libraries rather

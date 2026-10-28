@@ -156,10 +156,16 @@ there is no bundled renderer fallback or separate DXVK download. Its private
 Wine archive is checksum-pinned and prepared without altering ordinary Wine.
 An identical DXVK pair can adopt the provider identity
 without replacing original DLL backups; a different pair still requires restore.
-ZZZ gameplay is user-confirmed on RTX 2060 SUPER /
-Tahoe 26.7.1 with YAAGL Wine 11.0-1. GI/HSR launch configurations exist but gameplay,
-commercial CrossOver, other Wine builds and Sequoia hardware remain unqualified.
+ZZZ and Honkai: Star Rail Global D3D11 gameplay are user-confirmed on RTX 2060
+SUPER / Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
+HSR uses its Jadeite route with the required `--` separator; Steam Patch and the
+timeout fix default off for HSR/GI and on for ZZZ. Preserve these game-specific
+defaults. GI, CN gameplay, commercial CrossOver, other Wine builds and Sequoia
+hardware remain unqualified.
 Native and Windows Vulkan/D3D11 probes verify correctness, not an FPS improvement.
+vkd3d-proton/D3D12 support is work in progress in isolated local development,
+not included in current releases. D3D11 remains the default; ZZZ is the planned
+first D3D12 game test. Host capability screening does not qualify D3D12 execution.
 See [Wine/NVK source and validation](../nvk/wine-macos/README.md).
 
 ## Tahoe display rotation
