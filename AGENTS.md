@@ -11,3 +11,60 @@ Before merging upstream into this fork, read [docs/FORK-MERGE-NOTES.md](docs/FOR
 Check for conflicts and equivalent upstream implementations while retaining the fork's Tahoe fixes,
 existing performance optimizations, OpenGL/Minecraft changes and MoltenVK optimizations. The notes
 identify the commits, required behavior and validation limits.
+
+## Fork releases and debugging packages
+
+Standing user instructions, confirmed 2026-10-28: when completing requested implementation
+updates or upstream merges for the forks below, build, validate, commit, push and publish
+the affected releases. Publishing is already authorized; do not stop after pushing source
+or uploading a draft to ask for the same approval again. A later instruction to work locally,
+hold a release or wait for testing takes precedence. Documentation-only changes do not
+require a new binary release. Update only the repositories and artifacts that need changing.
+
+| Fork | Release contents |
+| --- | --- |
+| [HighDelay/nvidia-macos-driver](https://github.com/HighDelay/nvidia-macos-driver) | Complete installable driver archive with top-level `pkgroot/`, native Minecraft runtime, compact Wine/NVK provider and matched DXVK pair; standalone compact provider archive and `SHA256SUMS`, following the previous Wine/NVK release. |
+| [HighDelay/yaagl-nvk](https://github.com/HighDelay/yaagl-nvk) | Separate Global and CN launcher archives containing ZZZ, GI and HSR, with Start commands, required launcher data, guides and `SHA256SUMS`. |
+| [HighDelay/dxvk-nvk](https://github.com/HighDelay/dxvk-nvk) | Matched x64 `d3d11.dll` and `dxgi.dll`, license, source patch, build provenance, setup notes and `SHA256SUMS`. |
+
+### Publication workflow
+
+1. Check the current fork branch, upstream changes, retained repairs and existing releases
+   before choosing the next tag. Preserve the driver's merge instructions above. Build
+   changed components and reuse unchanged binaries only with their recorded source identity,
+   matching dependencies and verified hashes.
+2. Run the appropriate build, packaging and regression checks. For driver packages, verify
+   both OS accelerator variants, supported macOS requirements, userland signatures, runtime
+   manifests, symlinks and checksums; run an isolated kernel-collection link check when kexts
+   change. Keep AppleDouble files (`._*`) and Finder metadata out of archives and manifests.
+   State hardware/testing limits accurately instead of treating host checks as a confirmed
+   fix on an untested machine.
+3. Keep `/Library/GPUBundles/nvmtl/wine` as the driver-owned Wine/NVK provider and DXVK source.
+   Preserve its setup/rollback helper and the separate Minecraft runtime. A DXVK update must
+   refresh both DLLs, provider identity/hashes, source/license records and checksums together,
+   and produce a matching driver release. Coordinate a YAAGL update only when its consumer
+   contract or launcher behavior changes.
+4. YAAGL continues to use that installed provider by default. Its archives contain launchers
+   only: Wine downloads during setup, while NVK and DXVK come from the driver. Preserve this
+   arrangement instead of adding another runtime bundle or an independent DXVK download.
+5. Push the relevant source commits before publishing assets. Use versioned tags pointing
+   to the intended pushed commits and record the provenance of reused components. Upload
+   the archives and checksums, verify the uploaded sizes/digests, and publish regular public
+   releases marked Latest, with draft and prerelease disabled, unless the user requests
+   otherwise. Report the release links and validation limits when finished.
+
+### Driver release format
+
+Use [the Wine native NVK release](https://github.com/HighDelay/nvidia-macos-driver/releases/tag/v2.6.2-wine-nvk)
+as the delivery and release-description reference. Keep the Minecraft README link at the top,
+`What has been added` with relevant commit links, actual test results/hardware, the all-app
+ANGLE Metal default, installation instructions, and the existing boot warning and recovery
+steps. Keep entries brief and remove redundant links/details from older releases. Include
+Wine/NVK and YAAGL setup links when relevant. Update `~/Downloads/changelog.rtf` to match
+when preparing a driver release.
+
+Assemble public release assets in a separate clean output directory from verified build
+inputs. Manually staging or replacing `~/Downloads/pkgroot` remains an on-request debugging
+and local-testing workflow; it is not the normal release deliverable or a substitute for
+publishing. A debug staging request alone does not request a release. Preserve explicit
+local-only/test-before-publish instructions for experimental changes.
