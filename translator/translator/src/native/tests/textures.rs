@@ -1119,7 +1119,7 @@ entry:
         "{asm}"
     );
     assert!(asm.contains("OpTypeSampler"), "{asm}");
-    assert!(asm.contains("Binding 37"), "{asm}");
+    assert_sampled_texture_binding(&load_bytes(&spv).expect("module"), 5);
     assert!(asm.contains("Binding 162"), "{asm}");
     if std::process::Command::new("spirv-val")
         .arg("--version")
@@ -1223,7 +1223,11 @@ entry:
             .expect("reflected descriptor");
         assert_eq!(reflected.set, 0);
         assert_eq!(reflected.binding, binding);
-        assert!(asm.contains(&format!("Binding {binding}")), "{asm}");
+        if kind == crate::reflect::ResourceKind::Texture {
+            assert_sampled_texture_binding(&load_bytes(&spv).expect("module"), metal_index);
+        } else {
+            assert!(asm.contains(&format!("Binding {binding}")), "{asm}");
+        }
     }
     reflection
         .validate_descriptor_abi()
@@ -1301,7 +1305,7 @@ entry:
         .expect("storage descriptor");
     assert_eq!(sampled.binding, 72);
     assert_eq!(storage.binding, 520);
-    assert!(asm.contains("Binding 72"), "{asm}");
+    assert_sampled_texture_binding(&load_bytes(&spv).expect("module"), 40);
     assert!(asm.contains("Binding 520"), "{asm}");
     reflection
         .validate_descriptor_abi()
@@ -4172,7 +4176,7 @@ entry:
     let asm = disassemble(&spv).expect("disassemble");
     assert!(asm.contains("OpTypeImage"), "{asm}");
     assert!(asm.contains(" 1D "), "{asm}");
-    assert!(asm.contains("Binding 32"), "{asm}");
+    assert_sampled_texture_binding(&load_bytes(&spv).expect("module"), 0);
     if std::process::Command::new("spirv-val")
         .arg("--version")
         .output()

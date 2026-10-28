@@ -1,5 +1,11 @@
 # Changelog
 
+## Fork translator regression repair
+
+- Repair malformed pointer address-space parsing, direct buffer-address-table access and device-pointer round-trips through local variables and callbacks.
+- Preserve exact RGB10A2 rounding at half-way boundaries. Refresh outdated shader assertions while checking real loads, stores, descriptor data flow and GPU output.
+- The full translator library suite passes 2,210 tests. See [Translator validation](docs/TRANSLATOR-VALIDATION.md) for readback coverage and remaining test limits. Framebuffer, cursor, parked-VRAM and native NVK runtime binaries are unchanged.
+
 ## Fork integration with upstream 2.6.3
 
 - Merge upstream rendering/cache, shader-translation, backlight, display-audio, HiDPI, GPU-utilization and BAR1 repairs.

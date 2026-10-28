@@ -61,8 +61,8 @@ retain the coordinated AGDC stable-slot binary after source/hash verification. I
 Minecraft runtime and compact Wine/NVK provider/DXVK pair. Their sources and renderer ABI are
 unchanged by this merge. Release preparation does not overwrite the manual Downloads/pkgroot.
 
-Validation records are under `out/upstream-2.6.3-merge-20261028-111911/`. The native translator's
-full library run reports 2191 passes, 17 failures and one ignored test; all 17 failures also occur
+Initial validation records are under `out/upstream-2.6.3-merge-20261028-111911/`. The native translator's
+initial full library run reported 2191 passes, 17 failures and one ignored test; all 17 failures also occurred
 on untouched upstream 2.6.3 under the same tools. The wrapper has 43 passes and two ignored tests;
 two tests needing unpublished local AIR files are filtered explicitly. Focused shader integration
 and host tests cover the retained repairs and new cache/audio/retirement behavior. This is not a
@@ -71,6 +71,27 @@ The release plugin/translator, framebuffer and both accelerator variants compile
 scripts, two C++ harnesses, 22 focused Rust integration cases and the GL C-ABI translation checks
 pass. Package manifests/signatures and isolated Tahoe kernel-collection linking pass. Sequoia
 kernel linking, physical boot and application/multi-monitor testing remain outstanding.
+
+## Translator repair following 2.6.3
+
+Retain strict typed-pointer address-space parsing, consistent direct/helper
+`array_ref<void>` address-table access, generic pointer-table loads and real 64-bit
+device addresses in local pointer stores, including derived offsets. Preserve the
+RGB10A2 residual FMA's `NoContraction` decoration; GPU half-way rounding controls
+fail without it. These are correctness repairs, not an FPS claim.
+
+The refreshed tests recognize shared guarded-load helpers and bindless resource
+slots while checking the actual data flow. Keep the positive callback/local-store
+regressions and bounded GPU readback harness. Do not restore the old expected
+callback rejection, ignored duplicate, exact diagnostic strings or obsolete fixed
+texture bindings. Compare equivalent upstream implementations before future merges.
+
+The repaired full library suite passes 2,210 tests, with no failures or ignored
+tests. See [Translator validation](TRANSLATOR-VALIDATION.md) for coverage and wrapper
+fixture exclusions. Local repair records are under
+`out/translator-repair-20261028-122757/`. The isolated release replaces only the
+translator; previously verified kext/plugin/runtime binaries retain their producing
+commit and hashes. No live installation or new Downloads/pkgroot is part of this work.
 
 ## Native NVK runtime for Minecraft 26.3
 
