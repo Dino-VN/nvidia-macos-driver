@@ -60,8 +60,8 @@ as the delivery and release-description reference. Keep the Minecraft README lin
 `What has been added` with relevant commit links, actual test results/hardware, the all-app
 ANGLE Metal default, installation instructions, and the existing boot warning and recovery
 steps. Keep entries brief and remove redundant links/details from older releases. Include
-Wine/NVK and YAAGL setup links when relevant. Update `~/Downloads/changelog.rtf` to match
-when preparing a driver release.
+Wine/NVK and YAAGL setup links when relevant. Maintain release notes in the GitHub release
+description; `~/Downloads/changelog.rtf` no longer needs updating.
 
 Assemble public release assets in a separate clean output directory from verified build
 inputs. Manually staging or replacing `~/Downloads/pkgroot` remains an on-request debugging
