@@ -1258,9 +1258,10 @@ static bool nvmtl_surfout_import(void) {
     if (r->_surfSynced && IOSurfaceGetSeed(r->_surf) == r->_surfSeed && (r->_vramOn || vgen == r->_surfGen)) return;
     if (![r nvmtlSurfaceCopyable]) return;
     { uint32_t now = IOSurfaceGetSeed(r->_surf);
-      if (r->_vramOn && nvmtl_vram_tag_current(r->_surf, r->_plane, now)) {
+      if (r->_vramOn && (nvmtl_vram_tag_current(r->_surf, r->_plane, now) || nvmtl_vram_tag_wait(r->_surf, r->_plane, &now))) {
           r->_surfSeed = now; r->_surfSynced = YES; g_surfin_skip++;
-          static unsigned ns; if (ns++ < 6 || ns % 2000 == 0) nvlog("item 7: surface-in SKIPPED (shared VRAM current at seed %u): %llu skipped, %llu copied", now, g_surfin_skip, g_surfin_copy);
+          static unsigned ns; if (ns++ < 6 || ns % 2000 == 0) nvlog("item 7: surface-in SKIPPED (shared VRAM current at seed %u): %llu skipped (%llu after WindowServer's write finished), %llu copied",
+                                                                    now, g_surfin_skip, g_surfin_waited, g_surfin_copy);
           return; } }
     uint32_t seed = 0;
     if (IOSurfaceLock(r->_surf, kIOSurfaceLockReadOnly, &seed) != kIOReturnSuccess) { nvlog("G13 surface-in: IOSurfaceLock FAILED"); return; }

@@ -212,7 +212,10 @@ static void nvmtl_ws_mark_pending(NVMTLCommandBuffer *cb) {
         for (NVMTLSubmissionPart *part in cb->_parts) {
             if (![part isKindOfClass:[NVMTLSubmissionPart class]]) continue;
             for (NVMTLTexture *t in part->surfaces)
-                if (t->_surf && t->_vramOn && !nvmtl_vk_surface_dirty((uint32_t)IOSurfaceGetID(t->_surf), (uint32_t)t->_plane)) [dirtied addObject:t];
+                if (t->_surf && t->_vramOn && !nvmtl_vk_surface_dirty((uint32_t)IOSurfaceGetID(t->_surf), (uint32_t)t->_plane)) {
+                    nvmtl_vram_tag_pending(t->_surf, t->_plane);
+                    [dirtied addObject:t];
+                }
         }
         holds->dirtied = dirtied;
     }

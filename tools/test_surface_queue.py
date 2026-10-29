@@ -29,6 +29,7 @@ struct __IOSurface {unsigned id,seed;};
 // Apple's driver: one seed step per GPU write); dirtyBumpsSeed models that, dirtyCalls counts the marks
 static int dirtyBumpsSeed, dirtyCalls; static struct __IOSurface *dirtySurface;
 static int nvmtl_vk_surface_dirty(uint32_t s,uint32_t p){(void)p;dirtyCalls++;if(dirtyBumpsSeed&&dirtySurface&&dirtySurface->id==s)dirtySurface->seed++;return 0;}
+static void nvmtl_vram_tag_pending(IOSurfaceRef s,NSUInteger p){(void)s;(void)p;}
 static void nvtrace(const char *f,...){(void)f;}
 static unsigned IOSurfaceGetID(IOSurfaceRef s){return s->id;}
 static unsigned IOSurfaceGetSeed(IOSurfaceRef s){return s->seed;}

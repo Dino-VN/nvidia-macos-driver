@@ -941,42 +941,73 @@ static BOOL nvmtl_desc_fbo(MTLTextureDescriptor *d) {
     nvmtl_texture_desc_swizzle(t, d);
     nvlog("newTextureWithDescriptor: %lux%lu%s -> %p", (unsigned long)d.width, (unsigned long)d.height, t->_stex ? " +storage" : "", (__bridge void *)t); return t; }
 
-typedef struct { uint32_t magic, seed, gen; } nvmtl_vram_tag;
+// What a surface's shared VRAM holds, kept on the IOSurface for every process: newest as of seed, written gen times.
+// pending: WindowServer has committed a GPU write to it (and marked it newest in the kernel) that has not finished yet.
+typedef struct { uint32_t magic, seed, gen, pending; } nvmtl_vram_tag;
 #define NVMTL_VRAM_MAGIC 0x564d5634u
-static unsigned long long g_surf_vram, g_surf_private, g_surfin_skip, g_surfin_copy;
+static unsigned long long g_surf_vram, g_surf_private, g_surfin_skip, g_surfin_copy, g_surfin_waited;
 static CFStringRef nvmtl_vram_tag_key(NSUInteger plane) { return CFStringCreateWithFormat(NULL, NULL, CFSTR("NVMTLVramAt:p%lu"), (unsigned long)plane); }
-static int nvmtl_vram_tag_current(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
+static int nvmtl_vram_tag_read(IOSurfaceRef surf, NSUInteger plane, nvmtl_vram_tag *t)
 {
     CFStringRef k = nvmtl_vram_tag_key(plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
-    nvmtl_vram_tag t = { 0, 0, 0 };
-    int ok = v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof t;
-    if (ok) memcpy(&t, CFDataGetBytePtr((CFDataRef)v), sizeof t);
+    memset(t, 0, sizeof *t);
+    int ok = v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof *t;
+    if (ok) memcpy(t, CFDataGetBytePtr((CFDataRef)v), sizeof *t);
     if (v) CFRelease(v);
-    return ok && t.magic == NVMTL_VRAM_MAGIC && t.seed == seed;
+    return ok && t->magic == NVMTL_VRAM_MAGIC;
+}
+static int nvmtl_vram_tag_current(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
+{
+    nvmtl_vram_tag t;
+    return nvmtl_vram_tag_read(surf, plane, &t) && !t.pending && t.seed == seed;
 }
 static uint32_t nvmtl_vram_gen(IOSurfaceRef surf, NSUInteger plane)
 {
-    CFStringRef k = nvmtl_vram_tag_key(plane); CFTypeRef v = IOSurfaceCopyValue(surf, k); CFRelease(k);
-    nvmtl_vram_tag t = { 0, 0, 0 };
-    if (v && CFGetTypeID(v) == CFDataGetTypeID() && CFDataGetLength((CFDataRef)v) == (CFIndex)sizeof t) memcpy(&t, CFDataGetBytePtr((CFDataRef)v), sizeof t);
-    if (v) CFRelease(v);
-    return t.magic == NVMTL_VRAM_MAGIC ? t.gen : 0;
+    nvmtl_vram_tag t;
+    return nvmtl_vram_tag_read(surf, plane, &t) ? t.gen : 0;
 }
-static void nvmtl_vram_tag_write(IOSurfaceRef surf, NSUInteger plane, uint32_t seed, uint32_t gen)
+static void nvmtl_vram_tag_write_full(IOSurfaceRef surf, NSUInteger plane, uint32_t seed, uint32_t gen, uint32_t pending)
 {
-    nvmtl_vram_tag t = { NVMTL_VRAM_MAGIC, seed, gen };
+    nvmtl_vram_tag t = { NVMTL_VRAM_MAGIC, seed, gen, pending };
     CFDataRef dd = CFDataCreate(NULL, (const UInt8 *)&t, sizeof t); CFStringRef k = nvmtl_vram_tag_key(plane);
     IOSurfaceSetValue(surf, k, dd); CFRelease(k); CFRelease(dd);
 }
+static void nvmtl_vram_tag_write(IOSurfaceRef surf, NSUInteger plane, uint32_t seed, uint32_t gen) { nvmtl_vram_tag_write_full(surf, plane, seed, gen, 0); }
 static uint32_t nvmtl_vram_tag_bump(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
 {
     const uint32_t g = nvmtl_vram_gen(surf, plane) + 1; nvmtl_vram_tag_write(surf, plane, seed, g); return g;
 }
-static void nvmtl_vram_tag_set(IOSurfaceRef surf, NSUInteger plane, uint32_t seed)
+static void nvmtl_vram_tag_set(IOSurfaceRef surf, NSUInteger plane, uint32_t seed) { nvmtl_vram_tag_write(surf, plane, seed, nvmtl_vram_gen(surf, plane)); }
+// WindowServer's commit has marked the surface's VRAM newest for a GPU write still in flight; its publication
+// (nvmtlSurfaceOutDirtied:) writes the finished tag. A screen capture hands the surface to its client before that.
+static void nvmtl_vram_tag_pending(IOSurfaceRef surf, NSUInteger plane)
 {
-    nvmtl_vram_tag t = { NVMTL_VRAM_MAGIC, seed, nvmtl_vram_gen(surf, plane) };
-    CFDataRef d = CFDataCreate(NULL, (const UInt8 *)&t, sizeof t); CFStringRef k = nvmtl_vram_tag_key(plane);
-    IOSurfaceSetValue(surf, k, d); CFRelease(k); CFRelease(d);
+    nvmtl_vram_tag_write_full(surf, plane, IOSurfaceGetSeed(surf), nvmtl_vram_gen(surf, plane), 1);
+}
+// A reader that finds the tag pending waits up to NVMTL_VRAM_PENDING_WAIT_US for WindowServer's write to finish instead
+// of locking the surface: that lock's page-off holds the accelerator lock while it waits for the write and copies the
+// whole surface out, WindowServer's next commit waits behind it, and the desktop and the capture stutter (Discord
+// reading 4096x2304 ScreenCaptureKit frames held WindowServer's compositor ~12% of the time). 1 when the shared VRAM is
+// then current at the surface's seed, which *seed receives. Never in WindowServer: it is the writer.
+#define NVMTL_VRAM_PENDING_WAIT_US 4000
+static int nvmtl_vram_tag_wait(IOSurfaceRef surf, NSUInteger plane, uint32_t *seed)
+{
+    static int ws = -1;
+    if (ws < 0) { const char *me = getprogname(); ws = me && !strcmp(me, "WindowServer"); }
+    nvmtl_vram_tag t;
+    if (ws || !nvmtl_vram_tag_read(surf, plane, &t) || !t.pending) return 0;
+    const uint64_t until = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + NVMTL_VRAM_PENDING_WAIT_US * 1000ull;
+    do {
+        usleep(100);
+        if (!nvmtl_vram_tag_read(surf, plane, &t)) return 0;
+        if (!t.pending) {
+            const uint32_t now = IOSurfaceGetSeed(surf);
+            if (t.seed != now) return 0;
+            *seed = now; g_surfin_waited++;
+            return 1;
+        }
+    } while (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < until);
+    return 0;
 }
 // A family VRAM import costs four RM calls to make (share, dup, GPU VA, map) and two to free: ~1 ms of CPU per wrapper
 // on a TU106. WindowServer wraps the same window and capture surfaces in a fresh texture every composite (~400 a second
