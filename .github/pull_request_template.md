@@ -9,6 +9,6 @@
 
 Fixes #
 
-- [ ] I wrote this change and this description myself (not an AI tool), and I can explain every line.
+- [ ] I reviewed and understand this change and description, and I can explain them.
 
-<!-- Please read CONTRIBUTING.md. AI-written pull requests are closed without review. -->
+<!-- Please read CONTRIBUTING.md. AI-assisted contributions are welcome. -->

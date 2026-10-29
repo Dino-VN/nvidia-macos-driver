@@ -7,20 +7,15 @@ gets a real review.
 
 1. Press Send logs in the 1401 app (Windows or Mac). It gives you a report ID like `NM-ABCD1234`.
 2. Open an issue with the bug form and put the report ID in it.
-3. Describe what you see in a few sentences of your own. The logs are in the report, so don't paste them in.
+3. Describe what you see in a few sentences. The logs are in the report, so don't paste them in.
 
 One problem per issue. If you found the cause, say how you know: what you ran and what it printed.
 
-## No AI-written contributions
-
-Pull requests, issues and review comments must be written by a person who understands them. AI-written code,
-descriptions and bug reports are closed without review.
+AI-assisted contributions are welcome. Review and understand what you submit, and be ready to explain your
+changes and answer review questions.
 
 ## Pull requests
 
-- Write it yourself and understand it. You have to be able to explain every line and answer review questions about
-  it. PRs that are pasted tool output (long generated descriptions, "say the word and I will add it", changes the
-  author can't explain) are closed without review.
 - One change per PR. A fix, a feature or a cleanup, not all three. Small PRs get merged; 2,000-line PRs sit.
 - Say what you tested. Your card, macOS version, and what you did to check it. "Builds" is not tested.
 - Keep the description short: what was wrong, what you changed, how you tested it. Link the issue.
