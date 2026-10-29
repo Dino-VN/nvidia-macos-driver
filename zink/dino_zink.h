@@ -20,6 +20,12 @@ struct dino_zink_context *dino_zink_create_shared(unsigned width, unsigned heigh
 struct dino_zink_context *dino_zink_create_drawable(unsigned width, unsigned height,
                                                   struct dino_zink_context *share,
                                                   int double_buffer);
+/* legacy != 0 requests desktop OpenGL 2.1 compatibility. has_alpha mirrors
+ * the native pixel format; RGB drawables must expose alpha=1 to consumers. */
+struct dino_zink_context *dino_zink_create_drawable_profile(unsigned width, unsigned height,
+                                                          struct dino_zink_context *share,
+                                                          int double_buffer, int legacy,
+                                                          int has_alpha);
 int dino_zink_swap(struct dino_zink_context *ctx);
 int dino_zink_make_current(struct dino_zink_context *ctx);
 void dino_zink_destroy(struct dino_zink_context *ctx);
@@ -32,6 +38,20 @@ int dino_zink_readback(struct dino_zink_context *ctx, void *pixels,
 int dino_zink_readback_bottom_up(struct dino_zink_context *ctx, void *pixels,
                                  size_t size, size_t stride);
 #ifdef __APPLE__
+/* Two reusable GPU presentation slots. Import maps IOSurface pages through
+ * VK_EXT_external_memory_host; begin blits/copies on the GPU and submits a
+ * fence. Wait must complete before another API reads the surface. The caller
+ * must also finish the previous consumer before begin writes it again, and
+ * hold an IOSurface write lock from begin through wait. Requires ctx current.
+ * Resize/destroy release both imports after their work completes. Opaque
+ * presentation forces only the copied image's alpha to 1; GL state and the
+ * application's framebuffer alpha remain untouched. */
+int dino_zink_present_import(struct dino_zink_context *ctx, unsigned slot,
+                              IOSurfaceRef surface);
+int dino_zink_present_begin(struct dino_zink_context *ctx, unsigned slot,
+                             int bottom_up, int opaque);
+int dino_zink_present_wait(struct dino_zink_context *ctx, unsigned slot);
+void dino_zink_present_release(struct dino_zink_context *ctx);
 /* Copy into a caller-owned, same-size, nonplanar RGBA/BGRA IOSurface. The
  * caller remains responsible for submitting the surface to its compositor. */
 int dino_zink_present_iosurface(struct dino_zink_context *ctx, IOSurfaceRef surface);

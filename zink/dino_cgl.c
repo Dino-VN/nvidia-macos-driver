@@ -1,8 +1,11 @@
 /* SPDX-License-Identifier: MIT */
 #include "dino_cgl.h"
 #include "dino_zink.h"
+#define GL_DO_NOT_WARN_IF_MULTI_GL_VERSION_HEADERS_INCLUDED 1
 #include <OpenGL/gl3.h>
+#include <OpenGL/gl.h>
 #include <dlfcn.h>
+#include <execinfo.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -14,7 +17,14 @@
 
 #define EXPORT __attribute__((visibility("default")))
 #define PREFIX_BYTES 0x1e80
-#define MAX_ENTRIES 512
+#define MAX_ENTRIES 1024
+struct native_cleanup {
+   void *share;
+   GLuint textures[3];
+   GLsync fences[2];
+   IOSurfaceRef surfaces[2];
+   struct native_cleanup *next;
+};
 struct dino_cgl_bridge {
    CGLContextObj context;
    void *engine;
@@ -26,22 +36,36 @@ struct dino_cgl_bridge {
    unsigned char *present_pixels;
    size_t present_capacity;
    unsigned present_width, present_height;
+   struct {
+      IOSurfaceRef surface;
+      GLuint texture;
+      GLsync fence;
+   } gpu_present[2];
+   unsigned gpu_width, gpu_height, gpu_slot;
+   bool present_configured, gpu_disabled, force_gpu;
    void *driver;
    void **engine_back;
    void *apple_back[(PREFIX_BYTES - 8) / sizeof(void *)];
    bool automatic;
+   bool legacy;
    bool resize_pending;
+   unsigned pending_width, pending_height;
    GLint native_x, native_y;
+   struct native_cleanup *cleanup_reserve;
    struct dino_cgl_bridge *next;
 };
-struct dispatch_entry { const char *name; size_t offset; void *adapter, *stub; };
+struct dispatch_entry { const char *name; size_t offset; void *adapter; };
 static pthread_mutex_t bridges_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct dino_cgl_bridge *bridges;
+static struct native_cleanup *native_cleanups;
 static _Atomic unsigned generation;
 static _Thread_local unsigned thread_generation;
 static _Thread_local struct dino_cgl_bridge *thread_bridge;
 static _Thread_local const char *last_error;
 static int materialize(struct dino_cgl_bridge *b);
+static void release_gpu_present(struct dino_cgl_bridge *b);
+static void drain_native_cleanups(struct dino_cgl_bridge *b);
+void dino_cgl_install_lwjgl_appkit(void);
 
 __attribute__((noinline)) static int fail(const char *error) { last_error = error; return 0; }
 EXPORT const char *dino_cgl_last_error(void) { return last_error ? last_error : "none"; }
@@ -51,6 +75,20 @@ static struct dino_cgl_bridge *find_bridge(CGLContextObj context)
    struct dino_cgl_bridge *b;
    for (b = bridges; b && b->context != context; b = b->next) {}
    return b;
+}
+
+void dino_cgl_lwjgl_drawable_size(CGLContextObj context, unsigned width, unsigned height)
+{
+   if (!context || !width || !height) return;
+   pthread_mutex_lock(&bridges_lock);
+   struct dino_cgl_bridge *b = find_bridge(context);
+   if (b && b->automatic &&
+       (width != b->width || height != b->height || b->resize_pending)) {
+      b->pending_width = width; b->pending_height = height;
+      b->native_x = 0; b->native_y = 0;
+      b->resize_pending = true;
+   }
+   pthread_mutex_unlock(&bridges_lock);
 }
 
 static void *original_noncurrent(void *engine, size_t offset)
@@ -80,25 +118,18 @@ static int native_viewport(void *engine, void *caller, GLint x, GLint y,
    pthread_mutex_lock(&bridges_lock);
    struct dino_cgl_bridge *b;
    for (b = bridges; b && b->engine != engine; b = b->next) {}
+   if (b && b->automatic && width > 0 && height > 0) {
+      /* AppKit can make the same native context current on main while the
+       * application's Mesa context is rendering on another thread. Publish
+       * geometry only; reallocating its attachments here races that render. */
+      b->pending_width = width; b->pending_height = height;
+      b->native_x = x; b->native_y = y;
+      b->resize_pending = true;
+   }
    pthread_mutex_unlock(&bridges_lock);
    if (!b || !b->automatic) return 0;
    void (*apple)(void *, GLint, GLint, GLsizei, GLsizei) = b->apple_back[(0xa80 - 8) / 8];
    apple(engine, x, y, width, height);
-   if (width > 0 && height > 0) {
-      b->width = width; b->height = height;
-      b->native_x = x; b->native_y = y;
-      b->resize_pending = true;
-      if (b->zink && b->context == CGLGetCurrentContext()) {
-         if (!dino_zink_make_current(b->zink) ||
-             !dino_zink_resize(b->zink, width, height)) {
-            fail("Cannot resize native Zink drawable"); return 1;
-         }
-         b->resize_pending = false;
-         void (*mesa)(GLint, GLint, GLsizei, GLsizei) =
-            (void *)dino_zink_get_proc_address("glViewport");
-         mesa(x, y, width, height);
-      }
-   }
    return 1;
 }
 
@@ -118,36 +149,80 @@ static struct dino_cgl_bridge *bridge_current(void *engine)
        !dino_zink_make_current(thread_bridge->zink)) {
       fail("No attached Zink context current on this thread"); return NULL;
    }
+   unsigned width = thread_bridge->width, height = thread_bridge->height;
+   GLint native_x = 0, native_y = 0;
+   pthread_mutex_lock(&bridges_lock);
+   bool pending = thread_bridge->resize_pending;
+   if (pending) {
+      width = thread_bridge->pending_width; height = thread_bridge->pending_height;
+      native_x = thread_bridge->native_x; native_y = thread_bridge->native_y;
+      thread_bridge->resize_pending = false;
+   }
+   pthread_mutex_unlock(&bridges_lock);
    /* GLFW can resize a Cocoa window through a path that does not pass the
     * CGLSetSurface/NSOpenGLContext viewport callers above.  The native CGL
     * surface still exposes its backing dimensions through this public CGL
     * parameter, so check it at the frame boundary as a fallback. */
-   if (thread_bridge->automatic) {
+   if (thread_bridge->automatic && !pending) {
       GLint surface[2] = {0, 0};
       if (CGLGetParameter(thread_bridge->context, kCGLCPSurfaceBackingSize, surface) == kCGLNoError &&
           surface[0] > 0 && surface[1] > 0 &&
           ((unsigned)surface[0] != thread_bridge->width ||
            (unsigned)surface[1] != thread_bridge->height)) {
-         thread_bridge->width = (unsigned)surface[0];
-         thread_bridge->height = (unsigned)surface[1];
-         thread_bridge->native_x = 0;
-         thread_bridge->native_y = 0;
-         thread_bridge->resize_pending = true;
+         width = (unsigned)surface[0]; height = (unsigned)surface[1];
+         pending = true;
       }
    }
    /* NSOpenGLContext can update a surface while another CGL context is current.
     * Mesa requires this drawable current before reallocating its buffers. */
-   if (thread_bridge->resize_pending) {
-      if (!dino_zink_resize(thread_bridge->zink, thread_bridge->width, thread_bridge->height)) {
+   if (pending) {
+      if (!dino_zink_resize(thread_bridge->zink, width, height)) {
+         pthread_mutex_lock(&bridges_lock);
+         if (!thread_bridge->resize_pending) {
+            thread_bridge->pending_width = width; thread_bridge->pending_height = height;
+            thread_bridge->native_x = native_x; thread_bridge->native_y = native_y;
+            thread_bridge->resize_pending = true;
+         }
+         pthread_mutex_unlock(&bridges_lock);
          fail("Cannot resize native Zink drawable"); return NULL;
       }
+      pthread_mutex_lock(&bridges_lock);
+      thread_bridge->width = width; thread_bridge->height = height;
+      pthread_mutex_unlock(&bridges_lock);
       void (*viewport)(GLint, GLint, GLsizei, GLsizei) =
          (void *)dino_zink_get_proc_address("glViewport");
-      viewport(thread_bridge->native_x, thread_bridge->native_y,
+      viewport(native_x, native_y,
                thread_bridge->width, thread_bridge->height);
-      thread_bridge->resize_pending = false;
    }
    return thread_bridge;
+}
+
+static dino_zink_proc mesa_entrypoint(const char *name)
+{
+   dino_zink_proc proc = dino_zink_get_proc_address(name);
+   if (proc) return proc;
+   /* Apple exposes its VAO aliases at separate slots. Mesa exposes the same
+    * object semantics through the core names in compatibility contexts. */
+   static const struct { const char *apple, *mesa; } aliases[] = {
+      {"glBindVertexArrayAPPLE", "glBindVertexArray"},
+      {"glDeleteVertexArraysAPPLE", "glDeleteVertexArrays"},
+      {"glGenVertexArraysAPPLE", "glGenVertexArrays"},
+      {"glIsVertexArrayAPPLE", "glIsVertexArray"},
+      {"glFlushRenderAPPLE", "glFlush"},
+      {"glFinishRenderAPPLE", "glFinish"},
+   };
+   for (size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); ++i)
+      if (!strcmp(name, aliases[i].apple)) return dino_zink_get_proc_address(aliases[i].mesa);
+   return NULL;
+}
+
+static void missing_entrypoint(const char *name)
+{
+   fail(name);
+   /* Leave unsupported extensions in Mesa's error stream. Calling an Apple
+    * handler here would split object and fixed-function state between drivers. */
+   void (*enable)(GLenum) = (void *)dino_zink_get_proc_address("glEnable");
+   enable(0);
 }
 
 #include "cgl_dispatch.inc"
@@ -158,6 +233,27 @@ static bool supported_os(void)
    char build[128]; size_t length = sizeof(build);
    return sysctlbyname("kern.osversion", build, &length, NULL, 0) == 0 &&
           strcmp(build, DINO_CGL_OS_BUILD) == 0;
+}
+
+__attribute__((constructor)) static void initialize_appkit_compatibility(void)
+{
+   if (supported_os()) dino_cgl_install_lwjgl_appkit();
+}
+
+static bool native_surface_copy_context(void)
+{
+   /* AppKit's NSIOAccelSurface uses a private legacy context to copy the
+    * Apple drawable into an IOSurface for CAImageQueue. Its CGL texture
+    * imports and GL objects must remain in the native driver together. */
+   void *frames[32];
+   int count = backtrace(frames, 32);
+   const char prefix[] = "-[NSIOAccelSurface ";
+   for (int i = 0; i < count; ++i) {
+      Dl_info info;
+      if (dladdr(frames[i], &info) && info.dli_sname &&
+          !strncmp(info.dli_sname, prefix, sizeof(prefix) - 1)) return true;
+   }
+   return false;
 }
 
 static void use_original(struct dino_cgl_bridge *b)
@@ -191,21 +287,23 @@ static void use_zink(struct dino_cgl_bridge *b)
 EXPORT int dino_cgl_prepare_gld(void *engine, void *driver)
 {
    if (!supported_os() || !engine || !driver) return 0;
-   if (*(unsigned char *)((char *)engine + 0xc6a6) != 1) return 0;
+   if (native_surface_copy_context()) return 0;
+   unsigned char profile = *(unsigned char *)((char *)engine + 0xc6a6);
+   if (profile > 1) return 0;
    CGLContextObj context = (CGLContextObj)((char *)*(void **)((char *)engine + 0xb2c8) - 8);
    void **back = *(void ***)((char *)engine + 0xb2d0);
    if (!context || !back) return 0;
    struct dino_cgl_bridge *b = calloc(1, sizeof(*b));
    if (!b) return 0;
    b->context = context; b->engine = engine; b->driver = driver;
+   b->legacy = profile == 0;
    b->automatic = true; b->engine_back = back;
    memcpy(b->original, context, PREFIX_BYTES);
    /* Every nonzero private slot directs gliInitDispatchTable to write here. */
    for (size_t i = 0; i < sizeof(b->apple_back) / sizeof(b->apple_back[0]); ++i)
       b->apple_back[i] = (void *)1;
    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
-      b->procs[i] = dino_zink_get_proc_address(entries[i].name);
-      if (!b->procs[i]) { free(b); return 0; }
+      b->procs[i] = mesa_entrypoint(entries[i].name);
    }
    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
       back[(entries[i].offset - 8) / 8] = entries[i].adapter;
@@ -221,9 +319,10 @@ EXPORT int dino_cgl_prepare_gld(void *engine, void *driver)
 
 static int materialize(struct dino_cgl_bridge *b)
 {
-   GLint double_buffer = 0;
+   GLint double_buffer = 0, alpha_bits = 0;
    if (!b->automatic || b->context != CGLGetCurrentContext()) return 0;
    CGLDescribePixelFormat(CGLGetPixelFormat(b->context), 0, kCGLPFADoubleBuffer, &double_buffer);
+   CGLDescribePixelFormat(CGLGetPixelFormat(b->context), 0, kCGLPFAAlphaSize, &alpha_bits);
    struct dino_zink_context *share = NULL;
    pthread_mutex_lock(&bridges_lock);
    for (struct dino_cgl_bridge *other = bridges; other; other = other->next)
@@ -237,7 +336,8 @@ static int materialize(struct dino_cgl_bridge *b)
    use_zink(b);
    b->width = viewport[2] > 0 ? (unsigned)viewport[2] : 1;
    b->height = viewport[3] > 0 ? (unsigned)viewport[3] : 1;
-   b->zink = dino_zink_create_drawable(b->width, b->height, share, double_buffer);
+   b->zink = dino_zink_create_drawable_profile(b->width, b->height, share, double_buffer, b->legacy,
+                                             alpha_bits > 0);
    if (!b->zink) return fail("Cannot create automatic Zink context");
    return 1;
 }
@@ -253,9 +353,15 @@ EXPORT void dino_cgl_destroy_gld(void *driver)
    if (!b) return;
    use_original(b);
    *(void ***)((char *)b->engine + 0xb2d0) = b->engine_back;
-   /* GLEngine still owns its GL objects and releases the presentation objects
-    * with the carrier context/share group. No native context retain is held. */
+   release_gpu_present(b);
+   use_original(b);
+   if (b->context == CGLGetCurrentContext()) {
+      if (b->present_texture) glDeleteTextures(1, &b->present_texture);
+      if (b->present_fbo) glDeleteFramebuffers(1, &b->present_fbo);
+   }
    dino_zink_destroy(b->zink);
+   free(b->present_pixels);
+   free(b->cleanup_reserve);
    free(b);
 }
 
@@ -267,8 +373,8 @@ EXPORT int dino_cgl_attach(CGLContextObj context, unsigned width, unsigned heigh
       return fail("Attach requires a current CGL context and nonzero dimensions");
    GLint profile = 0;
    if (CGLDescribePixelFormat(CGLGetPixelFormat(context), 0, kCGLPFAOpenGLProfile, &profile) ||
-       profile != kCGLOGLPVersion_GL4_Core)
-      return fail("Only GL 4.1 core CGL contexts are supported");
+       (profile != kCGLOGLPVersion_GL4_Core && profile != kCGLOGLPVersion_Legacy))
+      return fail("Only legacy and GL 4.1 core CGL contexts are supported");
    if (CGLLockContext(context)) return fail("Cannot lock CGL context");
    pthread_mutex_lock(&bridges_lock);
    bool exists = find_bridge(context) != NULL;
@@ -282,16 +388,18 @@ EXPORT int dino_cgl_attach(CGLContextObj context, unsigned width, unsigned heigh
    struct dino_cgl_bridge *b = calloc(1, sizeof(*b));
    if (!b) { CGLUnlockContext(context); return fail("Out of memory"); }
    b->context = context; b->engine = *(void **)context;
+   b->legacy = profile == kCGLOGLPVersion_Legacy;
    b->width = width; b->height = height;
    b->resize_pending = false;
    memcpy(b->original, context, PREFIX_BYTES);
    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
-      b->procs[i] = dino_zink_get_proc_address(entries[i].name);
-      if (!b->procs[i]) { free(b); CGLUnlockContext(context); return fail("Missing Mesa core entrypoint"); }
+      b->procs[i] = mesa_entrypoint(entries[i].name);
    }
-   GLint double_buffer = 0;
+   GLint double_buffer = 0, alpha_bits = 0;
    CGLDescribePixelFormat(CGLGetPixelFormat(context), 0, kCGLPFADoubleBuffer, &double_buffer);
-   b->zink = dino_zink_create_drawable(width, height, share, double_buffer);
+   CGLDescribePixelFormat(CGLGetPixelFormat(context), 0, kCGLPFAAlphaSize, &alpha_bits);
+   b->zink = dino_zink_create_drawable_profile(width, height, share, double_buffer, b->legacy,
+                                             alpha_bits > 0);
    if (!b->zink || !dino_zink_make_current(b->zink)) {
       dino_zink_destroy(b->zink); free(b); CGLUnlockContext(context);
       return fail("Cannot create Zink/NVK context");
@@ -311,8 +419,231 @@ EXPORT int dino_cgl_resize(CGLContextObj context, unsigned width, unsigned heigh
    if (!context || context != CGLGetCurrentContext()) return fail("Resize requires the context current");
    struct dino_cgl_bridge *b = bridge_current(*(void **)context);
    if (!b || !dino_zink_resize(b->zink, width, height)) return fail("Cannot resize Zink drawable");
+   pthread_mutex_lock(&bridges_lock);
    b->width = width; b->height = height;
+   pthread_mutex_unlock(&bridges_lock);
    return 1;
+}
+
+static int reserve_native_cleanup(struct dino_cgl_bridge *b)
+{
+   if (!b->cleanup_reserve) b->cleanup_reserve = calloc(1, sizeof(*b->cleanup_reserve));
+   return b->cleanup_reserve != NULL;
+}
+
+static void free_native_cleanup(struct native_cleanup *cleanup)
+{
+   for (unsigned i = 0; i < 2; ++i)
+      if (cleanup->surfaces[i]) CFRelease(cleanup->surfaces[i]);
+   free(cleanup);
+}
+
+static void defer_native_cleanup(struct dino_cgl_bridge *b)
+{
+   void *share = *(void **)((char *)b->engine + 0x5b00);
+   struct native_cleanup *cleanup = b->cleanup_reserve;
+   if (cleanup) {
+      cleanup->share = share;
+      cleanup->textures[0] = b->present_texture;
+      b->present_texture = 0;
+      for (unsigned i = 0; i < 2; ++i) {
+         cleanup->textures[i + 1] = b->gpu_present[i].texture;
+         cleanup->fences[i] = b->gpu_present[i].fence;
+         cleanup->surfaces[i] = b->gpu_present[i].surface;
+         memset(&b->gpu_present[i], 0, sizeof(b->gpu_present[i]));
+      }
+      b->cleanup_reserve = NULL;
+   }
+   pthread_mutex_lock(&bridges_lock);
+   bool peer = false;
+   for (struct dino_cgl_bridge *other = bridges; other; other = other->next)
+      if (other != b && *(void **)((char *)other->engine + 0x5b00) == share) {
+         peer = true; break;
+      }
+   if (peer && cleanup) {
+      cleanup->next = native_cleanups; native_cleanups = cleanup;
+      cleanup = NULL;
+   }
+   struct native_cleanup *discard = NULL;
+   if (!peer) {
+      /* Final native share-group destruction owns these remaining GL objects. */
+      struct native_cleanup **link = &native_cleanups;
+      while (*link) {
+         struct native_cleanup *item = *link;
+         if (item->share == share) {
+            *link = item->next; item->next = discard; discard = item;
+         } else link = &item->next;
+      }
+   }
+   pthread_mutex_unlock(&bridges_lock);
+   if (cleanup) free_native_cleanup(cleanup);
+   while (discard) {
+      struct native_cleanup *next = discard->next;
+      free_native_cleanup(discard); discard = next;
+   }
+}
+
+static void drain_native_cleanups(struct dino_cgl_bridge *b)
+{
+   if (b->context != CGLGetCurrentContext()) return;
+   void *share = *(void **)((char *)b->engine + 0x5b00);
+   struct native_cleanup *pending = NULL;
+   pthread_mutex_lock(&bridges_lock);
+   struct native_cleanup **link = &native_cleanups;
+   while (*link) {
+      struct native_cleanup *item = *link;
+      if (item->share == share) {
+         *link = item->next; item->next = pending; pending = item;
+      } else link = &item->next;
+   }
+   pthread_mutex_unlock(&bridges_lock);
+   if (!pending) return;
+   use_original(b);
+   while (pending) {
+      struct native_cleanup *next = pending->next;
+      for (unsigned i = 0; i < 2; ++i) {
+         if (pending->fences[i]) {
+            GLenum result;
+            do {
+               result = glClientWaitSync(pending->fences[i], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+            } while (result == GL_TIMEOUT_EXPIRED);
+            glDeleteSync(pending->fences[i]);
+         }
+      }
+      glDeleteTextures(3, pending->textures);
+      free_native_cleanup(pending); pending = next;
+   }
+   use_zink(b);
+}
+
+static void release_gpu_present(struct dino_cgl_bridge *b)
+{
+   bool current = b->context == CGLGetCurrentContext();
+   if (current) {
+      drain_native_cleanups(b);
+      use_original(b);
+      if (b->gpu_width) glFinish();
+      for (unsigned i = 0; i < 2; ++i) {
+         if (b->gpu_present[i].fence) glDeleteSync(b->gpu_present[i].fence);
+         if (b->gpu_present[i].texture) glDeleteTextures(1, &b->gpu_present[i].texture);
+      }
+   } else defer_native_cleanup(b);
+   if (b->zink) dino_zink_present_release(b->zink);
+   for (unsigned i = 0; i < 2; ++i) {
+      if (b->gpu_present[i].surface) CFRelease(b->gpu_present[i].surface);
+      memset(&b->gpu_present[i], 0, sizeof(b->gpu_present[i]));
+   }
+   b->gpu_width = b->gpu_height = b->gpu_slot = 0;
+   if (current) use_zink(b);
+}
+
+static IOSurfaceRef create_present_surface(unsigned width, unsigned height)
+{
+   size_t stride = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, (size_t)width * 4);
+   if (stride > SIZE_MAX / height) return NULL;
+   size_t size = IOSurfaceAlignProperty(kIOSurfaceAllocSize, stride * height);
+   if (size > INT32_MAX) return NULL;
+   CFMutableDictionaryRef properties = CFDictionaryCreateMutable(NULL, 0,
+      &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+   if (!properties) return NULL;
+   const CFStringRef keys[] = {kIOSurfaceWidth, kIOSurfaceHeight, kIOSurfaceBytesPerElement,
+                              kIOSurfaceBytesPerRow, kIOSurfaceAllocSize, kIOSurfacePixelFormat};
+   int64_t values[] = {width, height, 4, (int64_t)stride, (int64_t)size, 0x42475241};
+   for (unsigned i = 0; i < 6; ++i) {
+      CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt64Type, &values[i]);
+      if (!n) { CFRelease(properties); return NULL; }
+      CFDictionarySetValue(properties, keys[i], n);
+      CFRelease(n);
+   }
+   IOSurfaceRef surface = IOSurfaceCreate(properties);
+   CFRelease(properties);
+   return surface;
+}
+
+static int prepare_gpu_present(struct dino_cgl_bridge *b)
+{
+   if (b->gpu_width == b->width && b->gpu_height == b->height) return 1;
+   if (!reserve_native_cleanup(b)) return 0;
+   release_gpu_present(b);
+   for (unsigned i = 0; i < 2; ++i) {
+      b->gpu_present[i].surface = create_present_surface(b->width, b->height);
+      if (!b->gpu_present[i].surface ||
+          !dino_zink_present_import(b->zink, i, b->gpu_present[i].surface)) goto failure;
+      use_original(b);
+      glGenTextures(1, &b->gpu_present[i].texture);
+      glBindTexture(GL_TEXTURE_RECTANGLE, b->gpu_present[i].texture);
+      glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      CGLError error = CGLTexImageIOSurface2D(b->context, GL_TEXTURE_RECTANGLE, GL_RGBA,
+         b->width, b->height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, b->gpu_present[i].surface, 0);
+      GLenum gl_error = glGetError();
+      use_zink(b);
+      if (error != kCGLNoError || gl_error != GL_NO_ERROR) goto failure;
+   }
+   b->gpu_width = b->width;
+   b->gpu_height = b->height;
+   return 1;
+failure:
+   release_gpu_present(b);
+   return 0;
+}
+
+static bool opaque_drawable(CGLContextObj context)
+{
+   GLint opacity = 1;
+   CGLGetParameter(context, kCGLCPSurfaceOpacity, &opacity);
+   return opacity != 0;
+}
+
+static int gpu_present(struct dino_cgl_bridge *b)
+{
+   unsigned slot = b->gpu_slot;
+   use_original(b);
+   if (b->gpu_present[slot].fence) {
+      GLenum result;
+      do {
+         result = glClientWaitSync(b->gpu_present[slot].fence,
+                                   GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+      } while (result == GL_TIMEOUT_EXPIRED);
+      glDeleteSync(b->gpu_present[slot].fence);
+      b->gpu_present[slot].fence = NULL;
+      if (result == GL_WAIT_FAILED) { use_zink(b); return fail("Apple IOSurface fence wait failed"); }
+   }
+   use_zink(b);
+   IOSurfaceRef surface = b->gpu_present[slot].surface;
+   if (IOSurfaceLock(surface, 0, NULL) != kIOReturnSuccess) return fail("Cannot lock GPU presentation surface");
+   int ok = dino_zink_present_begin(b->zink, slot, 1, opaque_drawable(b->context));
+   if (!dino_zink_present_wait(b->zink, slot)) {
+      dino_zink_present_release(b->zink);
+      ok = 0;
+   }
+   ok &= IOSurfaceUnlock(surface, 0, NULL) == kIOReturnSuccess;
+   if (!ok) return fail("Zink IOSurface GPU copy failed");
+   use_original(b);
+   if (!b->present_fbo) glGenFramebuffers(1, &b->present_fbo);
+   glBindFramebuffer(GL_READ_FRAMEBUFFER, b->present_fbo);
+   glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                          GL_TEXTURE_RECTANGLE, b->gpu_present[slot].texture, 0);
+   glReadBuffer(GL_COLOR_ATTACHMENT0);
+   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+   GLint double_buffer = 0;
+   glGetIntegerv(GL_DOUBLEBUFFER, &double_buffer);
+   glDrawBuffer(double_buffer ? GL_BACK : GL_FRONT);
+   glBlitFramebuffer(0, 0, b->width, b->height, 0, 0, b->width, b->height,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+   /* Native presentation must select the window framebuffer on both sides,
+    * rather than leaving our offscreen IOSurface selected for reads. */
+   glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+   GLenum error = glGetError();
+   CGLError swap_error = CGLFlushDrawable(b->context);
+   b->gpu_present[slot].fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+   glFlush();
+   bool fenced = b->gpu_present[slot].fence != NULL;
+   use_zink(b);
+   if (error != GL_NO_ERROR || swap_error != kCGLNoError || !fenced)
+      return fail("Apple IOSurface blit or swap failed");
+   b->gpu_slot ^= 1;
+   return dino_zink_swap(b->zink);
 }
 
 EXPORT int dino_cgl_present(CGLContextObj context)
@@ -321,6 +652,27 @@ EXPORT int dino_cgl_present(CGLContextObj context)
    if (!context || context != CGLGetCurrentContext()) return fail("Present requires the context current");
    struct dino_cgl_bridge *b = bridge_current(*(void **)context);
    if (!b) return 0;
+   drain_native_cleanups(b);
+   if (!b->present_configured) {
+      const char *mode = getenv("DINO_ZINK_PRESENT");
+      b->gpu_disabled = mode && !strcmp(mode, "cpu");
+      b->force_gpu = mode && !strcmp(mode, "gpu");
+      b->present_configured = true;
+   }
+   if (!b->gpu_disabled) {
+      if (prepare_gpu_present(b)) {
+         if (gpu_present(b)) return 1;
+         const char *error = dino_cgl_last_error();
+         release_gpu_present(b);
+         if (b->force_gpu) return fail(error);
+         fprintf(stderr, "Dino Zink: %s; using CPU presentation\n", error);
+      } else {
+         if (b->force_gpu) return fail("GPU presentation needs NVK host import and Apple IOSurface textures");
+         fprintf(stderr, "Dino Zink: IOSurface GPU import unavailable; using CPU presentation\n");
+      }
+      b->gpu_disabled = true;
+      last_error = NULL;
+   }
    size_t row = (size_t)b->width * 4;
    if (row > SIZE_MAX / b->height) return fail("Drawable size overflow");
    size_t size = row * b->height;
@@ -331,9 +683,12 @@ EXPORT int dino_cgl_present(CGLContextObj context)
    }
    int ok = dino_zink_readback_bottom_up(b->zink, b->present_pixels, size, row);
    if (!ok) return fail("Zink readback failed");
+   if (opaque_drawable(context))
+      for (size_t i = 3; i < size; i += 4) b->present_pixels[i] = 255;
    /* Apple GL state is private to the presentation side. The application's
     * Mesa GL state is untouched, including its FBOs, pixel stores and buffers. */
    use_original(b);
+   if (!reserve_native_cleanup(b)) { use_zink(b); return fail("Cannot reserve native presentation cleanup"); }
    if (!b->present_texture) glGenTextures(1, &b->present_texture);
    if (!b->present_fbo) glGenFramebuffers(1, &b->present_fbo);
    glBindTexture(GL_TEXTURE_2D, b->present_texture);
@@ -356,6 +711,7 @@ EXPORT int dino_cgl_present(CGLContextObj context)
    glDrawBuffer(double_buffer ? GL_BACK : GL_FRONT);
    glBlitFramebuffer(0, 0, b->width, b->height, 0, 0, b->width, b->height,
                       GL_COLOR_BUFFER_BIT, GL_NEAREST);
+   glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
    GLenum error = glGetError();
    CGLError swap_error = CGLFlushDrawable(context);
    use_zink(b);
@@ -374,6 +730,7 @@ EXPORT int dino_cgl_detach(CGLContextObj context)
    if (b) { *link = b->next; atomic_fetch_add(&generation, 1); }
    pthread_mutex_unlock(&bridges_lock);
    if (!b) { CGLUnlockContext(context); return fail("Context is not attached"); }
+   release_gpu_present(b);
    use_original(b);
    bool automatic = b->automatic;
    if (automatic) *(void ***)((char *)b->engine + 0xb2d0) = b->engine_back;
@@ -381,6 +738,7 @@ EXPORT int dino_cgl_detach(CGLContextObj context)
    if (b->present_fbo) glDeleteFramebuffers(1, &b->present_fbo);
    dino_zink_destroy(b->zink);
    free(b->present_pixels);
+   free(b->cleanup_reserve);
    free(b);
    CGLUnlockContext(context);
    if (!automatic) CGLReleaseContext(context);

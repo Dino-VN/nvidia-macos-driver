@@ -3,11 +3,13 @@
 Zink now builds as `libdino_zink.dylib`, using Mesa's Gallium OpenGL state
 tracker directly on NVK. The standalone probe renders through this library.
 `libdino_cgl.dylib` now connects real CGL contexts and OpenGL.framework calls
-to Zink, including native drawable presentation. The new GLD proxy automatically attaches core CGL contexts when selected by
+to Zink, including native drawable presentation. The GLD proxy automatically attaches core and legacy CGL contexts when selected by
 NVAccel's `IOGLBundleName`. The explicit API remains available for development.
 Native GLD is experimental and bound to x86_64 macOS build 25G241. Its normal
 loader/rendering path has been tested with a process-local bundle lookup
-substitution; a fresh installation/reboot and general games remain untested.
+substitution. Local RLCraft 1.12.2 testing also reaches its native main-menu
+pixels through LWJGL 2; a fresh installation/reboot and general game compatibility
+remain untested.
 
 ## Build and run
 
@@ -45,9 +47,160 @@ same-size, nonplanar RGBA/BGRA surfaces and respects row padding. The caller mus
 submit that surface to its compositor. `dino_zink_create_shared` shares GL objects;
 `dino_zink_create_drawable` additionally selects double buffering for CGL.
 There is no direct WindowServer hookup in the standalone frontend, multisampling,
-or zero-copy presentation yet. Release a
+or zero-copy rendering into the native drawable yet. Native CGL can use the GPU
+IOSurface copy described below. Release a
 context before moving it between threads; destroy it only when no other thread
 uses it. These are Mesa contexts, not interchangeable with `CGLContextObj`.
+
+## GPU presentation and OpenGL 2.1 compatibility (2026-10-29)
+
+Native presentation first tries two reusable IOSurfaces. Zink imports their
+page-aligned system memory through `VK_EXT_external_memory_host`, blits RGBA to
+BGRA with the required row orientation on the GPU, then issues an image-to-buffer
+GPU transfer directly into those pages. Apple GL imports the surface as a
+rectangle texture and blits it to the native drawable. This path does not map
+the render target, copy pixels with `memcpy`, or upload a CPU texture each frame.
+
+Opaque native surfaces use alpha 1 in the presentation image, even when the
+game clears alpha to 0 or masks alpha writes. This follows `kCGLCPSurfaceOpacity`,
+since macOS may allocate alpha bits even when the application requests none.
+Zink clears the scratch image to opaque and blits only RGB on the GPU. The
+application's framebuffer alpha and GL state remain unchanged; a transparent
+native surface retains application alpha. RGBX drawables also force opaque
+presentation, accounting for Vulkan's underlying RGBA storage.
+
+NVK's fence completes before Apple reads the surface. An Apple GL fence completes
+before the same slot is written again. Resize and teardown drain outstanding
+work before releasing imports. Frames are presented on their own swap call;
+there is no intentional extra frame of latency. Unsupported host-memory or
+native texture imports fall back to the CPU path. `DINO_ZINK_PRESENT=cpu` forces
+that fallback; `DINO_ZINK_PRESENT=gpu` requires the GPU path and reports failure
+when it cannot be initialized.
+
+The transfer pages are shared with Apple without a CPU copy. Rendering still uses
+separate GPU images, with a GPU blit/copy into the surface. This is not zero-copy
+rendering or direct scanout. The shipped NVK image-format query does not support
+host-allocation handles for images, although its buffer import works; it cannot
+currently import an IOSurface as a linear render target through this API.
+
+The existing standalone probe checks GPU BGRA bytes, both row orientations,
+both slots, padding, rejection of a pending slot, and preservation of read
+FBO/PBO/pixel-pack state when `DINO_ZINK_REQUIRE_GPU=1` is set. Native window
+checks with `DINO_ZINK_PRESENT=gpu` cover repeated frames, 128x128 -> 64x96 ->
+192x160 resizing, a surface update without a current context, and final native
+red/green/blue pixels. These checks passed on the RTX 2060 and build 25G241.
+The native window probe accepts `--legacy`, `--no-alpha` and `--transparent`.
+It clears application alpha to 0 and verifies native alpha 255 for opaque windows
+and alpha 0 for transparent windows. Both GPU and CPU paths are checked.
+`DINO_ZINK_RGBX=1` runs the standalone copy checks using a no-alpha framebuffer
+and zero-alpha draws, verifying RGBX readback and presentation alpha 1.
+
+The new `dino_zink_create_drawable_profile` API requests OpenGL 2.1 compatibility
+for legacy CGL pixel formats. Its fixed-function state, display lists and
+ARB/EXT aliases are needed by LWJGL 2 / Minecraft 1.12.2 RLCraft. The dispatch
+generator now reads the SDK's core, legacy and extension declarations together,
+checks the actual public symbol slots, and handles Apple's pointer-sized ARB
+shader handles. Unsupported/empty SDK symbols are recorded in its local map;
+an SDK declaration alone does not establish extension support.
+
+The legacy probe covers immediate-mode drawing, matrices, display lists,
+multitexture, ARB VBO/client arrays, EXT framebuffer objects, pointer-sized ARB
+shader handles and shared contexts. A separate local shared-context teardown
+test passed three times: noncurrent destruction defers native textures, fences
+and surface references until the surviving peer can safely release them.
+
+The RLCraft reproduction loaded the compatibility runtime and rendered its
+loading screen while its window stayed gray. The opaque copy fix makes
+readback from the actual Apple front buffer contain
+loading-screen and main-menu text/artwork, with 185 mods loaded and alpha 255
+throughout. Front-buffer pixels alone did not establish visible presentation:
+AppKit's own legacy surface-copy context was also being routed to Zink, and
+`NSIOAccelSurface.frontBuffer` returned nil, so no image entered CAImageQueue.
+
+Automatic attachment now leaves contexts created by `NSIOAccelSurface` in the
+native driver. The copy helper's native CGL texture imports and GL objects stay
+together, while application core/legacy contexts use Zink. A controlled AppKit
+window then returned a nonnil front-buffer IOSurface, successfully registered
+and inserted its image into CAImageQueue, and visibly displayed red/green/blue
+pixels. The native swap also selects framebuffer 0 for reads after the blit.
+Mod/shader combinations beyond this RLCraft reproduction are not yet qualified.
+The local RLCraft rerun loaded the updated library, and the user confirmed that
+its window now displayed content. No installed system libraries were replaced
+during this isolated test.
+
+### Animated texture uploads on Darwin NVK
+
+Sampling the RLCraft world at near-zero FPS found 2,923 of 2,979 client-thread
+samples in `glTexSubImage2D`. NVK's host image copy repeatedly mapped/unmapped
+GPU memory through NVRM and tiled the pixels on the CPU. The Darwin NVK overlay
+now disables Zink's host-image-copy capability before resource creation, using
+the existing staging-buffer and GPU buffer-to-image upload path. Other Vulkan
+drivers retain their existing capability selection.
+
+On the RTX 2060, a 2048x2048 atlas test with 2,048 strided 16x16 updates and
+completion every 32 updates took 1,178 ms before this change and 49 ms afterward
+(about 24 times faster). Full texture readback and a nonzero-mip update matched
+every expected pixel. This measures texture upload throughput; it is not a
+Minecraft world FPS measurement. Core/legacy dispatch, PBO and glyph uploads,
+cube faces, and actual AppKit IOSurface queue publication also passed with the
+updated backend. The user confirmed that the world no longer stalls at zero
+FPS, but reported only about 20 FPS; higher world performance is still under test.
+
+### LWJGL 2 view operations and AppKit
+
+Two startup crashes were traced to LWJGL's Cocoa view operations running on its
+client thread: one failed while releasing objects in `setView`, and another
+reported a `CALayerArray` mutation during enumeration. `dino_appkit.m` now
+marshals LWJGL's direct `setView:`, `update` and `clearDrawable` calls to AppKit's
+main thread. GL current-context changes, rendering and swaps stay on the client
+thread. Calls already on main and calls from other clients retain their original
+path. The user confirmed visible loading and a working world with the test shim;
+the same handling is integrated into the CGL runtime.
+
+Native viewport updates publish pending drawable dimensions under the bridge
+lock. The rendering thread consumes them and reallocates Mesa attachments;
+AppKit never performs that reallocation from its own viewport update, even if
+it makes the native context current on main. The window probe's `--render-thread`
+mode keeps the GL context current on a worker while main grows/shrinks the view,
+checks its actual constrained backing size (including 1920x955), and verifies
+edge pixels and the queued AppKit IOSurface.
+
+LWJGL 2's `MacOSXOpenGLView` is a bare `NSView` and does not emit the viewport
+callback used by `NSOpenGLView`. Java could report `wasResized=true` and a new
+1280x720 display while the bridge still used its original 854x480 drawable.
+The LWJGL update hook now publishes the view dimensions after AppKit updates
+the context, using backing pixels when the view requests a high-resolution
+OpenGL surface. The rendering thread then applies the pending resize.
+
+A paired Java 8 / LWJGL 2.9.4 test grew the same native view from 854x480 to
+1280x720 and a constrained 1920x959, then shrank it to 854x480. Before this
+change, both larger sizes returned black pixels at their new far edge on
+every sampled frame. Afterward, all sizes returned the expected blue edge
+pixels with no GL errors. The user then confirmed that RLCraft displayed
+correctly after resizing with this final view-size publication. The final
+world FPS after the upload optimization has not been reported.
+
+### Threaded animated texture updates on Darwin NVK
+
+The remaining world sample spent 616 of 2,530 client-thread samples in texture
+updates. Mesa's default inline texture-upload limit is only 320 bytes, smaller
+than a 16x16 RGBA animation tile. The Darwin NVK overlay raises this limit to
+4 KiB for Zink's threaded context, copying qualifying upload bytes into the
+existing command queue before returning to the game. Resource references and
+upload ordering use the existing threaded-context path. Larger updates retain
+their existing path, and other Vulkan drivers retain the default limit.
+
+For the same 2,048 strided 16x16 updates with completion every 32 calls,
+application-thread time inside the upload calls fell from 31.5 ms to 2.4 ms.
+Total time including GPU completion stayed similar (62.5 ms versus 65.0 ms)
+in this paired test. Full atlas/nonzero-mip readback had zero mismatches and
+zero GL errors. This verifies reduced client-thread work, not a world FPS gain.
+
+A freshly built Metal plugin also includes the existing bounded host-page
+import cache. It passed the 12 IOSurface wrapper ordering/pixel cases and the
+native AppKit publication probe with process-local bundle selection. The full
+presentation timings were variable and did not establish a world FPS gain from
+this cache alone.
 
 ## Validation on 2026-10-28
 
@@ -64,8 +217,8 @@ The probe checks GLSL 4.10 shader compilation/linking, triangle and background
 pixels, resize from 64x64 to 32x24, image orientation, short output buffers,
 readback without a current context, preservation of read FBO/PBO and pixel-pack
 state, and padded BGRA IOSurface pixel contents. It does not test games, native
-CGL selection, WindowServer presentation, or performance. Readback is deliberately
-CPU-based; no speed improvement over the existing Metal path has been measured.
+CGL selection, WindowServer presentation, or performance. At that revision, readback was deliberately CPU-based; no speed improvement
+over the existing Metal path had been measured.
 
 The CGL probe reports `0x01027f00`, accelerated, and
 `NVIDIA GeForce RTX 2060 (NVMTL over NVIDIA GeForce RTX 2060 (NVK TU106-A))`,
@@ -141,10 +294,10 @@ wrong-build rejection, trusted-lookup failure, first-install cleanup, and late
 kernel-collection failure with restoration of the previous driver/plugin/runtime,
 firmware, cached personalities and kernel collection. Privileged commands and
 runtime qualification are mocked in those installer fixtures.
-Registry selection after installation and reboot, game
-compatibility, other OS builds/GPUs, legacy GL on Zink, multisampled/float/sRGB
-buffers, pbuffer/IOSurface texture APIs, GPU-only presentation and performance
-remain unqualified. Legacy contexts use the original Apple renderer.
+Registry selection after a fresh installation/reboot, general game compatibility,
+other OS builds/GPUs, multisampled/float/sRGB buffers and application-facing
+pbuffer/IOSurface texture APIs remain unqualified. Legacy GL and GPU presentation
+validation on 2026-10-29 is described above. No Minecraft FPS gain has been measured.
 
 ## Native CGL adapter
 
@@ -408,6 +561,6 @@ or boot snapshot was modified during this implementation.
 Verify a full installation/reboot, actual registry selection, unmodified games,
 core-profile coverage beyond the probes, shared-context teardown/resource use,
 and additional drawable formats. The production proxy depends on Apple's
-installed renderer for final CPU-copy presentation. Other OS builds require
+installed renderer for the final native drawable blit and swap. Other OS builds require
 fresh lifecycle and structure verification before lifting the build gate. A
-proper independent HAL and GPU-only presentation remain future work.
+proper independent HAL and rendering directly into a shared native surface remain future work.

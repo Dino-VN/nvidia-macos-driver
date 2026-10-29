@@ -16,7 +16,7 @@ import stage_package as base_tools
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = Path('Library/GPUBundles/nvmtl')
 ZINK_FILES = ('libdino_zink.dylib', 'libdino_cgl.dylib', 'dino_zink.h', 'dino_cgl.h',
-              'zink_probe', 'cgl_renderer_probe', 'cgl_zink_probe', 'cgl_zink_window_probe', 'cgl-os-build.txt')
+              'zink_probe', 'cgl_renderer_probe', 'cgl_zink_probe', 'cgl_zink_legacy_probe', 'cgl_zink_window_probe', 'cgl-os-build.txt')
 
 
 def run(*args):
@@ -151,7 +151,7 @@ def stage(base, zink, output, components=None, native_gld=False):
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
         source_dir = runtime / 'zink-source'
         source_dir.mkdir()
-        for name in ('dino_zink.c', 'dino_zink.h', 'dino_cgl.c', 'dino_cgl.h', 'dino_cgl_gld.h',
+        for name in ('dino_zink.c', 'dino_zink.h', 'dino_cgl.c', 'dino_cgl.h', 'dino_appkit.m', 'dino_cgl_gld.h',
                      'gld_bridge.c', 'meson.build', 'mesa-zink-nvk.patch'):
             shutil.copy2(ROOT / 'zink' / name, source_dir / name)
         for name in ('build_zink.sh', 'prepare_zink.py', 'build_cgl_zink.sh', 'generate_cgl_dispatch.py',
@@ -188,6 +188,7 @@ def stage(base, zink, output, components=None, native_gld=False):
             'OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n')
         identity = {'base': str(base), 'base_manifest_sha256': base_tools.digest(base / 'SHA256SUMS'),
                     'source_commit': run('git', '-C', ROOT, 'rev-parse', 'HEAD').strip(),
+                    'source_dirty': bool(run('git', '-C', ROOT, 'status', '--porcelain').strip()),
                     'component_replacements': replacements, 'firmware': sorted(firmware_paths),
                     'zink_sha256': base_tools.digest(runtime / 'libdino_zink.dylib'),
                     'cgl_sha256': base_tools.digest(runtime / 'libdino_cgl.dylib'),

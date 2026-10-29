@@ -14,7 +14,9 @@ extern "C" {
 int dino_cgl_attach(CGLContextObj context, unsigned width, unsigned height);
 int dino_cgl_detach(CGLContextObj context);
 int dino_cgl_resize(CGLContextObj context, unsigned width, unsigned height);
-/* CPU readback into the original Apple drawable, then its normal swap path. */
+/* Prefer a GPU copy into shared IOSurface pages, then the Apple drawable's
+ * normal swap. CPU readback is the fallback when surface import is unavailable.
+ * DINO_ZINK_PRESENT=cpu selects that fallback; =gpu requires GPU presentation. */
 int dino_cgl_present(CGLContextObj context);
 const char *dino_cgl_last_error(void);
 #ifdef __cplusplus

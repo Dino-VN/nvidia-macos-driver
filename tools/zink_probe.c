@@ -35,6 +35,7 @@ int main(int argc, char **argv)
    void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
    if (!library) die(dlerror());
    LOAD(struct dino_zink_context *(*)(unsigned, unsigned), dino_zink_create);
+   LOAD(struct dino_zink_context *(*)(unsigned, unsigned, struct dino_zink_context *, int, int, int), dino_zink_create_drawable_profile);
    LOAD(int (*)(struct dino_zink_context *), dino_zink_make_current);
    LOAD(void (*)(struct dino_zink_context *), dino_zink_destroy);
    LOAD(int (*)(struct dino_zink_context *, unsigned, unsigned), dino_zink_resize);
@@ -42,7 +43,13 @@ int main(int argc, char **argv)
    LOAD(int (*)(struct dino_zink_context *, void *, size_t, size_t), dino_zink_readback);
    LOAD(int (*)(struct dino_zink_context *, void *, size_t, size_t), dino_zink_readback_bottom_up);
    LOAD(int (*)(struct dino_zink_context *, IOSurfaceRef), dino_zink_present_iosurface);
-   struct dino_zink_context *ctx = dino_zink_create(64, 64);
+   LOAD(int (*)(struct dino_zink_context *, unsigned, IOSurfaceRef), dino_zink_present_import);
+   LOAD(int (*)(struct dino_zink_context *, unsigned, int, int), dino_zink_present_begin);
+   LOAD(int (*)(struct dino_zink_context *, unsigned), dino_zink_present_wait);
+   LOAD(void (*)(struct dino_zink_context *), dino_zink_present_release);
+   int rgbx = getenv("DINO_ZINK_RGBX") != NULL;
+   struct dino_zink_context *ctx = rgbx ? dino_zink_create_drawable_profile(64, 64, NULL, 0, 0, 0) :
+                                        dino_zink_create(64, 64);
    if (!ctx || !dino_zink_make_current(ctx)) die("Zink 4.1 context creation failed");
    GLPROC(const GLubyte *, glGetString, (GLenum));
    GLPROC(GLenum, glGetError, (void));
@@ -81,7 +88,8 @@ int main(int argc, char **argv)
    if (!renderer || !strstr(renderer, "zink") || !strstr(renderer, "NVK")) die("Renderer is not Zink on NVK");
    const char *sources[] = {
       "#version 410 core\nconst vec2 p[3]=vec2[3](vec2(-.8,-.8),vec2(.8,-.8),vec2(0,.8)); void main(){gl_Position=vec4(p[gl_VertexID],0,1);}",
-      "#version 410 core\nout vec4 color; void main(){color=vec4(0,1,0,1);}"
+      rgbx ? "#version 410 core\nout vec4 color; void main(){color=vec4(0,1,0,0);}" :
+             "#version 410 core\nout vec4 color; void main(){color=vec4(0,1,0,1);}"
    };
    GLuint shaders[2], program = glCreateProgram(), vao;
    for (int i = 0; i < 2; ++i) {
@@ -102,7 +110,7 @@ int main(int argc, char **argv)
       unsigned width = pass ? 32 : 64, height = pass ? 24 : 64;
       if (!dino_zink_resize(ctx, width, height)) die("resize failed");
       glViewport(0, 0, width, height);
-      glClearColor(1, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+      glClearColor(1, 0, 0, rgbx ? 0 : 1); glClear(GL_COLOR_BUFFER_BIT);
       glDrawArrays(GL_TRIANGLES, 0, 3);
       if (glGetError() != GL_NO_ERROR) die("OpenGL error after draw");
       GLuint pbo, fb;
@@ -113,6 +121,9 @@ int main(int argc, char **argv)
       glPixelStorei(GL_PACK_SKIP_ROWS, 1); glPixelStorei(GL_PACK_SKIP_PIXELS, 2);
       if (dino_zink_readback(ctx, pixels, 1, width * 4)) die("short output buffer accepted");
       if (!dino_zink_readback(ctx, pixels, sizeof(pixels), width * 4)) die("readback failed");
+      if (rgbx)
+         for (unsigned i = 3; i < width * height * 4; i += 4)
+            if (pixels[i] != 255) die("RGBX framebuffer must read opaque alpha");
       unsigned char bottom_rows[64 * (64 * 4 + 8)];
       size_t bottom_rows_stride = width * 4 + 8;
       memset(bottom_rows, 0xa5, sizeof(bottom_rows));
@@ -165,6 +176,41 @@ int main(int argc, char **argv)
          if (base[y * pitch + width * 4] != 0xa5) die("IOSurface row padding overwritten");
       }
       if (IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL)) die("IOSurface read unlock failed");
+      if (getenv("DINO_ZINK_REQUIRE_GPU")) {
+         if (dino_zink_present_import(ctx, 2, surface)) die("invalid GPU slot accepted");
+         glGenFramebuffers(1, &fb); glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+         glGenBuffers(1, &pbo); glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+         glPixelStorei(GL_PACK_SKIP_ROWS, 3);
+         for (unsigned slot = 0; slot < 2; ++slot) {
+            if (!dino_zink_present_import(ctx, slot, surface)) die("GPU IOSurface import unavailable");
+            if (IOSurfaceLock(surface, 0, NULL)) die("GPU IOSurface lock failed");
+            if (!dino_zink_present_begin(ctx, slot, slot != 0, 0)) die("GPU copy submission failed");
+            if (dino_zink_present_begin(ctx, slot, 0, 0)) die("pending GPU slot reused");
+            if (!dino_zink_present_wait(ctx, slot)) die("GPU copy wait failed");
+            if (IOSurfaceUnlock(surface, 0, NULL)) die("GPU IOSurface unlock failed");
+            if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL)) die("GPU IOSurface read lock failed");
+            base = IOSurfaceGetBaseAddress(surface);
+            for (unsigned y = 0; y < height; ++y) {
+               for (unsigned x = 0; x < width; ++x) {
+                  unsigned sy = slot ? height - 1 - y : y;
+                  unsigned char *dst = base + y * pitch + x * 4, *src = pixels + (sy * width + x) * 4;
+                  if (dst[0] != src[2] || dst[1] != src[1] || dst[2] != src[0] || dst[3] != src[3])
+                     die("GPU IOSurface color/orientation mismatch");
+               }
+               if (base[y * pitch + width * 4] != 0xa5) die("GPU IOSurface padding overwritten");
+            }
+            if (IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL)) die("GPU IOSurface read unlock failed");
+         }
+         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &state); if ((GLuint)state != fb) die("GPU copy changed read FBO");
+         glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &state); if ((GLuint)state != pbo) die("GPU copy changed pack PBO");
+         glGetIntegerv(GL_PACK_SKIP_ROWS, &state); if (state != 3) die("GPU copy changed pack state");
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, 0); glDeleteFramebuffers(1, &fb);
+         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); glDeleteBuffers(1, &pbo);
+         glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+         dino_zink_present_release(ctx);
+         if (glGetError()) die("GPU presentation left GL error");
+         puts("PASS: GPU copies, both slots/orientations, padding, pending reuse rejection, FBO/PBO/pack state");
+      }
       CFRelease(surface);
       printf("PASS: GLSL triangle, resize, readback orientation/state, padded BGRA IOSurface, %ux%u\n", width, height);
       if (!pass && argc == 4) {

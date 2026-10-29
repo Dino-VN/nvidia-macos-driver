@@ -29,7 +29,23 @@
  #include "MoltenVK/mvk_vulkan.h"
  // Source of MVK_VERSION
  #include "MoltenVK/mvk_config.h"
-@@ -3833,6 +3833,12 @@
+@@ -3251,6 +3251,15 @@
+    if (!screen->resizable_bar)
+       screen->info.have_EXT_host_image_copy = false;
+
++#if defined(DINO_ZINK_NVK)
++   /* Darwin NVK maps/unmaps GPU memory and CPU-tiles every host image copy.
++    * Animated texture uploads spend nearly all frame time on this path.
++    * Use staging buffers and GPU buffer-to-image copies instead.
++    */
++   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_NVK)
++      screen->info.have_EXT_host_image_copy = false;
++#endif
++
+    /* required for SSO usage */
+    if (!screen->info.have_KHR_maintenance11)
+       screen->info.have_EXT_shader_object = false;
+@@ -3833,6 +3842,12 @@
     }
     if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO) {
        switch(screen->info.driver_props.driverID) {
@@ -84,3 +100,45 @@
     ici.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
  #endif
     ici.pApplicationInfo = &ai;
+--- a/src/gallium/auxiliary/util/u_threaded_context.h
++++ b/src/gallium/auxiliary/util/u_threaded_context.h
+@@ -582,6 +582,9 @@
+    bool unsynchronized_create_fence_fd;
+    /* if true, texture_subdata calls may occur unsynchronized with PIPE_MAP_UNSYNCHRONIZED */
+    bool unsynchronized_texture_subdata;
++   /* Zero keeps the default threshold. Larger inline texture uploads can
++    * avoid executing driver copy commands on the application thread. */
++   unsigned max_texture_subdata_bytes;
+    /* if true, parse and track renderpass info during execution */
+    bool parse_renderpass_info;
+    /* callbacks for drivers to read their DSA/FS state and update renderpass info accordingly
+--- a/src/gallium/auxiliary/util/u_threaded_context.c
++++ b/src/gallium/auxiliary/util/u_threaded_context.c
+@@ -3333,8 +3333,12 @@
+    if (tc->options.parse_renderpass_info && tc->in_renderpass)
+       ended = tc_check_fb_access(tc, NULL, resource);
+
++   /* Bound optional larger payloads to the available batch slot capacity. */
++   unsigned max_bytes = tc->options.max_texture_subdata_bytes ?
++                        tc->options.max_texture_subdata_bytes : TC_MAX_SUBDATA_BYTES;
++   max_bytes = MIN2(max_bytes, (TC_SLOTS_PER_BATCH - call_size(tc_texture_subdata) - 1) * 8);
+    /* Small uploads can be enqueued, big uploads must sync. */
+-   if (size <= TC_MAX_SUBDATA_BYTES) {
++   if (size <= max_bytes) {
+       struct tc_texture_subdata *p =
+          tc_add_slot_based_call(tc, TC_CALL_texture_subdata, tc_texture_subdata, size);
+
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -6203,6 +6203,11 @@
+                                                         .driver_calls_flush_notify = !screen->driver_workarounds.track_renderpasses,
+                                                         .unsynchronized_get_device_reset_status = true,
+                                                         .unsynchronized_texture_subdata = true,
++#if defined(__APPLE__) && defined(DINO_ZINK_NVK)
++                                                        /* Minecraft animation tiles exceed the 320-byte default.
++                                                         * Keep their GPU upload command recording on the worker. */
++                                                        .max_texture_subdata_bytes = screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_NVK ? 4096 : 0,
++#endif
+                                                         .parse_renderpass_info = screen->driver_workarounds.track_renderpasses,
+                                                         .dsa_parse = zink_tc_parse_dsa,
+                                                         .fs_parse = zink_tc_parse_fs,
