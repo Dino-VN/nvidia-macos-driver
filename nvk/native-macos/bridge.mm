@@ -21,6 +21,9 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+#ifdef NVKBRIDGE_WINE
+#include "present_hud.h"
+#endif
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char *);
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char *);
@@ -41,13 +44,21 @@ std::once_flag backend_once;
 std::once_flag device_procs_once;
 std::atomic<uint64_t> next_handle{0x4e564b0000000000ull};
 std::atomic<uint64_t> copies{}, copy_bytes{}, drawable_ns{}, producer_ns{}, import_failures{};
+#ifdef NVKBRIDGE_WINE
+std::atomic<uint64_t> hud_upload_bytes{};
+#endif
 using PresentObserver=void (*)(PFN_vkGetDeviceProcAddr,VkDevice,VkQueue,VkBuffer,uint32_t,uint32_t,uint32_t,uint32_t);
 std::atomic<PresentObserver> present_observer{};
 std::mutex registry;
 
 struct Instance { VkInstance raw{}; };
 struct Device;
-struct Surface { CAMetalLayer *__strong layer; };
+struct Surface {
+   CAMetalLayer *__strong layer;
+#ifdef NVKBRIDGE_WINE
+   std::shared_ptr<nvkbridge_hud::State> hud;
+#endif
+};
 struct Queue { VkQueue raw{}; uint32_t family{}; std::weak_ptr<Device> dev; };
 struct Image { VkImage raw{}; VkDeviceMemory memory{}; bool acquired{}; };
 struct Chain {
@@ -58,6 +69,13 @@ struct Chain {
    VkExtent2D extent{};
    VkPresentModeKHR present_mode{};
    std::vector<Image> images;
+#ifdef NVKBRIDGE_WINE
+   VkBuffer hud_buffer{};
+   VkDeviceMemory hud_memory{};
+   void *hud_mapping{};
+   uint64_t hud_version{};
+   bool hud_disabled{};
+#endif
    std::mutex mutex;
    std::condition_variable available;
    uint32_t cursor{};
@@ -99,6 +117,11 @@ template<class T> T dproc(VkDevice d, const char *name) { return reinterpret_cas
 
 bool initialize() {
    std::call_once(backend_once, [] {
+#ifdef NVKBRIDGE_WINE
+      // Wine preserves WINE_* variables in the Unix environment of PE child
+      // processes. Forward the explicit opt-in before Mesa reads its options.
+      if(const char *value=getenv("WINE_NVK_EXPERIMENTAL"))setenv("NVK_EXPERIMENTAL",value,1);
+#endif
       Dl_info self{};
       if (!dladdr(reinterpret_cast<void *>(&vkGetInstanceProcAddr), &self) || !self.dli_fname) return;
       std::string path(self.dli_fname);
@@ -110,7 +133,7 @@ bool initialize() {
       stage_import = reinterpret_cast<StageImport>(dlsym(backend, "nvmtl_nvk_stage_import"));
       surface_dirty = reinterpret_cast<SurfaceDirty>(dlsym(backend, "nvmtl_nvk_surface_dirty"));
       if (!backend_gipa || !stage_import || !surface_dirty) backend_gipa = nullptr;
-      fprintf(stderr, "NVK Bridge: renderer=%s; presentation=gpu-copy; CPU pixel traffic=0\n", path.c_str());
+      fprintf(stderr, "NVK Bridge: renderer=%s; presentation=gpu-copy; game-frame CPU pixel traffic=0\n", path.c_str());
    });
    return backend_gipa != nullptr;
 }
@@ -388,12 +411,16 @@ VkResult VKAPI_CALL create_surface(VkInstance instance,const VkMetalSurfaceCreat
    if (!find(instances,instance) || !info || !info->pLayer || info->flags) return VK_ERROR_INITIALIZATION_FAILED;
    auto surface=std::make_shared<Surface>(); surface->layer=(CAMetalLayer *)info->pLayer;
    if (![surface->layer isKindOfClass:[CAMetalLayer class]]) return VK_ERROR_INITIALIZATION_FAILED;
+#ifdef NVKBRIDGE_WINE
+   if (nvkbridge_hud::enabled()) surface->hud=std::make_shared<nvkbridge_hud::State>();
+#endif
    *out=(VkSurfaceKHR)(uintptr_t)next_handle.fetch_add(1);
    std::lock_guard<std::mutex> lock(registry); surfaces[*out]=surface;
    return VK_SUCCESS;
 }
 void VKAPI_CALL destroy_surface(VkInstance,VkSurfaceKHR surface,const VkAllocationCallbacks *) {
-   std::lock_guard<std::mutex> lock(registry); surfaces.erase(surface);
+   std::lock_guard<std::mutex> lock(registry);
+   surfaces.erase(surface);
 }
 VkResult VKAPI_CALL surface_support(VkPhysicalDevice physical,uint32_t family,VkSurfaceKHR surface,VkBool32 *supported) {
    *supported=VK_FALSE;
@@ -452,6 +479,12 @@ int memory_type(const Device &d,uint32_t bits,VkMemoryPropertyFlags flags) {
 }
 void release_images(const std::shared_ptr<Chain> &c) {
    if (c->dev->uncertain) return;
+#ifdef NVKBRIDGE_WINE
+   if(c->hud_mapping)DP(c->dev,UnmapMemory)(c->dev->raw,c->hud_memory);
+   if(c->hud_buffer)DP(c->dev,DestroyBuffer)(c->dev->raw,c->hud_buffer,c->alloc());
+   if(c->hud_memory)DP(c->dev,FreeMemory)(c->dev->raw,c->hud_memory,c->alloc());
+   c->hud_mapping=nullptr;c->hud_buffer=VK_NULL_HANDLE;c->hud_memory=VK_NULL_HANDLE;c->hud_version=0;
+#endif
    for (auto &im:c->images) {
       if (im.raw) DP(c->dev,DestroyImage)(c->dev->raw,im.raw,c->alloc());
       if (im.memory) DP(c->dev,FreeMemory)(c->dev->raw,im.memory,c->alloc());
@@ -494,6 +527,9 @@ VkResult VKAPI_CALL create_swapchain(VkDevice device,const VkSwapchainCreateInfo
    image.imageType=VK_IMAGE_TYPE_2D;image.format=c->format;image.extent={c->extent.width,c->extent.height,1};
    image.mipLevels=1;image.arrayLayers=1;image.samples=VK_SAMPLE_COUNT_1_BIT;image.tiling=VK_IMAGE_TILING_OPTIMAL;
    image.usage=info->imageUsage|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+#ifdef NVKBRIDGE_WINE
+   if(s->hud)image.usage|=VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+#endif
    image.sharingMode=families.size()>1?VK_SHARING_MODE_CONCURRENT:VK_SHARING_MODE_EXCLUSIVE;
    image.queueFamilyIndexCount=families.size()>1?(uint32_t)families.size():0;image.pQueueFamilyIndices=families.data();
    for (auto &im:c->images) {
@@ -521,6 +557,9 @@ void VKAPI_CALL destroy_swapchain(VkDevice device,VkSwapchainKHR swapchain,const
    { std::lock_guard<std::mutex> lock(registry);chains.erase(swapchain); }
    fprintf(stderr,"NVK Bridge: gpu_copy_count=%llu gpu_copy_bytes=%llu cpu_pixel_readback_bytes=0 metal_cpu_upload_bytes=0\n",
       (unsigned long long)copies.load(),(unsigned long long)copy_bytes.load());
+#ifdef NVKBRIDGE_WINE
+   if(c->surface->hud)fprintf(stderr,"NVK HUD: cumulative bitmap CPU upload bytes=%llu; no game-frame readback\n",(unsigned long long)hud_upload_bytes.load());
+#endif
 }
 VkResult VKAPI_CALL swapchain_images(VkDevice device,VkSwapchainKHR swapchain,uint32_t *count,VkImage *out) {
    auto c=find(chains,swapchain);if (!c || c->dev->raw!=device) return VK_ERROR_OUT_OF_DATE_KHR;
@@ -586,6 +625,41 @@ void publish_tag(IOSurfaceRef surface) {
    CFDataRef data=CFDataCreate(nullptr,(const UInt8 *)&tag,sizeof tag);
    if (data) { IOSurfaceSetValue(surface,CFSTR("NVMTLVramAt:p0"),data);CFRelease(data); }
 }
+#ifdef NVKBRIDGE_WINE
+std::shared_ptr<const nvkbridge_hud::Bitmap> prepare_hud(const std::shared_ptr<Chain> &c) {
+   if(!c->surface->hud || c->hud_disabled)return {};
+   auto bitmap=c->surface->hud->bitmap(c->extent.width,c->extent.height);if(!bitmap)return {};
+   auto d=c->dev;
+   if(!c->hud_buffer) {
+      VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};info.size=bitmap->pixels.size()*4;
+      info.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT;info.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+      VkResult result=DP(d,CreateBuffer)(d->raw,&info,c->alloc(),&c->hud_buffer);
+      if(result==VK_SUCCESS) {
+         VkMemoryRequirements requirements{};DP(d,GetBufferMemoryRequirements)(d->raw,c->hud_buffer,&requirements);
+         int type=memory_type(*d,requirements.memoryTypeBits,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+         if(type<0)result=VK_ERROR_FEATURE_NOT_PRESENT;
+         else {
+            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=requirements.size;allocation.memoryTypeIndex=type;
+            result=DP(d,AllocateMemory)(d->raw,&allocation,c->alloc(),&c->hud_memory);
+            if(result==VK_SUCCESS)result=DP(d,BindBufferMemory)(d->raw,c->hud_buffer,c->hud_memory,0);
+            if(result==VK_SUCCESS)result=DP(d,MapMemory)(d->raw,c->hud_memory,0,VK_WHOLE_SIZE,0,&c->hud_mapping);
+         }
+      }
+      if(result!=VK_SUCCESS) {
+         // The optional overlay must not prevent normal presentation.
+         c->hud_disabled=true;fprintf(stderr,"NVK HUD: allocation failed (%d); overlay disabled for this swapchain\n",result);return {};
+      }
+      fprintf(stderr,"NVK HUD: GPU overlay enabled, %ux%u bitmap; small CPU upload refreshed at 4 Hz\n",bitmap->width,bitmap->height);
+   }
+   // copy_frame waits for its copy fence before returning. This coherent
+   // mapping is therefore never overwritten while the GPU still reads it.
+   if(c->hud_version!=bitmap->version) {
+      memcpy(c->hud_mapping,bitmap->pixels.data(),bitmap->pixels.size()*4);c->hud_version=bitmap->version;
+      hud_upload_bytes+=bitmap->pixels.size()*4;
+   }
+   return bitmap;
+}
+#endif
 VkResult copy_frame(const std::shared_ptr<Chain> &c,uint32_t index,VkSemaphore handoff,bool &consumed) {
    auto d=c->dev;
    auto frame=std::make_shared<Frame>();frame->chain=c;
@@ -630,6 +704,18 @@ VkResult copy_frame(const std::shared_ptr<Chain> &c,uint32_t index,VkSemaphore h
    barrier.oldLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;barrier.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
    barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
    barrier.image=c->images[index].raw;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+#ifdef NVKBRIDGE_WINE
+   auto hud=prepare_hud(c);
+   if(hud) {
+      barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      DP(d,CmdPipelineBarrier)(frame->commands,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+      VkBufferImageCopy overlay{};overlay.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+      overlay.imageOffset={8,8,0};overlay.imageExtent={hud->width,hud->height,1};
+      DP(d,CmdCopyBufferToImage)(frame->commands,c->hud_buffer,barrier.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&overlay);
+      barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+      barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;barrier.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   }
+#endif
    DP(d,CmdPipelineBarrier)(frame->commands,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
    VkBufferImageCopy region{};region.bufferRowLength=(uint32_t)(row/4);region.bufferImageHeight=c->extent.height;
    region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.imageExtent={c->extent.width,c->extent.height,1};
@@ -655,6 +741,9 @@ VkResult copy_frame(const std::shared_ptr<Chain> &c,uint32_t index,VkSemaphore h
    if (surface_dirty(d->raw,IOSurfaceGetID(frame->surface),0)) return VK_ERROR_SURFACE_LOST_KHR;
    publish_tag(frame->surface);
    [frame->drawable present];
+#ifdef NVKBRIDGE_WINE
+   if(c->surface->hud)c->surface->hud->record(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
    copies++;copy_bytes+=frame->bytes;
    return VK_SUCCESS;
 }

@@ -3,6 +3,33 @@
 These probes distinguish native Vulkan, Windows Vulkan, and D3D11 through DXVK.
 They do not replace actual game testing or establish an FPS improvement.
 
+`d3d12_probe.cpp` and `d3d12_probe.hlsl` additionally exercise the optional
+vkd3d-proton candidate. Compile the HLSL entry points `cs`, `vs` and `ps` with
+Microsoft DXC targeting `cs_6_0`, `vs_6_0` and `ps_6_0`, producing `cs.dxil`,
+`vs.dxil` and `ps.dxil` in one private shader directory. Build the probe with:
+
+```sh
+/absolute/llvm-mingw/bin/x86_64-w64-mingw32-clang++ \
+  -std=c++17 -O2 -static tools/wine-nvk/d3d12_probe.cpp \
+  -ld3d12 -ldxgi -ldxguid -lole32 -luser32 -lgdi32 \
+  -o /absolute/tests/d3d12-probe.exe
+```
+
+Initialize a separate prefix as below, then use the candidate helper's
+`install-d3d12 ROOT PREFIX` command. Set
+`WINEDLLOVERRIDES='d3d11,dxgi,d3d12,d3d12core=n;mscoree,mshtml='` and
+`VKD3D_CONFIG=nodxr`, preserving the scoped native provider and cache paths.
+Pass `--shaders 'Z:\absolute\tests\shaders'` to the probe for device creation,
+DXIL compute, a root UAV, fence completion and 1,024 checked readback words.
+Add `--window --frames 120` for DXIL vertex/pixel rendering, five pixel readbacks,
+presentation and resize. GPU fence waits are bounded to ten seconds. This is a
+correctness test with deliberate synchronization/readback overhead.
+
+Both modes passed on RTX 2060 SUPER / Tahoe 26.7.1 with vkd3d-proton 3.1,
+DXC 1.9.2609 and YAAGL Wine 11.0-1. D3D11 and shared-resource probes also passed
+with the candidate installed. ZZZ D3D12 gameplay and DLSS SR Quality were also user-confirmed on this setup.
+Ray tracing and frame generation remain unqualified; see [status](../../nvk/wine-macos/README.md#d3d12-and-dlss).
+
 Build from the driver repository root, with Xcode command line tools, Vulkan
 headers, and an x86_64 llvm-mingw cross compiler. Keep outputs and temporary files
 in a private test directory. The cross-compiled probes load Vulkan dynamically.
@@ -106,3 +133,43 @@ Run actual Windows and D3D11 probes again after moving the complete runtime to a
 path containing spaces. Inspect loaded-image paths for accidental dependencies
 on the old root. Test gameplay separately, including warm-cache frame times,
 scene transitions, repeat launch/shutdown and a sustained session.
+
+## NGX/DLSS and HUD validation
+
+`ngx_probe.cpp`, `ngx_evaluate.cpp` and `ngx_params_msvc.cpp` use NVIDIA's
+unmodified [DLSS SDK headers](https://github.com/NVIDIA/DLSS). Compile the
+parameter wrapper only with `clang++ --target=x86_64-pc-windows-msvc -O2
+-fno-exceptions -fno-rtti -I SDK/include -c ngx_params_msvc.cpp`; NGX returns an
+MSVC C++ interface, so the LLVM-MinGW overload-vtable ABI is not interchangeable.
+Compile/link the other two sources and that object with LLVM-MinGW, `-std=c++17
+-static -ld3d12 -ldxgi -ldxguid -luser32 -lole32`. Do not copy SDK headers into
+this repository. Use `--project --evaluate` in a disposable prefix with the
+matched NGX/NVAPI DLLs, the game's original feature DLL and native DLSS flags.
+The probe uses a diagnostic project ID, not a registered game's identity.
+
+The three-frame DLSS SR test passed 320×180 → 640×360 with 4,680 checked colour
+values and no mismatches. It tests constant regions and an edge, not temporal
+quality or a performance gain. `streamline_probe.cpp` separately checks the
+game's public Streamline initialization and feature requirements; its plugin
+path is supplied on the command line. Neither probe qualifies DLSSG.
+
+The native Wine `host_test.mm` covers HUD pacing, cached bitmap rendering,
+clipping, child flags and lifetime behavior; sanitizer checks passed on the
+prototype. `smoke.mm` with `NVKBRIDGE_VERIFY_PIXELS=1`, `NVKBRIDGE_VERIFY_HUD=1`
+and `WINE_NVK_HUD=fps,frametimes` validates the HUD and surrounding drawable
+pixels using a separate test-only readback. 45 frames, resize and restore passed.
+Normal presentation does not read the full game frame through the CPU.
+
+After the final driver build is authorized, validate its real installer:
+
+```sh
+python3 tools/wine-nvk/test_setup.py --runtime /absolute/provider --work /absolute/test-output
+python3 tools/wine-nvk/test_dlss_setup.py --runtime /absolute/provider \
+  --wine /absolute/prepared-wine/bin/wine --work /absolute/test-output
+```
+
+The second test creates private prefixes, verifies repeat installs, original
+string/DWORD/absent registry values, tamper preflight and restoring NGX without
+removing D3D12. It has not run against a newly compiled final helper while the
+driver build is held. Component extraction can be tested without compilation
+with `test_provider_components.py` and the pinned input archives/source.

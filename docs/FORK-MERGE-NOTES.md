@@ -163,10 +163,14 @@ timeout fix default off for HSR/GI and on for ZZZ. Preserve these game-specific
 defaults. GI, CN gameplay, commercial CrossOver, other Wine builds and Sequoia
 hardware remain unqualified.
 Native and Windows Vulkan/D3D11 probes verify correctness, not an FPS improvement.
-vkd3d-proton/D3D12 support is work in progress in isolated local development,
-not included in current releases. D3D11 remains the default; ZZZ is the planned
-first D3D12 game test. Host capability screening does not qualify D3D12 execution.
-See [Wine/NVK source and validation](../nvk/wine-macos/README.md).
+D3D12 integration now includes pinned vkd3d-proton 3.1, optional NVIDIA Wine
+NGX/DXVK-NVAPI, and a GPU-copy bitmap HUD. ZZZ D3D12 and DLSS SR Quality were
+user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. Preserve the independent D3D11,
+vkd3d and DLSS rollback journals, prefix-local registry original, signature/hash
+validation, `WINE_NVK_*` child-process forwarding and the D3D11 default. DLSSG
+keeps normal hardware checks; frame generation and RT are unqualified. The driver
+build/release is held at the user's request; the final registry-aware helper is
+source-reviewed and needs compiled setup/rollback tests before a driver release.
 
 ## Tahoe display rotation
 

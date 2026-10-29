@@ -106,6 +106,33 @@ static VkResult throw_oom() { throw std::bad_alloc(); }
 static VkResult throw_error() { throw std::runtime_error("injected"); }
 
 int main() { @autoreleasepool {
+#ifdef NVKBRIDGE_WINE
+   {
+      nvkbridge_hud::Timing timing;double fps=0,ms=0;
+      assert(!timing.frame(0,fps,ms));
+      for (unsigned frame=1;frame<=60;frame++) {
+         if (timing.frame(frame/60.0,fps,ms)) {
+            assert(std::abs(fps-60)<0.001 && std::abs(ms-1000.0/60)<0.001);
+         }
+      }
+      assert(!timing.frame(0.5,fps,ms)); // Clock reset cannot report negative FPS.
+      assert(!timing.frame(NAN,fps,ms));
+      assert(timing.frame(10.5,fps,ms) && std::abs(fps-0.1)<0.0001);
+      nvkbridge_hud::State overlay;
+      assert(!overlay.bitmap(100,100));
+      auto initial=overlay.bitmap(640,360);assert(initial && initial->pixels.size()==224*44);
+      assert(initial->pixels[0]==0xff101010u);
+      assert(std::count(initial->pixels.begin(),initial->pixels.end(),0xffffffffu)>100);
+      assert(overlay.bitmap(1920,1080)==initial);
+      overlay.record(0);overlay.record(.5);
+      auto next=overlay.bitmap(640,360);assert(next!=initial && next->version>initial->version);
+      assert(next->pixels!=initial->pixels);
+      setenv("WINE_NVK_HUD","0",1);assert(!nvkbridge_hud::enabled());
+      setenv("WINE_NVK_HUD","fps,frametimes",1);assert(nvkbridge_hud::enabled());
+      unsetenv("WINE_NVK_HUD");
+      puts("PASS HUD pacing, finite/reset handling, cached bitmap, clipping and Wine child opt-in");
+   }
+#endif
    std::call_once(backend_once,[]{});backend_gipa=fake_gipa;backend_gdpa=fake_gdpa;
    uint32_t count=0;int out=99;
    assert(enumerate(std::vector<int>{1,2},&count,&out)==VK_INCOMPLETE && count==0 && out==99);

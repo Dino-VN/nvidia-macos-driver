@@ -2,7 +2,8 @@
 """Extract a compact Wine/CrossOver provider from a validated Wine/NVK bundle.
 
 Wine stays an application dependency. Only the matched Vulkan/DXVK libraries,
-setup helper, license notices and provenance are included in the driver package.
+optional vkd3d-proton pair, setup helper, license notices and provenance are
+included in the driver package.
 """
 import argparse
 import hashlib
@@ -11,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 REPO = Path(__file__).resolve().parents[2]
@@ -18,6 +20,18 @@ CRITICAL = (
     "lib/libnvk_wine.dylib", "lib/libnvk_renderer.dylib",
     "bin/nvk-runtime", "dxvk/x64/d3d11.dll", "dxvk/x64/dxgi.dll",
 )
+VKD3D_VERSION = "3.1"
+VKD3D_COMMIT = "4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1"
+VKD3D_ARCHIVE_SHA256 = "b85ea8219b71093a3924913dd7aae6172333dc0c069983ed510816d67f02120b"
+NVAPI_COMMIT = "f9fdf268e888d17ae9875a4f01908164ff05f740"
+NVAPI_ARCHIVE_SHA256 = "60c284223530d643c446c263f1e1a96c6de7b5ff21796219646da734d97a70d6"
+NGX_ARCHIVE_SHA256 = "c210d0f81b2cc80be65192a56135ce22ee3cb46ab2eb22eb520ee78e6ad9c13f"
+NGX_ARCHIVE_URL = "https://developer.download.nvidia.com/compute/nvidia-driver/redist/nvidia_driver/linux-x86_64/nvidia_driver-linux-x86_64-610.57.04-archive.tar.xz"
+DLSS_FILES = {
+    "nvapi64.dll": "1bcf9b68a53f35d94e9e7dfdb68244d74c6300f3979906009478c320a780e12e",
+    "nvngx.dll": "52a68acc4e477eeff598b5ca01f26215dc5aa487c8f150b02c27ad099c11de0b",
+    "_nvngx.dll": "bdad96fdca36050a94a221bb89eab4fc5db6e53ef799494a68957a2e2b28e283",
+}
 
 
 def digest(path):
@@ -25,13 +39,107 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def build(base, output):
+def add_vkd3d(root, archive, source):
+    if digest(archive) != VKD3D_ARCHIVE_SHA256:
+        raise ValueError("Unrecognized vkd3d-proton release archive")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    if revision != VKD3D_COMMIT or subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=source, text=True).strip():
+        raise ValueError("Use the clean vkd3d-proton 3.1 source for license/provenance records")
+    paths = []
+    for name in ("d3d12.dll", "d3d12core.dll"):
+        relative = "vkd3d/x64/" + name
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive) as package:
+            with package.extractfile("vkd3d-proton-3.1/x64/" + name) as stream:
+                target.write_bytes(stream.read())
+        target.chmod(0o755)
+        paths.append(relative)
+    for name in ("LICENSE", "COPYING", "AUTHORS"):
+        relative = "LICENSES/vkd3d-proton-" + name + ".txt"
+        shutil.copyfile(source / name, root / relative)
+        paths.append(relative)
+    record = {
+        "version": VKD3D_VERSION, "source_revision": revision, "modified": False,
+        "source_url": "https://github.com/HansKristian-Work/vkd3d-proton/tree/" + revision,
+        "archive_url": "https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.1/vkd3d-proton-3.1.tar.zst",
+        "archive_sha256": VKD3D_ARCHIVE_SHA256,
+        "files": {path: digest(root / path) for path in paths},
+        "validation": "Packaging verifies identity and architecture; execution must be tested separately",
+    }
+    (root / "VKD3D-BUILD.json").write_text(json.dumps(record, indent=2) + "\n")
+    return {"version": VKD3D_VERSION, "source_revision": revision, "modified": False,
+            "archive_sha256": VKD3D_ARCHIVE_SHA256, "build_record": "VKD3D-BUILD.json"}, paths + ["VKD3D-BUILD.json"]
+
+
+def add_dlss(root, nvapi_archive, nvapi_source, ngx_archive):
+    if digest(nvapi_archive) != NVAPI_ARCHIVE_SHA256 or digest(ngx_archive) != NGX_ARCHIVE_SHA256:
+        raise ValueError("Unrecognized DXVK-NVAPI or NVIDIA NGX archive")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=nvapi_source, text=True).strip()
+    if revision != NVAPI_COMMIT or subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=nvapi_source, text=True).strip():
+        raise ValueError("Use the clean DXVK-NVAPI 0.9.2 source for license/provenance records")
+    paths = []
+    license_path = "LICENSES/NVIDIA-NGX-driver-license.txt"
+    archive_root = "nvidia_driver-linux-x86_64-610.57.04-archive/"
+    wanted = {archive_root + "wine/" + name: "dlss/x64/" + name for name in ("nvngx.dll", "_nvngx.dll")}
+    wanted[archive_root + "LICENSE"] = license_path
+    # Stream the large NVIDIA archive once; random tar member lookup repeatedly
+    # decompresses hundreds of megabytes of unrelated driver files.
+    for package, selection in ((nvapi_archive, {"./x64/nvapi64.dll": "dlss/x64/nvapi64.dll"}),
+                               (ngx_archive, wanted)):
+      pending = dict(selection)
+      with tarfile.open(package, "r|*") as archive:
+        for info in archive:
+            if info.name not in pending:
+                continue
+            relative = pending.pop(info.name)
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not info.isfile() or info.size > 20 * 1024 * 1024:
+                raise ValueError("Unexpected DLSS component archive entry")
+            with archive.extractfile(info) as stream:
+                target.write_bytes(stream.read())
+            target.chmod(0o755 if target.suffix == ".dll" else 0o644)
+            if target.suffix == ".dll" and digest(target) != DLSS_FILES[target.name]:
+                raise ValueError("Unexpected DLSS component DLL: " + target.name)
+            paths.append(relative)
+            if not pending:
+                break
+      if pending:
+          raise ValueError("Missing DLSS component archive entries: " + ", ".join(pending))
+    nvapi_license = "LICENSES/DXVK-NVAPI-MIT.txt"
+    shutil.copyfile(nvapi_source / "LICENSE", root / nvapi_license)
+    paths.append(nvapi_license)
+    metadata = {
+        "super_resolution": "experimental", "frame_generation": "unqualified; normal hardware checks",
+        "game_feature_library": "Use the game's original nvngx_dlss.dll; not redistributed here",
+        "nvapi": {"version": "0.9.2", "source_revision": revision,
+                  "source_url": "https://github.com/jp7677/dxvk-nvapi/tree/" + revision,
+                  "archive_sha256": NVAPI_ARCHIVE_SHA256},
+        "ngx": {"version": "610.57.04", "archive_url": NGX_ARCHIVE_URL,
+                "archive_sha256": NGX_ARCHIVE_SHA256, "modified": False,
+                "license": license_path},
+        "files": {path: digest(root / path) for path in paths},
+    }
+    (root / "DLSS-BUILD.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    return {"nvapi_version": "0.9.2", "ngx_version": "610.57.04", "build_record": "DLSS-BUILD.json"}, paths + ["DLSS-BUILD.json"]
+
+
+def build(base, output, vkd3d_archive=None, vkd3d_source=None, frontend=None,
+          nvapi_archive=None, nvapi_source=None, ngx_archive=None):
     base, output = base.resolve(strict=True), output.absolute()
     if output.exists() or output.is_symlink():
         raise ValueError("Output exists; choose a new directory")
     output = output.resolve()
     if base == output or base in output.parents:
         raise ValueError("Output must be outside the base runtime")
+    if bool(vkd3d_archive) != bool(vkd3d_source):
+        raise ValueError("Supply both --vkd3d-archive and --vkd3d-source")
+    dlss_inputs = [nvapi_archive, nvapi_source, ngx_archive]
+    if any(dlss_inputs) and not all(dlss_inputs):
+        raise ValueError("Supply --nvapi-archive, --nvapi-source and --ngx-archive together")
     subprocess.run([str(base / "bin/nvk-runtime"), "check", str(base)], check=True)
     source = json.loads((base / "nvk-wine-runtime.json").read_text())
     if source["dxvk"]["version"] != "3.1.1+nvk-shared-fallback":
@@ -41,6 +149,14 @@ def build(base, output):
         root = Path(temporary) / "provider"
         root.mkdir()
         paths = [*CRITICAL, "dxvk/source-changes.patch", "DXVK-BUILD.json"]
+        if source.get("frontend_build"):
+            if source["frontend_build"] != "FRONTEND-BUILD.json":
+                raise ValueError("Unknown frontend build record")
+            paths.append("FRONTEND-BUILD.json")
+        if source.get("vkd3d") and not vkd3d_archive:
+            paths.extend(path for path in source["files"] if path.startswith("vkd3d/") or path == "VKD3D-BUILD.json")
+        if source.get("dlss") and not all(dlss_inputs):
+            paths.extend(path for path in source["files"] if path.startswith("dlss/") or path == "DLSS-BUILD.json")
         licenses = base / "LICENSES"
         if not licenses.is_dir() or licenses.is_symlink():
             raise ValueError("The dependency license records are required")
@@ -56,7 +172,43 @@ def build(base, output):
                 raise ValueError("Runtime artifact resolves outside its root: " + relative)
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
+            # Installed inputs may carry protected macOS metadata. Deliver the
+            # verified bytes and executable mode, without copying system xattrs.
+            shutil.copyfile(path, target)
+            target.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
+        presentation = source["presentation"]
+        frontend_record = source.get("frontend_build")
+        if frontend:
+            frontend = frontend.resolve(strict=True)
+            record = json.loads((frontend / "BUILD.json").read_text())
+            if record["entry"]["path"] != CRITICAL[0] or record["renderer"]["path"] != CRITICAL[1]:
+                raise ValueError("Unexpected frontend library layout")
+            if digest(frontend / CRITICAL[1]) != digest(root / CRITICAL[1]) or record["renderer"]["sha256"] != digest(root / CRITICAL[1]):
+                raise ValueError("Frontend renderer must match the base provider byte-for-byte")
+            if digest(frontend / CRITICAL[0]) != record["entry"]["sha256"]:
+                raise ValueError("Frontend binary does not match its build record")
+            subprocess.run(["codesign", "--verify", "--strict", str(frontend / CRITICAL[0])], check=True)
+            shutil.copyfile(frontend / CRITICAL[0], root / CRITICAL[0])
+            (root / CRITICAL[0]).chmod(0o755)
+            shutil.copyfile(frontend / "BUILD.json", root / "FRONTEND-BUILD.json")
+            paths.append("FRONTEND-BUILD.json")
+            frontend_record = "FRONTEND-BUILD.json"
+            presentation = {**presentation, **record["presentation"]}
+        vkd3d = source.get("vkd3d")
+        if vkd3d_archive:
+            vkd3d, additions = add_vkd3d(root, vkd3d_archive.resolve(strict=True), vkd3d_source.resolve(strict=True))
+            paths.extend(additions)
+        dlss = source.get("dlss")
+        if all(dlss_inputs):
+            if not vkd3d:
+                raise ValueError("DLSS requires the matched vkd3d-proton component")
+            if presentation.get("wine_child_options") != 1:
+                raise ValueError("DLSS needs a Wine frontend with child-process option forwarding")
+            dlss, additions = add_dlss(root, nvapi_archive.resolve(strict=True), nvapi_source.resolve(strict=True), ngx_archive.resolve(strict=True))
+            paths.extend(additions)
+        if dlss and (not vkd3d or presentation.get("wine_child_options") != 1):
+            raise ValueError("DLSS requires D3D12 and Wine child-process option forwarding")
+        paths = sorted(set(paths))
         # Provider-only manifests do not require a vendored Wine installation.
         # Build this helper rather than shipping an older bundle-only helper.
         helper = root / "bin/nvk-runtime"
@@ -77,7 +229,7 @@ def build(base, output):
             "source_runtime_id": source["runtime_id"], "platform": source["platform"],
             "entry": {"path": CRITICAL[0], "sha256": files[CRITICAL[0]]},
             "renderer": {"path": CRITICAL[1], "sha256": files[CRITICAL[1]]},
-            "files": files, "dxvk": source["dxvk"], "presentation": source["presentation"],
+            "files": files, "dxvk": source["dxvk"], "presentation": presentation,
             "launch_defaults": {"DXVK_CONFIG": "dxvk.enableDescriptorBuffer = False",
                                 "DXVK_HUD": "devinfo,fps,frametimes,scale=1.25",
                                 "WINEDLLOVERRIDES": "d3d11,dxgi=n"},
@@ -85,6 +237,12 @@ def build(base, output):
                            "helper": "Rebuilt; run the setup/rollback tests on this output",
                            "external_wine_crossover": "Not qualified by packaging"},
         }
+        if vkd3d:
+            manifest["vkd3d"] = vkd3d
+        if dlss:
+            manifest["dlss"] = dlss
+        if frontend_record:
+            manifest["frontend_build"] = frontend_record
         (root / "nvk-wine-runtime.json").write_text(json.dumps(manifest, indent=2) + "\n")
         record = {
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
@@ -110,10 +268,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", type=Path, required=True, help="validated full Wine/NVK runtime with repaired DXVK")
     parser.add_argument("--output", type=Path, required=True, help="new compact provider directory")
+    parser.add_argument("--vkd3d-archive", type=Path, help="optional pinned vkd3d-proton 3.1 release archive")
+    parser.add_argument("--vkd3d-source", type=Path, help="matching clean upstream source for license/provenance records")
+    parser.add_argument("--frontend", type=Path, help="optional Wine frontend build using the same renderer")
+    parser.add_argument("--nvapi-archive", type=Path, help="optional pinned DXVK-NVAPI 0.9.2 archive")
+    parser.add_argument("--nvapi-source", type=Path, help="matching clean DXVK-NVAPI source for its MIT license")
+    parser.add_argument("--ngx-archive", type=Path, help="pinned NVIDIA 610.57.04 archive; only the unmodified NGX pair and license are copied")
     args = parser.parse_args()
     try:
-        print(json.dumps(build(args.base, args.output), indent=2))
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(json.dumps(build(args.base, args.output, args.vkd3d_archive, args.vkd3d_source, args.frontend,
+                               args.nvapi_archive, args.nvapi_source, args.ngx_archive), indent=2))
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.CalledProcessError) as error:
         print("STOP: " + str(error), file=sys.stderr)
         return 1
     return 0

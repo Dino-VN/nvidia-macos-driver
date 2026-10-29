@@ -20,9 +20,9 @@ over MoltenVK has **not** been measured.
 
 - This fork's driver and a matching Wine/NVK runtime, on Intel macOS **15.5+** or
   **Tahoe 26**, with a supported NVIDIA GPU.
-- An **x64 Windows D3D11** game and a compatible macOS Wine Vulkan bridge. D3D12,
-  32-bit games, HDR and cross-process external GPU-handle sharing are not supported
-  by this integration.
+- An **x64 Windows D3D11 or D3D12** game and a compatible macOS Wine Vulkan
+  bridge. D3D12/DLSS require the matching new provider. 32-bit games, HDR and
+  cross-process external GPU-handle sharing are not supported by this integration.
 - The matched, repaired DXVK **3.1.1** `d3d11.dll` / `dxgi.dll` pair supplied with
   the runtime. Stock 3.1.1 can crash when a game requests an unsupported shared texture.
 
@@ -33,34 +33,31 @@ depth/blend/shared-texture probes also pass.
 Genshin Impact, CN gameplay, commercial CrossOver releases, other Wine builds
 and physical Sequoia hardware have **not** been qualified.
 
-**D3D12 via vkd3d-proton is [work in progress](README.md#d3d12-work-in-progress),
-not included in current releases.** ZZZ is the planned first D3D12 game test;
+**D3D12/DLSS are integrated in source, but the new driver package is not built
+yet.** Older D3D11-only providers cannot use these features. ZZZ D3D12 and DLSS
+Quality are confirmed on RTX 2060 SUPER / Tahoe 26.7.1;
 the instructions below continue to use the verified D3D11 route.
 
-## YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
+## Setup with YAAGL
 
-Use [HighDelay/yaagl-nvk](https://github.com/HighDelay/yaagl-nvk) for these games.
-Its packages contain launchers only. The driver supplies NVK and the patched
-DXVK pair; first setup downloads/prepares the compatible Wine build separately.
-The driver alone does not install the launcher or game.
+1. Install the matching driver and extract [YAAGL NVK](https://github.com/HighDelay/yaagl-nvk/releases).
+2. Open the game's supplied Start command; use the NVIDIA NVK backend.
+3. For ZZZ, Settings → Game exposes **D3D12 (vkd3d-proton)** and **DLSS support**
+   separately. Both default off. Enabling DLSS requires D3D12 and an RTX GPU;
+   select the actual DLSS quality inside the game. The launcher installs the
+   matching components in its private prefix and registers NGX with backups.
+4. Settings → General → **DXVK / NVK HUD** controls the overlay on the next
+   game launch. D3D11 uses DXVK's device/FPS/frame-time HUD; D3D12 uses the
+   native presentation FPS/ms box.
+5. Keep ZZZ's Steam Patch and timeout fix enabled, and launch through YAAGL's
+   full patch/preparation flow. A direct `wine steam.exe Game.exe` shortcut is
+   not equivalent and crashed during testing. GI/HSR retain their D3D11 routes
+   and their existing default-off Steam/timeout options.
 
-1. Install this fork's driver and reboot.
-2. Extract the YAAGL NVK package and use the desired game's supplied **Start** command.
-3. Select **Settings → Wine → NVIDIA NVK + DXVK (local, experimental)**.
-4. Install or select the game directory, then launch. This backend creates a
-   separate `wineprefix-nvk`, selects D3D11, installs the matched DLLs and enables
-   the FPS/frame-time/device overlay. ZZZ's packaged defaults enable YAAGL's
-   existing Steam Patch and timeout fix; both default off for HSR and GI. HSR
-   uses its Jadeite launch route with the required `--` separator.
-
-All three games have launcher configurations, including global/CN variants.
-**ZZZ and HSR Global gameplay are verified; GI and CN gameplay remain unqualified.**
-See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
-YAAGL requires `/Library/GPUBundles/nvmtl/wine` for both Vulkan and DXVK. There
-is no bundled renderer fallback or separate DXVK download. To update DXVK,
-replace both DLLs in the driver runtime and regenerate its manifest/checksums.
-YAAGL uses that installed pair. Wine downloads on first setup into the launcher's
-private `launcher-data/wine-nvk` directory.
+YAAGL takes NVK, DXVK, vkd3d and NGX/NVAPI from the installed driver provider.
+Its archives contain no graphics runtime or Wine. Wine downloads on first setup.
+Old driver providers continue to work for D3D11, but requested new features fail
+with an update message before prefix DLLs are changed.
 
 ## Standalone Wine
 
@@ -143,6 +140,85 @@ Change the app path if CrossOver is installed elsewhere. Continue using this
 scoped command for the NVK test; an ordinary GUI launch does not select this
 provider automatically. No CrossOver installation files are replaced.
 
+## D3D12 and DLSS
+
+These commands require a driver provider that reports `supports_d3d12: true`
+and, for DLSS, `supports_dlss: true`. The currently published D3D11-only driver
+predates them; the new driver build is on hold. Use a separate initialized
+64-bit prefix or duplicate bottle and close its applications before setup.
+
+### D3D12
+
+Keep the `nvk_runtime`, `nvk_prefix` and `nvk_wine` variables from the Wine setup
+above. Install both the existing DXGI dependency and the matched D3D12 pair:
+
+```sh
+"$nvk_runtime/bin/nvk-runtime" install-d3d12 "$nvk_runtime" "$nvk_prefix"
+cd /absolute/path/to/game
+env WINEPREFIX="$nvk_prefix" \
+  DYLD_LIBRARY_PATH="$nvk_runtime/lib" \
+  WINEDLLOVERRIDES='d3d11,dxgi,d3d12,d3d12core=n' \
+  VKD3D_CONFIG=nodxr WINE_NVK_HUD=fps,frametimes DXVK_HUD=0 \
+  "$nvk_wine" ./Game.exe
+```
+
+Choose the game's D3D12 backend and its own launch arguments. ZZZ's verified
+YAAGL route uses `-use-d3d12` and removes `-force-d3d11`. These generic commands
+supply graphics components; they do not replace a game's required launcher,
+patches or other setup. Ray tracing is disabled for this tested configuration.
+
+### Optional DLSS Super Resolution
+
+The provider includes the unmodified NVIDIA Wine NGX pair (`nvngx.dll` and
+`_nvngx.dll`) and DXVK-NVAPI (`nvapi64.dll`). Keep the game's original
+`nvngx_dlss.dll`. The helper registers the core library in this prefix and backs
+up its exact original `NGXCore\FullPath` value and DLLs. Supply the Wine
+executable used by this prefix:
+
+```sh
+"$nvk_runtime/bin/nvk-runtime" install-dlss "$nvk_runtime" "$nvk_prefix" "$nvk_wine"
+cd /absolute/path/to/game
+env WINEPREFIX="$nvk_prefix" \
+  DYLD_LIBRARY_PATH="$nvk_runtime/lib" \
+  WINEDLLOVERRIDES='d3d11,dxgi,d3d12,d3d12core,nvapi64,nvngx,_nvngx=n' \
+  DXVK_ENABLE_NVAPI=1 WINE_NVK_EXPERIMENTAL=dlss \
+  VKD3D_CONFIG=nodxr WINE_NVK_HUD=fps,frametimes DXVK_HUD=0 \
+  "$nvk_wine" ./Game.exe
+```
+
+Then enable DLSS and choose its quality in the game. `WINE_NVK_EXPERIMENTAL`
+reaches Wine child processes and is forwarded to Mesa before it initializes.
+Setting `NVK_EXPERIMENTAL=dlss` alone was lost in the tested child launch path.
+This exposes experimental precompiled GPU support; it does not fabricate GPU
+capabilities. DLSS SR is verified on RTX 2060 SUPER. DLSSG is left to normal
+hardware checks, with no blanket block; frame generation is **not tested**.
+
+Turn off DLSS inside the game before returning to D3D11 or launching without
+NGX. To remove only NGX/NVAPI and restore the original registry value, leaving
+the graphics DLLs installed:
+
+```sh
+"$nvk_runtime/bin/nvk-runtime" restore-dlss "$nvk_runtime" "$nvk_prefix" "$nvk_wine"
+```
+
+### CrossOver D3D12 / DLSS
+
+Use the duplicate bottle and Open Shell described above. Pass CrossOver's
+matching bottle arguments to registry-aware setup/restore, for example:
+
+```sh
+"$nvk_runtime/bin/nvk-runtime" install-dlss "$nvk_runtime" "$nvk_prefix" \
+  "$nvk_cx_wine" --bottle "$nvk_bottle"
+```
+
+For D3D12 without DLSS, use `install-d3d12` instead; it needs no Wine argument.
+Launch with the corresponding D3D12 or DLSS environment above, substituting
+`"$nvk_cx_wine" --bottle "$nvk_bottle" --cx-app ./Game.exe` for the last line.
+Keep other bottle arguments/environment from Open Shell. The helper verifies
+Wine's `C:\windows\system32` resolves to the requested prefix before changing
+NGX. No files inside CrossOver.app are replaced. Commercial CrossOver remains
+untested; use the verified YAAGL Wine if its loader rejects the native provider.
+
 ## Verify, update and restore
 
 The DXVK HUD/log should identify **NVK / NVIDIA** and the log should say
@@ -154,16 +230,18 @@ and capture stderr. The Windows process must load this runtime's
 is an alias to the NVK frontend, not the MoltenVK renderer. A generic
 `VK_ICD_FILENAMES` setting alone does not select it in the verified Wine build.
 
-The helper validates hashes, signatures and architectures, then installs both
-DLLs with an original-file backup and rollback journal. To switch runtime
+The helper validates hashes, signatures and architectures. DXVK, vkd3d and
+NGX/NVAPI have independent original-file backups and rollback journals. To switch runtime
 versions that change the DLL pair, close the prefix's applications, restore first,
 then install the new pair. An identical DLL pair can adopt a new provider identity
 without replacing DLLs or losing its original-file backups:
 
 ```sh
-"$nvk_runtime/bin/nvk-runtime" restore "$nvk_runtime" "$nvk_prefix"
+"$nvk_runtime/bin/nvk-runtime" restore "$nvk_runtime" "$nvk_prefix" "$nvk_wine"
 ```
 
+For CrossOver DLSS restore, pass `"$nvk_cx_wine" --bottle "$nvk_bottle"` instead
+of `"$nvk_wine"`. If DLSS was never installed, Wine arguments may be omitted.
 Restore also works after the runtime was updated or its manifest became invalid.
 Unexpected changes to installed DLLs or backups are refused before either DLL is
 replaced. After restoring, use your normal Wine/CrossOver launch again. Minecraft's

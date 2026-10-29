@@ -28,6 +28,7 @@ the repositories and artifacts that need changing.
 | [HighDelay/nvidia-macos-driver](https://github.com/HighDelay/nvidia-macos-driver) | Complete installable driver archive with top-level `pkgroot/`, native Minecraft runtime, compact Wine/NVK provider and matched DXVK pair; standalone compact provider archive and `SHA256SUMS`, following the previous Wine/NVK release. |
 | [HighDelay/yaagl-nvk](https://github.com/HighDelay/yaagl-nvk) | Separate Global and CN launcher archives containing ZZZ, GI and HSR, with Start commands, required launcher data, guides and `SHA256SUMS`. |
 | [HighDelay/dxvk-nvk](https://github.com/HighDelay/dxvk-nvk) | Matched x64 `d3d11.dll` and `dxgi.dll`, license, source patch, build provenance, setup notes and `SHA256SUMS`. |
+| [HighDelay/vkd3d-nvk](https://github.com/HighDelay/vkd3d-nvk) | Matched x64 `d3d12.dll` and `d3d12core.dll`, upstream license/source identity, build provenance, Wine/NVK setup notes and `SHA256SUMS`. Reuse unchanged upstream binaries only with verified provenance. |
 
 ### Publication workflow
 

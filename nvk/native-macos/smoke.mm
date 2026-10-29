@@ -49,13 +49,20 @@ static void verify_pixels(PFN_vkGetDeviceProcAddr gdpa,VkDevice device,VkQueue q
    check(WaitForFences(device,1,&fence,VK_TRUE,5000000000ull),"verification completion");void *data=nullptr;check(MapMemory(device,memory,0,VK_WHOLE_SIZE,0,&data),"verification map");
    std::vector<unsigned char> snapshot((size_t)row*height);memcpy(snapshot.data(),data,snapshot.size());
    int red=(int)lround((current_frame%60)/59.0*255.0),blue=255-red;
+   bool verify_hud=getenv("NVKBRIDGE_VERIFY_HUD")!=nullptr;uint32_t hud_white=0,hud_background=0;
    for (uint32_t y=0;y<height;y++) for (uint32_t x=0;x<width;x++) {
       auto p=snapshot.data()+(size_t)y*row+x*4;
+      if(verify_hud && x>=8 && x<232 && y>=8 && y<52) {
+         bool white=p[0]==255&&p[1]==255&&p[2]==255&&p[3]==255;
+         bool background=p[0]==16&&p[1]==16&&p[2]==16&&p[3]==255;
+         require(white||background,"invalid GPU HUD pixel");hud_white+=white;hud_background+=background;continue;
+      }
       if (abs((int)p[0]-blue)>1 || abs((int)p[1]-51)>1 || abs((int)p[2]-red)>1 || p[3]!=255) {
          fprintf(stderr,"PIXEL MISMATCH frame=%u x=%u y=%u BGRA=%u,%u,%u,%u expected=%d,51,%d,255\n",current_frame,x,y,p[0],p[1],p[2],p[3],blue,red);
          throw std::runtime_error("drawable pixel verification failed");
       }
    }
+   if(verify_hud)require(hud_white>100&&hud_background>100,"GPU HUD text/background is missing");
    verified_frames++;verified_bytes+=(uint64_t)row*height;UnmapMemory(device,memory);
    DestroyCommandPool(device,pool,nullptr);DestroyFence(device,fence,nullptr);DestroyBuffer(device,target,nullptr);FreeMemory(device,memory,nullptr);
 }

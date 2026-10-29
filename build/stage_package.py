@@ -189,6 +189,21 @@ def validate_wine_runtime(root, checker):
                 "dxvk/x64/d3d11.dll", "dxvk/x64/dxgi.dll", "dxvk/source-changes.patch", "DXVK-BUILD.json",
                 "LICENSES/frontend-PolyForm-Noncommercial-1.0.0.txt", "LICENSES/DXVK-zlib.txt",
                 "LICENSES/Mesa-license.rst", "LICENSES/Wine-LGPL-2.1.txt"}
+    if fields.get("vkd3d") is not None:
+        require(isinstance(fields["vkd3d"], dict) and fields["vkd3d"].get("version") == "3.1",
+                "unexpected vkd3d-proton version")
+        required.update({"vkd3d/x64/d3d12.dll", "vkd3d/x64/d3d12core.dll", "VKD3D-BUILD.json",
+                         "LICENSES/vkd3d-proton-LICENSE.txt", "LICENSES/vkd3d-proton-COPYING.txt",
+                         "LICENSES/vkd3d-proton-AUTHORS.txt"})
+    if fields.get("frontend_build") is not None:
+        require(fields["frontend_build"] == "FRONTEND-BUILD.json", "unexpected frontend provenance record")
+        required.add("FRONTEND-BUILD.json")
+    if fields.get("dlss") is not None:
+        require(isinstance(fields["dlss"], dict) and fields.get("vkd3d") is not None
+                and fields.get("presentation", {}).get("wine_child_options") == 1,
+                "DLSS needs the matched D3D12 component and Wine child option forwarding")
+        required.update({"dlss/x64/nvapi64.dll", "dlss/x64/nvngx.dll", "dlss/x64/_nvngx.dll",
+                         "DLSS-BUILD.json", "LICENSES/NVIDIA-NGX-driver-license.txt", "LICENSES/DXVK-NVAPI-MIT.txt"})
     files = fields.get("files", {})
     require(isinstance(files, dict) and required <= files.keys(), "incomplete Wine/NVK provider")
     for name, sha in files.items():

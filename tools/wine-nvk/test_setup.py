@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -32,6 +33,13 @@ def originals(system):
     for dll in ['d3d11.dll','dxgi.dll']:assert (system/dll).read_bytes()==('original '+dll).encode()
 
 run('check');checks.append('final runtime hashes, signatures, x64 DLLs and provider alias')
+previous_dyld=os.environ.get('DYLD_PRINT_LIBRARIES')
+os.environ['DYLD_PRINT_LIBRARIES']='1'
+try:run('check')
+finally:
+    if previous_dyld is None:os.environ.pop('DYLD_PRINT_LIBRARIES')
+    else:os.environ['DYLD_PRINT_LIBRARIES']=previous_dyld
+checks.append('signature validation completes with inherited library-load diagnostics')
 p,s=prefix('normal');run('install',p);run('install',p)
 assert (s/'d3d11.dll').read_bytes()==(runtime/'dxvk/x64/d3d11.dll').read_bytes()
 run('restore',p);run('restore',p);originals(s);checks.append('install, repeat install, restore, repeat restore')
@@ -100,6 +108,66 @@ data=bytearray(original);offset=int.from_bytes(data[60:64],'little');data[offset
 manifest['files']['dxvk/x64/dxgi.dll']=hashlib.sha256(data).hexdigest()
 (fixture/'nvk-wine-runtime.json').write_text(json.dumps(manifest));run('check',ok=False,root=fixture)
 checks.append('wrong DLL architecture refused independently of its hash')
+
+if json.loads((runtime/'nvk-wine-runtime.json').read_text()).get('vkd3d'):
+    def d3d12_prefix(name):
+        p,s=prefix(name)
+        for dll in ['d3d12.dll','d3d12core.dll']:(s/dll).write_bytes(('original '+dll).encode())
+        return p,s
+    def all_originals(system):
+        originals(system)
+        for dll in ['d3d12.dll','d3d12core.dll']:assert (system/dll).read_bytes()==('original '+dll).encode()
+
+    assert run('check')['supports_d3d12'] is True
+    p,s=d3d12_prefix('optional-d3d12');run('install',p)
+    assert not (p/'.nvk-vkd3d-state.json').exists()
+    assert (s/'d3d12.dll').read_bytes()==b'original d3d12.dll'
+    dxvk_state=json.loads((p/'.nvk-dxvk-state.json').read_text())
+    run('install-d3d12',p);run('install-d3d12',p);run('install',p)
+    assert json.loads((p/'.nvk-dxvk-state.json').read_text())['files']==dxvk_state['files']
+    for dll in ['d3d12.dll','d3d12core.dll']:
+        assert (s/dll).read_bytes()==(runtime/'vkd3d/x64'/dll).read_bytes()
+    run('restore',p);run('restore',p);all_originals(s)
+    checks.append('D3D12 is opt-in; existing D3D11 journal survives upgrade/repeat install; both pairs restore')
+
+    p,s=d3d12_prefix('changed-d3d12');run('install-d3d12',p)
+    saved=(s/'d3d12core.dll').read_bytes();(s/'d3d12core.dll').write_bytes(b'user replacement')
+    run('restore',p,ok=False)
+    assert (s/'dxgi.dll').read_bytes()==(runtime/'dxvk/x64/dxgi.dll').read_bytes()
+    assert (p/'.nvk-dxvk-originals/dxgi.dll').exists()
+    (s/'d3d12core.dll').write_bytes(saved);run('restore',p);all_originals(s)
+    checks.append('changed D3D12 DLL blocks rollback before either graphics pair is modified')
+
+    for phase in ['prepared','restoring']:
+        p,s=d3d12_prefix('interrupted-d3d12-'+phase);run('install-d3d12',p)
+        state=json.loads((p/'.nvk-vkd3d-state.json').read_text());state['phase']=phase
+        (s/'d3d12core.dll').unlink();(p/'.nvk-vkd3d-originals/d3d12core.dll').rename(s/'d3d12core.dll')
+        (p/'.nvk-vkd3d-state.json').write_text(json.dumps(state))
+        run('restore',p);all_originals(s)
+    checks.append('interrupted D3D12 pair installation/rollback restores all four originals')
+
+    for existing_dxvk in [False,True]:
+        p,s=d3d12_prefix('failed-d3d12-'+str(existing_dxvk))
+        if existing_dxvk:run('install',p)
+        (p/'.nvk-vkd3d-originals').mkdir()
+        run('install-d3d12',p,ok=False)
+        if existing_dxvk:
+            assert (s/'dxgi.dll').read_bytes()==(runtime/'dxvk/x64/dxgi.dll').read_bytes()
+            run('restore',p)
+        else:
+            assert not (p/'.nvk-dxvk-state.json').exists()
+        all_originals(s)
+    checks.append('failed D3D12 setup rolls back a newly added D3D11 pair and retains an existing one')
+
+    # A legacy provider still supports normal installation but must reject the
+    # D3D12 command before any prefix modifications.
+    clean=json.loads((runtime/'nvk-wine-runtime.json').read_text());clean.pop('vkd3d')
+    bad.write_bytes(original)
+    (fixture/'nvk-wine-runtime.json').write_text(json.dumps(clean))
+    assert run('check',root=fixture)['supports_d3d12'] is False
+    p,s=d3d12_prefix('legacy-provider-no-d3d12');run('install-d3d12',p,root=fixture,ok=False)
+    all_originals(s);assert not (p/'.nvk-dxvk-state.json').exists()
+    checks.append('legacy provider rejects D3D12 before changing prefix files')
 
 result={'result':'PASS','checks':checks,'scratch':str(scratch),'uses_real_native_setup':True,'wine_or_gpu_started':False}
 (args.work/'setup-tests.json').write_text(json.dumps(result,indent=2)+'\n')

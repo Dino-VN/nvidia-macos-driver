@@ -81,23 +81,33 @@ DLLs translate D3D11 to Vulkan:
 |---|---|
 | DXVK + MoltenVK | D3D11 → DXVK → Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
 | DXVK + native NVK | D3D11 → DXVK → Wine's Vulkan bridge → native NVK → NVIDIA GPU |
+| vkd3d + native NVK | D3D12 → vkd3d-proton → Wine's Vulkan bridge → native NVK → NVIDIA GPU |
 
 As with the Minecraft bridge, this removes MoltenVK's Vulkan-to-Metal conversion
-and NVMTL's Metal/AIR-to-SPIR-V translation from game rendering. Wine, DXVK and NVK
+and NVMTL's Metal/AIR-to-SPIR-V translation from game rendering. Wine, DXVK/vkd3d-proton and NVK
 shader compilation remain. The GPU still copies completed frames into Metal
-drawables for macOS presentation, without CPU pixel readback/upload. Fewer
+drawables for macOS presentation, without game-frame CPU pixel readback/upload.
+The optional HUD uploads only its small text bitmap. Fewer
 translation stages can reduce conversion overhead; **a controlled FPS improvement
 has not been measured**.
 
 Requires this fork's matching driver/runtime, Intel macOS **Sequoia 15.5+** or
 **Tahoe 26**, and a compatible x64 Wine build. This integration supports x64
-D3D11. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
+D3D11 in existing releases, with D3D12 in the new source integration. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
 Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
 GI, CN gameplay and commercial CrossOver remain unqualified.**
 
-**D3D12 via vkd3d-proton is [work in progress](nvk/wine-macos/README.md#d3d12-work-in-progress).**
-It is not included in current releases; D3D11 remains the default. ZZZ is the
-planned first D3D12 game test.
+**D3D12 and DLSS:** this fork now includes source integration for
+[vkd3d-proton 3.1](https://github.com/HighDelay/vkd3d-nvk), optional NVIDIA
+NGX/DXVK-NVAPI and a native FPS/ms HUD. ZZZ D3D12 and DLSS Super Resolution
+Quality are user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. D3D11 stays the
+default; GI/HSR retain their D3D11 route. DLSSG uses normal hardware detection
+and has not been verified; ray tracing remains unqualified.
+
+**The new driver package is not built yet.** An older D3D11-only provider does
+not gain these features from a launcher update. Use a matching future driver
+build whose helper reports `supports_d3d12` and `supports_dlss`.
+[Wine/CrossOver setup and rollback](nvk/wine-macos/INSTALL.md#d3d12-and-dlss).
 
 ### YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
 

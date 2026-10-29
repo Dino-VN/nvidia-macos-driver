@@ -26,8 +26,8 @@ CPU, but currently waits on the CPU for each presentation copy to finish.
 - The compact provider and a compatible external Wine installation. YAAGL uses
   the installed driver provider and downloads the pinned Wine build on setup.
   The full-bundle developer builder below remains available for offline probes.
-- D3D11. D3D12 via vkd3d-proton is work in progress and is not included in
-  current releases.
+- D3D11 in existing releases; D3D12/DLSS are integrated in source for the next
+  driver build, which is currently on hold.
 
 On RTX 2060 SUPER / Tahoe 26.7.1, real Windows Vulkan GPU readback and window
 presentation, two-window presentation, and a textured D3D11/DXVK probe passed.
@@ -41,18 +41,39 @@ No controlled FPS comparison has been made.
 Physical Sequoia testing, commercial CrossOver releases and other GPU families
 remain unqualified.
 
-## D3D12 work in progress
+## D3D12 and DLSS
 
-An optional vkd3d-proton integration is being developed locally for the path
-`D3D12 → vkd3d-proton → Wine Vulkan → native NVK → NVIDIA GPU`, sharing DXVK's
-DXGI component. It is not included in current driver or launcher releases.
-ZZZ is the first planned game test; its proposed DX12 toggle will remove the
-forced D3D11 argument when enabled, while D3D11 remains the default.
+D3D12 uses `D3D12 → vkd3d-proton → Wine Vulkan → native NVK → NVIDIA GPU`,
+sharing the matched DXVK DXGI component. The [vkd3d-nvk fork](https://github.com/HighDelay/vkd3d-nvk)
+packages unmodified upstream 3.1 DLLs with their exact source/archive identity.
+The macOS changes are in this Wine frontend, provider packaging and prefix
+helper. D3D11 remains the default.
 
-Host capability screening found no minimum-feature blocker on the tested RTX
-2060 SUPER. D3D12 device creation, shader execution, synchronization, presentation
-and gameplay have not been validated. This does not establish D3D12 support or
-a performance improvement.
+The local candidate passed D3D12 device creation, DXIL compute/vertex/pixel
+shaders, a 1,024-word readback, fences, 120 presentations, rendered-pixel checks
+and resize. The user confirmed ZZZ world, character and UI rendering on RTX
+2060 SUPER / Tahoe 26.7.1 / YAAGL Wine 11.0-1. D3D11 regression probes passed.
+
+Optional DLSS support supplies the unmodified NVIDIA Wine NGX pair and
+DXVK-NVAPI. The game supplies its original `nvngx_dlss.dll`. A real DLSS SR
+probe evaluated three 320×180 → 640×360 frames and checked 4,680 colour values
+with no mismatches, including a Wine child-process launch. The user confirmed
+ZZZ DLSS Quality and the native HUD. DLSSG is not blanket-blocked: the game and
+libraries keep their GPU checks. Frame generation, ray tracing, other GPUs,
+commercial CrossOver and sustained sessions remain unqualified. No speedup
+is claimed.
+
+The D3D12 HUD is a 224×44 cached bitmap copied by the GPU. A small CPU upload
+refreshes it up to four times per second; no game-frame CPU readback is added.
+It reports presentation FPS and average ms/frame, including application stalls,
+not GPU execution time. Full drawable pixel checks passed across 45 frames,
+resize and restore. Minecraft's independent frontend is unchanged.
+
+**Source is integrated; the matching driver package has not been built yet.**
+The published D3D11-only driver does not include these new components.
+[Follow the D3D12/DLSS setup guide](INSTALL.md#d3d12-and-dlss) after installing a
+matching build. YAAGL's separate D3D12 and DLSS settings default off; its HUD
+setting defaults on. ZZZ still needs YAAGL's Steam Patch and timeout fix.
 
 ## Setup with YAAGL
 
@@ -146,6 +167,22 @@ libraries and rebuild the setup helper for use with an external Wine installatio
 python3 nvk/wine-macos/provider.py \
   --base /absolute/repaired-runtime --output /absolute/new/wine-provider
 ```
+
+For the optional local D3D12 candidate, add both
+`--vkd3d-archive /absolute/vkd3d-proton-3.1.tar.zst` and
+`--vkd3d-source /absolute/vkd3d-proton-3.1-source`. Reading the `.zst` archive
+requires Python 3.14+ with Zstandard support. The builder checks upstream commit
+`4522cc1a8b1347f1ab1b0f7b14a23ed9444d95d1` and release archive SHA-256
+`b85ea8219b71093a3924913dd7aae6172333dc0c069983ed510816d67f02120b`.
+It preserves the existing DXVK pair and adds matched `vkd3d/x64/d3d12.dll` and
+`d3d12core.dll`, license notices and `VKD3D-BUILD.json`. It can also rebuild a
+validated compact provider without a bundled Wine installation.
+
+`nvk-runtime install` continues to install only D3D11/DXGI. The explicit
+`install-d3d12` command installs both graphics pairs, preserving independent
+original-file journals. `restore` checks both journals before restoring either
+pair. YAAGL's experimental ZZZ toggle requires a provider that reports
+`supports_d3d12: true`; a requested D3D12 launch on an older provider is refused.
 
 This output contains no Wine installation or prefix. It carries the frontend,
 private renderer, `libMoltenVK.dylib` alias, paired DXVK DLLs, setup helper,
@@ -243,3 +280,34 @@ overwrite unexpected user modifications. It does not require a valid runtime
 manifest, reinstalling the driver, changing NVRAM or removing Minecraft's runtime.
 
 Probe sources and rebuild commands are in [tools/wine-nvk](../../tools/wine-nvk/README.md).
+
+## Packaging the optional components
+
+Keep `/Library/GPUBundles/nvmtl/wine` as the single provider, with separate
+`dxvk/x64`, `vkd3d/x64` and `dlss/x64` groups. YAAGL does not bundle or separately
+download these libraries. Provider construction accepts an existing compact
+provider and a rebuilt Wine frontend using the exact same NVK renderer:
+
+```sh
+python3 nvk/wine-macos/provider.py --base /absolute/base-provider \
+  --frontend /absolute/wine-frontend-build --output /absolute/new-provider \
+  --vkd3d-archive /absolute/vkd3d-proton-3.1.tar.zst \
+  --vkd3d-source /absolute/clean-vkd3d-proton-3.1 \
+  --nvapi-archive /absolute/dxvk-nvapi-v0.9.2.tar.gz \
+  --nvapi-source /absolute/clean-dxvk-nvapi-0.9.2 \
+  --ngx-archive /absolute/nvidia_driver-linux-x86_64-610.57.04-archive.tar.xz
+```
+
+All archives, revisions and individual NGX/NVAPI DLL hashes are pinned in
+`provider.py`. The NVIDIA archive is downloaded from NVIDIA's redistribution
+server; only its unmodified Wine DLL pair and full driver license are extracted.
+DXVK-NVAPI's MIT license, vkd3d's LGPL/license/AUTHORS records and separate
+`VKD3D-BUILD.json`, `DLSS-BUILD.json`, `FRONTEND-BUILD.json` are included and
+covered by provider checksums. Preserve those records when updating dependencies.
+The game's DLSS feature library is not redistributed by this package.
+
+The new registry-aware helper has passed source/syntax review only so far; the
+user requested holding driver builds. Run `tools/wine-nvk/test_setup.py` and
+`test_dlss_setup.py` against the final compiled provider before its release.
+Earlier tests cover the prototype D3D12 DLL journals and actual rendering, not
+this final installer binary. No kernel components changed in this integration.
