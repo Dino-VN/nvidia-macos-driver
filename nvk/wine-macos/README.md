@@ -26,8 +26,8 @@ CPU, but currently waits on the CPU for each presentation copy to finish.
 - The compact provider and a compatible external Wine installation. YAAGL uses
   the installed driver provider and downloads the pinned Wine build on setup.
   The full-bundle developer builder below remains available for offline probes.
-- D3D11 in existing releases; D3D12/DLSS are integrated in source for the next
-  driver build, which is currently on hold.
+- D3D11, with optional D3D12/DLSS in the 2.6.4 Wine/NVK provider or newer.
+  Older D3D11-only providers reject requests for the newer features.
 
 On RTX 2060 SUPER / Tahoe 26.7.1, real Windows Vulkan GPU readback and window
 presentation, two-window presentation, and a textured D3D11/DXVK probe passed.
@@ -168,7 +168,7 @@ python3 nvk/wine-macos/provider.py \
   --base /absolute/repaired-runtime --output /absolute/new/wine-provider
 ```
 
-For the optional local D3D12 candidate, add both
+To include the optional D3D12 component, add both
 `--vkd3d-archive /absolute/vkd3d-proton-3.1.tar.zst` and
 `--vkd3d-source /absolute/vkd3d-proton-3.1-source`. Reading the `.zst` archive
 requires Python 3.14+ with Zstandard support. The builder checks upstream commit
@@ -306,8 +306,10 @@ DXVK-NVAPI's MIT license, vkd3d's LGPL/license/AUTHORS records and separate
 covered by provider checksums. Preserve those records when updating dependencies.
 The game's DLSS feature library is not redistributed by this package.
 
-The new registry-aware helper has passed source/syntax review only so far; the
-user requested holding driver builds. Run `tools/wine-nvk/test_setup.py` and
-`test_dlss_setup.py` against the final compiled provider before its release.
-Earlier tests cover the prototype D3D12 DLL journals and actual rendering, not
-this final installer binary. No kernel components changed in this integration.
+The compiled registry-aware helper passes `tools/wine-nvk/test_setup.py` and
+`test_dlss_setup.py`: 19 filesystem/setup checks and three real Wine-prefix
+scenarios cover absent, string and DWORD registry originals, repeat installs,
+tamper refusal and independent NGX/graphics rollback. The built provider also
+passes D3D11/D3D12 rendering and real DLSS evaluation on RTX 2060 SUPER/Tahoe
+26.7.1. These checks use disposable prefixes; commercial CrossOver and Sequoia
+hardware remain unqualified. No kernel source changed in this integration.

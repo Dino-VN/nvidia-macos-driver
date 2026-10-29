@@ -16,8 +16,49 @@ Before each merge:
 4. Build the affected components and check their behavior, resource lifetime and synchronization.
    Record which fork changes upstream now covers, what remains local and the validation limits.
 
-The current upstream base is **2.6.3 at `190a4d4`**, from `upstream/main`, integrated on
-2026-10-28. The preceding base was 2.6.2 at `6e37546`, integrated on 2026-10-27.
+The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integrated on
+2026-10-29. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
+
+## Upstream 2.6.4 integration
+
+Take sampler-array lowering, texture-array element routing through the per-draw
+bindless table, and bounded rewriting of older inline constexpr samplers. Keep
+the fork's typed-pointer/address-table/local-pointer and RGB10A2 `NoContraction`
+repairs, pointer-escape guards, vector-prefix bounds and GL constant-buffer path.
+Sampler arrays use one scalar descriptor per element, matching the plugin's
+count-one bindings; preserve the 16-slot and metadata/type consistency checks.
+
+Four files conflicted: the changelog and ANGLE, submission-copy and surface-
+publication fixtures. Preserve both changelog histories and the stronger fork
+fixtures: all-app ANGLE, uncertain-use/retirement state, imported-host-page and
+CPU-fallback publication locking. Do not reintroduce the excluded PR 398 foreign-
+process busy wait. Take the other upstream fixture updates; the resource-phi
+harness needs the current Cargo dependency directory via `--deps`.
+
+The added IOPCIFamily dependency in `kexts/NVRM/fb/Info.plist` already exists in
+`kexts/NVRMFB/fb/Info.plist`, which this fork builds. All plugin, NVRMFB, NVAccel
+and NVRMAGDC implementation trees remain byte-identical to their verified
+producing sources. Reuse those fork binaries, including both 15/26 accelerator
+variants, with recorded hashes. Use the official 2.6.4 RM, firmware, codecs,
+installer and version data. Repeat isolated Tahoe kernel linking with that RM;
+its executable hash differs from 2.6.3. The bundled NVK renderer is unchanged.
+
+Rebuild the merged translator and both native frontends; include the compiled
+D3D12/DLSS prefix helper and matched DXVK/vkd3d/NGX/NVAPI components. Checks pass:
+2,217 translator library tests; 43 wrapper tests with two upstream ignored and
+two private-fixture exclusions; 50 focused integrations; 36 driver host scripts;
+21 GPU shader readback cases/28 dispatches; both frontend ASan/UBSan fixtures;
+45 pixel-verified presentation frames with resize/restore per frontend; real
+D3D11/D3D12 rendering and DLSS evaluation; 19 setup checks and three real Wine
+registry/rollback scenarios. Isolated Tahoe kernel linking passes. Local records
+are under `/Volumes/Games/driver-2.6.4-review/`.
+
+The final package still needs physical boot/application testing. Sequoia kernel
+linking, other GPUs, commercial CrossOver, DLSSG and ray tracing remain
+unqualified. Earlier user-confirmed four-monitor rotation and ZZZ/HSR/DLSS
+results apply to the retained implementations, not a new boot test. Upstream
+still reports overly dark WebGL shadows; sampler/texture-array fixes do not
+establish that this separate rendering issue is resolved. No FPS gain is claimed.
 
 ## Upstream 2.6.3 integration
 
@@ -168,9 +209,9 @@ NGX/DXVK-NVAPI, and a GPU-copy bitmap HUD. ZZZ D3D12 and DLSS SR Quality were
 user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. Preserve the independent D3D11,
 vkd3d and DLSS rollback journals, prefix-local registry original, signature/hash
 validation, `WINE_NVK_*` child-process forwarding and the D3D11 default. DLSSG
-keeps normal hardware checks; frame generation and RT are unqualified. The driver
-build/release is held at the user's request; the final registry-aware helper is
-source-reviewed and needs compiled setup/rollback tests before a driver release.
+keeps normal hardware checks; frame generation and RT are unqualified. The final
+registry-aware helper now passes compiled DLL/registry rollback tests in private
+Wine prefixes. Build validation is recorded in the 2.6.4 integration above.
 
 ## Tahoe display rotation
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retain the fork's repairs while accepting the reviewed upstream 2.6.3 changes.
+"""Retain the fork's repairs while accepting the reviewed upstream changes.
 
 Functional fixtures cover new mode/audio, shader and surface interfaces. These
 comparisons protect the existing fork behavior against the pre-merge checkpoint.
@@ -9,9 +9,10 @@ import subprocess
 from test_support import ROOT, FB, method
 
 BASE = "55f9263e2a62fc7b84b1d4ffead29c426bc98a40"
+RUNTIME_BASE = "f10c4685cef027f46b92f5b11c0b6635ea309930"
 
-def historical(path):
-    return subprocess.check_output(["git", "show", BASE + ":" + path], cwd=ROOT)
+def historical(path, commit=BASE):
+    return subprocess.check_output(["git", "show", commit + ":" + path], cwd=ROOT)
 
 def same_methods(path, signatures):
     before = historical(path).decode()
@@ -19,11 +20,13 @@ def same_methods(path, signatures):
     for signature in signatures:
         assert method(before, signature) == method(after, signature), (path, signature)
 
-# These runtime/build sources were not touched by upstream 2.6.3. Protect the
-# Minecraft/Wine ABI, rollback tools and release optimization settings together.
-for path in subprocess.check_output(["git", "ls-tree", "-r", "--name-only", BASE,
+# Runtime/build code is unchanged by upstream 2.6.4. Use the separately reviewed
+# D3D12/DLSS integration checkpoint; keep the earlier framebuffer/plugin checkpoint
+# below. Documentation is reviewed independently of these implementation checks.
+for path in subprocess.check_output(["git", "ls-tree", "-r", "--name-only", RUNTIME_BASE,
                                      "nvk", "runtime", "build"], cwd=ROOT, text=True).splitlines():
-    assert (ROOT / path).read_bytes() == historical(path), path
+    if not path.endswith(".md"):
+        assert (ROOT / path).read_bytes() == historical(path, RUNTIME_BASE), path
 assert (ROOT / "translator/wrapper/src/uniform_cbuf.rs").read_bytes() == historical("translator/wrapper/src/uniform_cbuf.rs")
 
 fb_path = "kexts/NVRMFB/fb/nvrm-fb.cpp"

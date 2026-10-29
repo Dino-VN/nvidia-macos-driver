@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
         require(b.map != nullptr, "mapped coherent output");
         memset(b.map, 0xa5, 4096);
     }
-    nvk_image images[2]{}; nvk_sampler sampler{};
+    nvk_image images[2]{}; nvk_sampler sampler{}, linear_sampler{};
     const uint32_t one[3] = {1, 1, 1};
     uint32_t threads[3] = {1, 1, 1};
     const float texture_a[4] = {0.125f, 0.25f, 0.5f, 1.f};
@@ -105,17 +105,22 @@ int main(int argc, char **argv) {
         ((uint64_t *)buffers[2].map)[1] = 0x1122334455667788ull;
     }
 
-    const bool texture = mode == "texture5" || mode == "texture127" || mode == "texture1d" || mode == "storage40";
+    const bool texture_array = mode.rfind("texture-array", 0) == 0;
+    const bool sampler_array = mode.rfind("sampler-array", 0) == 0;
+    const bool texture = mode == "texture5" || mode == "texture127" || mode == "texture1d" || mode == "storage40" || texture_array || sampler_array;
     if (texture) {
         // Metal type 0 is 1D; type 2 is 2D. Vulkan format 109 is RGBA32F.
-        check(call_nvmtl_vk_image_create_typed(1, 1, 109, 16, 0, 1, 1,
+        check(call_nvmtl_vk_image_create_typed(sampler_array ? 2 : 1, 1, 109, 16, 0, 1, 1,
                                               mode == "texture1d" ? 0 : 2, 1, &images[0]), "source image");
-        check(call_nvmtl_vk_image_write(&queue, &images[0], texture_a, 16), "source upload");
-        if (mode == "storage40" || mode == "texture127") {
+        float pixels[8]; memcpy(pixels, texture_a, 16); memcpy(pixels + 4, texture_b, 16);
+        check(call_nvmtl_vk_image_write(&queue, &images[0], pixels, sampler_array ? 32 : 16), "source upload");
+        if (mode == "storage40" || mode == "texture127" || texture_array) {
             check(call_nvmtl_vk_image_create_typed(1, 1, 109, 16, 0, 1, 1, 2, 1, &images[1]), "second image");
             check(call_nvmtl_vk_image_write(&queue, &images[1], texture_b, 16), "second upload");
         }
         check(call_nvmtl_vk_sampler_create(0, 0, &sampler), "nearest sampler");
+        if (sampler_array) check(call_nvmtl_vk_sampler_create(1, 0, &linear_sampler), "linear sampler");
+        if (texture_array) ((uint64_t *)buffers[1].map)[0] = 1;
     }
 
     // Run several round-to-even, clamp and NaN controls through the same pipeline.
@@ -132,7 +137,7 @@ int main(int argc, char **argv) {
         check(call_nvmtl_vk_cmd_begin(&queue, &command), "command begin");
         for (unsigned i = 0; i < 4; i++) check(call_nvmtl_vk_bind_buffer(&command, 0, i, &buffers[i], 0), "bind buffer");
         if (texture) {
-            unsigned index = mode == "texture5" ? 5 : mode == "texture127" || mode == "storage40" ? 40 : 0;
+            unsigned index = mode == "texture5" ? 5 : mode == "texture127" || mode == "storage40" || texture_array || sampler_array ? 40 : 0;
             check(call_nvmtl_vk_bind_texture_view(&command, 0, index, images[0].view), "bind sampled image and heap slot");
             check(call_nvmtl_vk_bind_sampler(&command, 0, 2, &sampler), "bind sampler 2");
             if (mode == "texture127") {
@@ -141,6 +146,9 @@ int main(int argc, char **argv) {
                 check(call_nvmtl_vk_bind_sampler(&command, 0, 15, &sampler), "bind sampler 15");
             }
             if (mode == "storage40") check(call_nvmtl_vk_bind_storage_view(&command, 0, 40, images[1].view), "bind storage image 40");
+            if (texture_array) check(call_nvmtl_vk_bind_texture_view(&command, 0, 41, images[1].view), "bind array element 1");
+            if (texture_array || sampler_array) check(call_nvmtl_vk_bind_sampler(&command, 0, 14, &sampler), "bind array sampler 0");
+            if (sampler_array) check(call_nvmtl_vk_bind_sampler(&command, 0, 15, &linear_sampler), "bind array sampler 1");
         }
         call_nvmtl_vk_cmd_dispatch_threads(&command, &pipeline, threads, one);
         require(!command.nobind && !command.skipped, "dispatch recorded");
@@ -191,13 +199,17 @@ int main(int argc, char **argv) {
             else memcpy(result, buffers[0].map, 16);
             for (unsigned i = 0; i < 4; i++) {
                 float expected = texture_a[i] + (mode == "texture127" ? texture_b[i] : 0.f);
+                if (texture_array && mode != "texture-array0") expected = texture_b[i];
+                if (sampler_array) expected = mode == "sampler-array0" ? texture_b[i] : (texture_a[i] + texture_b[i]) * 0.5f;
                 if (result[i] != expected) fprintf(stderr, "channel %u: got %.9g expected %.9g\n", i, result[i], expected);
                 require(result[i] == expected, "texture/sampler/storage binding and pixels");
             }
+            if (texture_array || sampler_array) require(((uint32_t *)buffers[0].map)[4] == 0xa5a5a5a5, "array output bounds");
         } else require(mode == "control" && ((uint32_t *)buffers[0].map)[0] == 0x12345678, "control output");
     }
     for (auto &image : images) if (image.img) call_nvmtl_vk_image_destroy(&image);
     if (sampler.s) call_nvmtl_vk_sampler_destroy(&sampler);
+    if (linear_sampler.s) call_nvmtl_vk_sampler_destroy(&linear_sampler);
     for (auto &b : buffers) call_nvmtl_vk_buffer_destroy(&b);
     call_nvmtl_vk_pipeline_destroy(&pipeline); call_nvmtl_vk_queue_destroy(&queue);
     printf("PASS %s (%u dispatches)\n", mode.c_str(), runs);

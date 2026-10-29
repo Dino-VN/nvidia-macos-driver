@@ -1,5 +1,17 @@
 # Changelog
 
+## Fork integration with upstream 2.6.4 and native Wine D3D12
+
+- Merge upstream sampler arrays, texture-array element selection and older inline constexpr samplers while retaining the fork's translator address/rounding repairs, display/cursor fixes, all-app ANGLE policy and performance paths.
+- Add the matched vkd3d-proton 3.1 pair, optional NVIDIA Wine NGX/DXVK-NVAPI for DLSS Super Resolution, and a native FPS/ms HUD to the installed Wine/NVK provider. D3D11 stays the default; YAAGL exposes separate D3D12, DLSS and HUD options.
+- Preserve independent DLL/NGX registry backup and rollback. Compiled setup, D3D11/D3D12 rendering and real DLSS checks pass on RTX 2060 SUPER/Tahoe 26.7.1; frame generation, ray tracing and commercial CrossOver remain unqualified. See [Wine setup](nvk/wine-macos/INSTALL.md) and [merge validation](docs/FORK-MERGE-NOTES.md#upstream-264-integration).
+
+## 2.6.4
+
+- three.js scenes with two or more shadow-casting lights no longer lose their WebGL2 context in Chrome, Brave and other browsers: the shader translator refused a shader's array of samplers (#426, patch by Luminous418). Each sampler in the array now reaches the shader with its own state. Known: WebGL shadow maps still draw the whole shadowed surface dark, with one light or several (it did in 2.6.3 too); that is the next fix.
+- Arrays of textures read the right texture: every element past the first read the first one, whether the index was fixed or computed in the shader. Shadow maps, texture atlases and material arrays in games and WebGL pages were affected.
+- Machinarium, and other apps whose shaders were built with older Metal tools, draw their scenes: the translator did not recognise a sampler written directly into the shader code, and refused the shader (patch by daggersinmybackk).
+
 ## Fork translator regression repair
 
 - Repair malformed pointer address-space parsing, direct buffer-address-table access and device-pointer round-trips through local variables and callbacks.

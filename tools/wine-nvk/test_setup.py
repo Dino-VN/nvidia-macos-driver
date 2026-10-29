@@ -162,6 +162,7 @@ if json.loads((runtime/'nvk-wine-runtime.json').read_text()).get('vkd3d'):
     # A legacy provider still supports normal installation but must reject the
     # D3D12 command before any prefix modifications.
     clean=json.loads((runtime/'nvk-wine-runtime.json').read_text());clean.pop('vkd3d')
+    clean.pop('dlss',None)  # A D3D11-only provider cannot carry a DLSS dependency.
     bad.write_bytes(original)
     (fixture/'nvk-wine-runtime.json').write_text(json.dumps(clean))
     assert run('check',root=fixture)['supports_d3d12'] is False

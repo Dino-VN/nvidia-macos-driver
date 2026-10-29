@@ -93,20 +93,20 @@ has not been measured**.
 
 Requires this fork's matching driver/runtime, Intel macOS **Sequoia 15.5+** or
 **Tahoe 26**, and a compatible x64 Wine build. This integration supports x64
-D3D11 in existing releases, with D3D12 in the new source integration. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
+D3D11 and optional D3D12 with the 2.6.4 Wine/NVK provider or newer. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
 Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
 GI, CN gameplay and commercial CrossOver remain unqualified.**
 
-**D3D12 and DLSS:** this fork now includes source integration for
+**D3D12 and DLSS:** the provider includes
 [vkd3d-proton 3.1](https://github.com/HighDelay/vkd3d-nvk), optional NVIDIA
 NGX/DXVK-NVAPI and a native FPS/ms HUD. ZZZ D3D12 and DLSS Super Resolution
 Quality are user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. D3D11 stays the
 default; GI/HSR retain their D3D11 route. DLSSG uses normal hardware detection
 and has not been verified; ray tracing remains unqualified.
 
-**The new driver package is not built yet.** An older D3D11-only provider does
-not gain these features from a launcher update. Use a matching future driver
-build whose helper reports `supports_d3d12` and `supports_dlss`.
+An older D3D11-only provider does not gain these features from a launcher
+update. Install the matching 2.6.4 Wine/NVK driver build or newer; its helper
+reports `supports_d3d12` and `supports_dlss`.
 [Wine/CrossOver setup and rollback](nvk/wine-macos/INSTALL.md#d3d12-and-dlss).
 
 ### YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail

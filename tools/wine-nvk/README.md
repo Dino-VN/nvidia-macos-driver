@@ -160,7 +160,7 @@ and `WINE_NVK_HUD=fps,frametimes` validates the HUD and surrounding drawable
 pixels using a separate test-only readback. 45 frames, resize and restore passed.
 Normal presentation does not read the full game frame through the CPU.
 
-After the final driver build is authorized, validate its real installer:
+Validate the compiled provider with its real installer:
 
 ```sh
 python3 tools/wine-nvk/test_setup.py --runtime /absolute/provider --work /absolute/test-output
@@ -170,6 +170,7 @@ python3 tools/wine-nvk/test_dlss_setup.py --runtime /absolute/provider \
 
 The second test creates private prefixes, verifies repeat installs, original
 string/DWORD/absent registry values, tamper preflight and restoring NGX without
-removing D3D12. It has not run against a newly compiled final helper while the
-driver build is held. Component extraction can be tested without compilation
-with `test_provider_components.py` and the pinned input archives/source.
+removing D3D12. Both tests pass against the compiled 2.6.4 Wine/NVK provider
+on the Tahoe test host (19 setup checks and three real registry scenarios).
+Component extraction can also be tested without compilation with
+`test_provider_components.py` and the pinned input archives/source.

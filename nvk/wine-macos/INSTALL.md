@@ -33,8 +33,8 @@ depth/blend/shared-texture probes also pass.
 Genshin Impact, CN gameplay, commercial CrossOver releases, other Wine builds
 and physical Sequoia hardware have **not** been qualified.
 
-**D3D12/DLSS are integrated in source, but the new driver package is not built
-yet.** Older D3D11-only providers cannot use these features. ZZZ D3D12 and DLSS
+**D3D12/DLSS require the 2.6.4 Wine/NVK provider or newer.** Older D3D11-only
+providers cannot use these features. ZZZ D3D12 and DLSS
 Quality are confirmed on RTX 2060 SUPER / Tahoe 26.7.1;
 the instructions below continue to use the verified D3D11 route.
 
@@ -143,8 +143,8 @@ provider automatically. No CrossOver installation files are replaced.
 ## D3D12 and DLSS
 
 These commands require a driver provider that reports `supports_d3d12: true`
-and, for DLSS, `supports_dlss: true`. The currently published D3D11-only driver
-predates them; the new driver build is on hold. Use a separate initialized
+and, for DLSS, `supports_dlss: true` (2.6.4 Wine/NVK or newer). A launcher update
+alone cannot add them to an older provider. Use a separate initialized
 64-bit prefix or duplicate bottle and close its applications before setup.
 
 ### D3D12

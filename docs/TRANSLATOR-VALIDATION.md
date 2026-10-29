@@ -56,11 +56,17 @@ bounded offscreen compute kernels, finite inputs, mapped outputs and neighboring
 canaries. Coverage includes direct and helper address-table accesses, local
 pointer stores, both address-phi branches, 64-bit loads, RGB565/RGB10A2 packing,
 NaN/clamp/rounding controls, 1D textures, texture/sampler slots through 127/15,
-and distinct sampled/storage views. It records SPIR-V, disassembly and results.
+and distinct sampled/storage views. The 2.6.4 readbacks additionally distinguish
+two texture-array elements (constant and runtime indexing) and nearest/linear
+sampler-array elements at bindings 14/15. It records SPIR-V, disassembly and results.
 
-The complete library run passes **2,210 tests**, with no failures or ignored
-tests. Offscreen readbacks are checked on RTX 2060 SUPER/Tahoe 26.7.1. These are
+After merging upstream 2.6.4, the complete library run passes **2,217 tests**,
+with no failures or ignored tests. The wrapper has 43 passes, two ignored tests
+and the two private-fixture exclusions above. Fifty focused integration tests
+and 21 GPU readback cases (28 dispatches) pass. Offscreen readbacks are checked
+on RTX 2060 SUPER/Tahoe 26.7.1. These are
 correctness checks, not an FPS measurement or full application qualification.
-Framebuffer, cursor, parked-VRAM, native Minecraft/Wine NVK and DXVK binaries are
-unchanged by this repair. Boot, Sequoia and four-monitor behavior still require
-their own hardware testing.
+Framebuffer, cursor, parked-VRAM and DXVK implementations remain unchanged.
+The 2.6.4 release separately rebuilds the native frontends and adds the optional
+Wine D3D12/DLSS components. See [merge validation](FORK-MERGE-NOTES.md#upstream-264-integration)
+for package, kernel-link and hardware-test limits.

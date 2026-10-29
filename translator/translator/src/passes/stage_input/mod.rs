@@ -220,6 +220,12 @@ pub(in crate::passes) enum ParamBinding {
         var: Word,
         specialized_state: Option<StaticSamplerState>,
     },
+    /// `array<sampler, N>` arrives byval as `[N x ptr addrspace(2)]`; the whole parameter is one
+    /// Vulkan descriptor array of `OpTypeSampler`, and `materialize_sampler_array_loads` retypes
+    /// each element load to a sampler value.
+    SamplerArray {
+        var: Word,
+    },
     Buffer { var: Word, wrap: BufWrap },
     StageInput {
         var: Word,
@@ -250,27 +256,6 @@ fn declared_descriptor_counts(
     let mut declared = counts.iter().collect::<Vec<_>>();
     declared.sort();
     for (&idx, &count) in declared {
-        let is_sampler = match stage {
-            Stage::Fragment => matches!(
-                frag.and_then(|m| m.role_of(idx)),
-                Some(FragRole::Sampler(_))
-            ),
-            Stage::Vertex => matches!(
-                vert.and_then(|m| m.role_of(idx)),
-                Some(VertRole::Sampler(_))
-            ),
-            Stage::Kernel => matches!(
-                kern.and_then(|m| m.role_of(idx)),
-                Some(KernRole::Sampler(_))
-            ),
-        };
-        if is_sampler {
-            return Err(format!(
-                "entry parameter {idx} is an array of {count} samplers, which this translator has \
-                 no descriptor-array lowering for; emitting the module would sample with a \
-                 synthesized default sampler instead of the one the shader selected"
-            ));
-        }
         let texture_type_name = match stage {
             Stage::Fragment => frag.and_then(|m| m.texture_type_name(idx)),
             Stage::Vertex => vert.and_then(|m| m.texture_type_name(idx)),
@@ -745,6 +730,13 @@ pub(super) fn build_stage_input(
             )?;
             decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding);
             ctx.interface_buffer_var(var);
+            if !wtex_dims.contains_key(pid) && dim != Dim::DimBuffer {
+                // the per-draw table holds slots for texture indices 0..128; an array_ref's length is unknown
+                // (its count is that ceiling), so it reaches the indices left from its base
+                if let Some(base) = metal_texture_index.filter(|base| *base < 128) {
+                    ctx.image_array_base.insert(var, (base, descriptor_count.min(128 - base)));
+                }
+            }
             bindings.push((
                 *pid,
                 ParamBinding::ImageArray {
@@ -865,18 +857,6 @@ pub(super) fn build_stage_input(
                 },
             ));
         } else if role_is("sampler") {
-            let sty = ctx.ty_sampler();
-            let pptr = ctx.ty_ptr(StorageClass::UniformConstant, sty);
-            let var = ctx.module.fresh_id();
-            ctx.new_globals.push(Instruction::new(
-                Op::Variable,
-                Some(pptr),
-                Some(var),
-                vec![Operand::StorageClass(StorageClass::UniformConstant)],
-            ));
-            let binding = required_resource_binding(*pid, resource_binding)?;
-            decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding);
-            ctx.interface_buffer_var(var);
             let metal_index = match stage {
                 Stage::Fragment => frag.and_then(|meta| match meta.role_of(idx) {
                     Some(FragRole::Sampler(index)) => Some(*index),
@@ -892,19 +872,80 @@ pub(super) fn build_stage_input(
                 }),
             }
             .ok_or_else(|| format!("sampler parameter {pid} has no Metal sampler index"))?;
-            let specialized_state = usize::try_from(metal_index)
-                .ok()
-                .and_then(|index| ctx.runtime_sampler_states.get(index))
-                .copied()
-                .flatten()
-                .map(RuntimeSamplerState::lowering_state);
-            bindings.push((
-                *pid,
-                ParamBinding::Sampler {
-                    var,
-                    specialized_state,
-                },
-            ));
+            let declared_count = match stage {
+                Stage::Fragment => frag.and_then(|meta| meta.declared_descriptor_count(idx)),
+                Stage::Vertex => vert.and_then(|meta| meta.declared_descriptor_count(idx)),
+                Stage::Kernel => kern.and_then(|meta| meta.declared_descriptor_count(idx)),
+            };
+            // `array<sampler, N>` arrives byval as `[N x ptr addrspace(2)]`: every element is its
+            // own descriptor, at its own sampler index. The plugin's layout declares one sampler
+            // per binding (count 1), so the elements become N sampler variables at consecutive
+            // bindings, and the resource pass turns each constant element load into a load of its
+            // variable. One `[N x sampler]` variable at the first binding compiled, but on NVK its
+            // element 1 read past that count-1 binding and sampled with the wrong sampler (GPU
+            // probe 10-28: linear sampler in slot 1 returned the nearest result).
+            let array_count = declared_count.filter(|count| *count > 1);
+            if let Some(count) = array_count {
+                let pointee = ptr_pointee(&defs, *pty).ok_or_else(|| {
+                    format!("sampler array parameter {pid} type {pty} is not a pointer")
+                })?;
+                let llvm_count = array_type(&defs, pointee).map(|(_, length)| length);
+                if llvm_count != Some(count) {
+                    return Err(format!(
+                        "entry parameter {idx} occupies {count} sampler descriptors per \
+                         `air.location_index`, but its type states {llvm_count:?}; emitting the \
+                         module would size the descriptor array from an ABI its type contradicts"
+                    ));
+                }
+                // every element is a variable and a binding of its own: the count comes from the shader,
+                // so it is held to the sampler indices a stage has
+                if metal_index.checked_add(count).is_none_or(|end| end > crate::reflect::SAMPLER_ARGUMENT_COUNT) {
+                    return Err(format!(
+                        "entry parameter {idx} is an array of {count} samplers from index {metal_index}, \
+                         past the {} sampler indices a stage has",
+                        crate::reflect::SAMPLER_ARGUMENT_COUNT
+                    ));
+                }
+            }
+            let sty = ctx.ty_sampler();
+            let pptr = ctx.ty_ptr(StorageClass::UniformConstant, sty);
+            let binding = required_resource_binding(*pid, resource_binding)?;
+            let mut elements = Vec::new();
+            for element in 0..array_count.unwrap_or(1) {
+                let var = ctx.module.fresh_id();
+                ctx.new_globals.push(Instruction::new(
+                    Op::Variable,
+                    Some(pptr),
+                    Some(var),
+                    vec![Operand::StorageClass(StorageClass::UniformConstant)],
+                ));
+                decorate_binding(&mut ctx.module, var, descriptor_layout.set, binding + element);
+                ctx.interface_buffer_var(var);
+                elements.push(var);
+            }
+            let var = elements[0];
+            match array_count {
+                Some(_) => {
+                    // the parameter is spliced to element 0; the element loads name it as their root
+                    ctx.sampler_array_vars.insert(var, elements);
+                    bindings.push((*pid, ParamBinding::SamplerArray { var }));
+                }
+                None => {
+                    let specialized_state = usize::try_from(metal_index)
+                        .ok()
+                        .and_then(|index| ctx.runtime_sampler_states.get(index))
+                        .copied()
+                        .flatten()
+                        .map(RuntimeSamplerState::lowering_state);
+                    bindings.push((
+                        *pid,
+                        ParamBinding::Sampler {
+                            var,
+                            specialized_state,
+                        },
+                    ));
+                }
+            }
         } else if is_threadgroup_buffer {
             let pointee = ptr_pointee(&defs, *pty)
                 .ok_or_else(|| format!("threadgroup param {pid} type {pty} is not a pointer"))?;

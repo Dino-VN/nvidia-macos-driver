@@ -138,6 +138,36 @@ ll = fixture('textures', 'native_sampled_and_storage_views_of_one_metal_texture_
 body = '  %s = call { <4 x float>, i8 } @air.read_texture_2d.v4f32(ptr addrspace(1) %source, <2 x i32> zeroinitializer, i32 0, i32 0)\n  %c = extractvalue { <4 x float>, i8 } %s, 0\n  call void @air.write_texture_2d.v4f32(ptr addrspace(1) %dest, <2 x i32> zeroinitializer, <4 x float> %c, i32 0, i32 0)\n'
 kernels['storage40'] = replace(ll, 'entry:\n  ret void', 'entry:\n' + body + '  ret void') + '\ndeclare { <4 x float>, i8 } @air.read_texture_2d.v4f32(ptr addrspace(1), <2 x i32>, i32, i32)\ndeclare void @air.write_texture_2d.v4f32(ptr addrspace(1), <2 x i32>, <4 x float>, i32, i32)\n'
 
+# Two differently colored images and nearest/linear samplers distinguish array
+# elements on the GPU, including the last sampler binding and a runtime index.
+for mode in ['texture-array0', 'texture-array1', 'texture-array-dynamic', 'sampler-array0', 'sampler-array1']:
+    textures = mode.startswith('texture-')
+    declarations = ('ptr byval([2 x ptr addrspace(1)]) %textures, ptr addrspace(2) %sampler' if textures
+                    else 'ptr addrspace(1) %tex, ptr byval([2 x ptr addrspace(2)]) %samplers')
+    index = '%index' if mode.endswith('dynamic') else mode[-1]
+    body = ('  %index = load i64, ptr addrspace(1) %input, align 8\n' if mode.endswith('dynamic') else '')
+    body += (f'  %slot = getelementptr inbounds [2 x ptr addrspace(1)], ptr %textures, i32 0, i64 {index}\n'
+             '  %tex = load ptr addrspace(1), ptr %slot, align 8\n' if textures else
+             f'  %slot = getelementptr inbounds [2 x ptr addrspace(2)], ptr %samplers, i32 0, i32 {index}\n'
+             '  %sampler = load ptr addrspace(2), ptr %slot, align 8\n')
+    body += sample2d('sample', 'tex', 'sampler')
+    body += '  %color = extractvalue { <4 x float>, i8 } %sample, 0\n  store <4 x float> %color, ptr addrspace(1) %out, align 16\n  ret void\n'
+    texture_type = 'array<texture2d<float, sample>, 2>' if textures else 'texture2d<float, sample>'
+    sampler_type = 'sampler' if textures else 'array<sampler, 2>'
+    kernels[mode] = f'''define void @k({declarations}, ptr addrspace(1) %out, ptr addrspace(1) %input) {{
+entry:
+{body}}}
+{SAMPLE_DECL}
+!air.kernel = !{{!0}}
+!0 = !{{ptr @k, !1, !2}}
+!1 = !{{}}
+!2 = !{{!3, !4, !5, !6}}
+!3 = !{{i32 0, !"air.texture", !"air.location_index", i32 40, i32 {2 if textures else 1}, !"air.sample", !"air.arg_type_name", !"{texture_type}", !"air.arg_name", !"tex"}}
+!4 = !{{i32 1, !"air.sampler", !"air.location_index", i32 14, i32 {1 if textures else 2}, !"air.arg_type_name", !"{sampler_type}", !"air.arg_name", !"sampler"}}
+!5 = !{{i32 2, {BUFFER_OUT}}}
+!6 = !{{i32 3, !"air.buffer", !"air.location_index", i32 1, i32 1, !"air.read", !"air.address_space", i32 1, !"air.arg_type_size", i32 8, !"air.arg_type_align_size", i32 8, !"air.arg_type_name", !"ulong*", !"air.arg_name", !"input"}}
+'''
+
 translator = ctypes.CDLL(str(args.translator.resolve()))
 translator.nvmtl_translate.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
 translator.nvmtl_translate.restype = ctypes.c_int
