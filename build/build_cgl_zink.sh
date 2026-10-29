@@ -5,7 +5,6 @@ if [ "$#" -ne 2 ]; then
   echo "usage: build_cgl_zink.sh ZINK_OUTPUT CGL_BUILD_DIRECTORY" >&2; exit 2
 fi
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-[ "$(sw_vers -buildVersion)" = 25G241 ] || { echo 'CGL private ABI is verified only on 25G241.' >&2; exit 2; }
 ZINK_OUTPUT=$(cd "$1" && pwd)
 mkdir -p "$2"
 CGL_BUILD=$(cd "$2" && pwd)
@@ -18,7 +17,7 @@ clang -arch x86_64 -mmacosx-version-min=15.5 -fobjc-arc -fblocks -O2 -Wall -Wext
   -Wno-deprecated-declarations -fvisibility=hidden -c "$REPO/zink/native_drawable.m" \
   -o "$CGL_BUILD/native_drawable.o"
 clang -arch x86_64 -mmacosx-version-min=15.5 -std=c11 -O2 -Wall -Wextra -Werror -Wno-deprecated-declarations \
-  -fvisibility=hidden -DNVK_CGL_OS_BUILD=\""$CGL_OS_BUILD"\" \
+  -fvisibility=hidden \
   -I"$REPO/zink" -I"$CGL_BUILD" "$REPO/zink/nvk_cgl.c" "$CGL_BUILD/appkit.o" "$CGL_BUILD/native_drawable.o" \
   -dynamiclib -L"$ZINK_OUTPUT" -lnvk_zink -framework Cocoa -framework OpenGL -framework IOSurface -framework CoreFoundation -framework QuartzCore -framework Metal -framework IOKit \
   -Wl,-rpath,@loader_path -Wl,-rpath,/Library/GPUBundles/nvmtl \
@@ -40,4 +39,4 @@ clang++ -arch x86_64 -mmacosx-version-min=15.5 -std=c++17 -fobjc-arc -O2 \
 cp "$CGL_BUILD/cgl-dispatch-map.json" "$ZINK_OUTPUT/"
 for name in cgl_zink_probe cgl_zink_legacy_probe cgl_zink_window_probe zink_native_present_probe; do codesign --force --sign - "$ZINK_OUTPUT/$name"; done
 python3 "$REPO/build/record_zink_runtime.py" "$ZINK_OUTPUT" cgl
-echo "Native CGL adapters built for macOS $CGL_OS_BUILD: $ZINK_OUTPUT/libnvk_cgl.dylib"
+echo "Native CGL adapters generated on macOS $CGL_OS_BUILD: $ZINK_OUTPUT/libnvk_cgl.dylib"

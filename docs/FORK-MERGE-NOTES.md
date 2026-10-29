@@ -24,8 +24,12 @@ The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integ
 Preserve `zink/` and its pinned Mesa overlay, build/packaging tools and local
 validation probes. The native GLD is intended to select Zink/NVK automatically
 for normal OpenGL apps and OpenGL Minecraft, without a mod, attach call or
-launch argument. Its private CGL ABI currently requires x86_64 Tahoe 25G241;
-do not broaden that gate without recovering and testing the new build's ABI.
+launch argument. Its private CGL ABI was tested on x86_64 Tahoe 25G241.
+The user requested removal of the exact OS-build activation/build/install gate
+on 2026-10-30 and will test later macOS updates. Preserve that policy: a build
+number change alone must not disable Zink. Private ABI changes can still
+require a repair. Keep build provenance, symbol/slot/profile/device checks
+and the current Tahoe accelerator selection; these are not an OS-build whitelist.
 The Zink package builder selects the GLD by default. Keep the original complete
 base-package builder and its Minecraft/Wine/dual-OS support, then add the Zink
 payload with `build/package_zink.py`. A local test build is not a release.
@@ -41,7 +45,7 @@ must have one serial return only after every other waiter leaves. Compare an
 equivalent upstream fix before removing either repair. Preserve the descriptor-
 set, staging-upload and bounded texture-worker fixes in the pinned overlay.
 
-Preserve native GLD rollback/build gating and external-kext preservation during
+Preserve native GLD rollback, build provenance and external-kext preservation during
 both preflight and live kernel-collection builds. Do not replace permanent
 external kext paths with disposable preflight paths. See
 [Zink integration review](ZINK-PR2-REVIEW.md) for the review and validation limits.

@@ -43,7 +43,9 @@ copies into native drawables, using the Minecraft bridge's VRAM handoff
 protocol. Metal allocation and macOS composition remain.
 
 This currently requires an explicitly built local Zink package and Intel
-**Tahoe 26.7.1 / 25G241**; ordinary packages keep Apple's OpenGL renderer.
+**Tahoe 26**; testing covers **26.7.1 / 25G241**. There is no exact macOS-build
+activation guard: later updates can keep using the runtime if Apple's private
+CGL ABI remains compatible. Ordinary packages keep Apple's OpenGL renderer.
 Focused GPU/CGL checks do not qualify full games, another OS build or an FPS
 gain. See the [integration review](docs/ZINK-PR2-REVIEW.md) and
 [local testing/install guide](docs/COMBINED-INSTALL.md).

@@ -41,11 +41,14 @@ def main():
         ('native-gld-auto','zink_native_present_probe',['automatic','default'],True,None),
         ('native-gld-worker','zink_native_present_probe',['automatic','worker','transparent'],True,'native'),
         ('native-multiple-windows','zink_native_present_probe',['automatic','windows'],True,'native'),
+        ('native-updated-os-build','zink_native_present_probe',['automatic','default'],True,None),
     ]
     results = []
     for name,binary,options,automatic,mode in cases:
         env = dict(os.environ,NVKZINK_REQUIRE_GPU='1')
         env.pop('DYLD_INSERT_LIBRARIES',None);env.pop('NVKZINK_PRESENT',None)
+        env.pop('ZINK_TEST_OS_BUILD',None)
+        if name == 'native-updated-os-build': env['ZINK_TEST_OS_BUILD']='25G242'
         if mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
         if automatic:
             env.update(ZINK_TEST_GLD_BUNDLE=str(runtime/'NVKZinkGLDriver.bundle'),DYLD_INSERT_LIBRARIES=str(shim))

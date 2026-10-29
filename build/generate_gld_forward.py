@@ -10,8 +10,6 @@ import sys
 
 if len(sys.argv) != 2:
     raise SystemExit('usage: generate_gld_forward.py NEW_BUILD_DIRECTORY')
-if subprocess.check_output(['sw_vers', '-buildVersion'], text=True).strip() != '25G241':
-    raise SystemExit('GLD proxy ABI has only been verified on 25G241')
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 apple = '/System/Library/Extensions/AppleMetalOpenGLRenderer.bundle/Contents/MacOS/AppleMetalOpenGLRenderer'

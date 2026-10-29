@@ -1,7 +1,7 @@
 # Local native OpenGL test package
 
 This is a complete fork driver package with an **optional Zink/NVK OpenGL
-renderer**, built for Intel macOS **26.7.1 / 25G241**. It includes the existing
+renderer**, tested on Intel macOS **26.7.1 / 25G241**. It includes the existing
 Minecraft and Wine runtimes. This local build has not been installed or
 boot-tested by the integration review, and no GitHub release has been published.
 
@@ -19,8 +19,11 @@ sudo ./install.sh
 ```
 
 Alternatively double-click `Install.command`. Follow its approval and reboot
-instructions. The installer rejects another OS build, verifies payload and
-kernel linking, backs up the previous driver and preserves its boot fallback.
+instructions. The installer verifies payload and kernel linking, backs up the
+previous driver and preserves its boot fallback. It accepts later Tahoe builds
+without an exact-build whitelist. Zink can continue working without rebuilding
+when Apple's private CGL ABI remains compatible; changes to that ABI still
+require updating the adapter. Other OS builds have not been hardware-tested.
 It installs `NVKZinkGLDriver.bundle` in `/Library/GPUBundles` and selects it only
 for the Tahoe accelerator. Existing OpenCore/SIP requirements still apply;
 no System volume mounting or authenticated-root change is needed.

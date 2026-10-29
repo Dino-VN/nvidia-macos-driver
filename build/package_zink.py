@@ -73,8 +73,8 @@ def stage(base, zink, output, components=None, native_gld=False):
         build = (zink / 'cgl-os-build.txt').read_text().strip()
         if info.get('NVKZinkDiagnosticOnly') or not info.get('NVKZinkExperimentalGLD'):
             raise ValueError('A diagnostic GLD cannot be used for native installation')
-        if info.get('NVKZinkVerifiedOSBuild') != build or build != '25G241':
-            raise ValueError('GLD and CGL verified OS builds differ')
+        if not build or info.get('NVKZinkBuildOS') != build:
+            raise ValueError('GLD and CGL build provenance differ')
         base_tools.regular(zink / 'gld_bundle_probe')
     provenance = json.loads((zink/'NATIVE-BUILD.json').read_text())
     if provenance.get('renderer_original_sha256') != base_tools.digest(base/BASE_RUNTIME/'libvulkan_nouveau.dylib'):
@@ -235,7 +235,7 @@ def main():
     ap.add_argument('--components', type=Path, help='Deprecated; use build/stage_package.py to prepare matched components first')
     ap.add_argument('--stage', required=True, type=Path)
     ap.add_argument('--archive', required=True, type=Path)
-    ap.add_argument('--native-gld', action='store_true', default=True, help='Select native Zink OpenGL for applications (default; macOS 25G241 only)')
+    ap.add_argument('--native-gld', action='store_true', default=True, help='Select native Zink OpenGL for applications (default; Tahoe accelerator)')
     ap.add_argument('--explicit-cgl-only', action='store_false', dest='native_gld', help='Developer-only package: do not select a system GLD')
     args = ap.parse_args()
     if args.archive.exists(): raise SystemExit('Archive already exists')

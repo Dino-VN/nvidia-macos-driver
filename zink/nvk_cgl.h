@@ -5,8 +5,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Experimental native CGL dispatch bridge, bound to the OS build used to
- * generate it. Attach before the application creates GL objects. CGL contexts
+/* Native CGL dispatch bridge using Apple's private object layout. OS build
+ * numbers are not gated; ABI changes require updating the adapter. Attach
+ * before the application creates GL objects. CGL contexts
  * retain their identity and drawable; public GL core calls then use Zink.
  * The caller must serialize access with CGLLockContext and detach before
  * destroying the context. Serialize attachment/detachment in a share group.

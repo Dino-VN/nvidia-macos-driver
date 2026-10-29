@@ -192,10 +192,7 @@ ok "every file matches SHA256SUMS and both OS accelerators are present"
 GLD_BUNDLE=""
 if [ -d "$HERE/Library/GPUBundles/NVKZinkGLDriver.bundle" ]; then
   GLD_BUNDLE=NVKZinkGLDriver.bundle
-  GLD_INFO="$HERE/Library/GPUBundles/$GLD_BUNDLE/Contents/Info.plist"
-  GLD_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :NVKZinkVerifiedOSBuild' "$GLD_INFO" 2>/dev/null) || die "native GLD build identity is missing"
-  [ "$GLD_BUILD" = "$BUILD" ] || die "this native OpenGL package requires macOS build $GLD_BUILD; this Mac runs $BUILD (no driver changes made)"
-  [ "$MAJ" = 26 ] || die "native GLD is currently verified only on macOS 26 (no driver changes made)"
+  [ "$MAJ" = 26 ] || die "this native GLD package selects the macOS 26 accelerator (no driver changes made)"
   [ -x "$HERE/Library/GPUBundles/nvmtl/zink/gld_bundle_probe" ] || die "native GLD lookup checker is missing"
 fi
 RUNTIME_PREFLIGHT="$SELF/nullmoth-runtime-check.sh"

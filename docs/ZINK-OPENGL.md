@@ -33,11 +33,19 @@ ICD, Minecraft's runtime, Wine's provider or their paired DXVK/vkd3d DLLs.
 
 ## Compatibility and limits
 
-The native GLD/CGL adapter currently requires **x86_64 macOS 26.7.1, build
-25G241**. Its private dispatch layout was recovered on that build; rebuilding
-without validating the ABI does not qualify another OS build. The standalone
-Mesa/NVK binaries target macOS 15.5, but that does **not** establish native CGL
-support on Sequoia. Installation of the GLD package rejects another build.
+The native GLD/CGL adapter is tested on **x86_64 macOS 26.7.1, build
+25G241**. It does not restrict activation to an exact macOS build number.
+If Apple's private CGL layout and required exports remain compatible, an
+installed runtime can continue selecting Zink after a macOS update without
+rebuilding. The build recorded in the package is provenance, not an activation
+whitelist. The user requested this policy and will test macOS updates.
+
+Apple's private ABI is still an assumption: a layout change can require an
+adapter update and can break OpenGL before a clean fallback is possible. Existing
+symbol/profile/device checks remain; they do not prove full layout compatibility.
+The package currently selects only the **Tahoe/macOS 26 accelerator**. The
+standalone Mesa/NVK binaries target macOS 15.5, but that does **not** establish
+native CGL support on Sequoia or another major macOS release.
 
 The adapter covers core 3.2/4.1 and legacy compatibility CGL contexts through the
 entrypoints exposed by the current Apple SDK/framework. Mesa reporting OpenGL
@@ -90,7 +98,9 @@ Use a separate, clean Mesa checkout at
 [`17ca6174dcc6cb22059ac343bc29f8af7800f42e`](https://gitlab.freedesktop.org/mesa/mesa/-/commit/17ca6174dcc6cb22059ac343bc29f8af7800f42e).
 Do not apply this overlay to the Mesa tree producing the installed NVMTL plugin.
 The builder checks the source identity before applying its small Darwin/Zink
-patch. It retains descriptor sets for Darwin NVK, staging/GPU texture uploads
+patch. Dispatch generation uses the local Apple symbols/slots and refuses
+unrecognized conventions; it does not whitelist a particular OS build. It retains
+descriptor sets for Darwin NVK, staging/GPU texture uploads
 instead of host image copies, and bounded inline texture uploads on the render
 worker. Other drivers retain their existing upload threshold.
 

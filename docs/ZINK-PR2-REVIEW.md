@@ -56,11 +56,35 @@ remain in their original driver; they do not execute the game's shaders.
   Keep all Zink files in `nvmtl/zink`, preserve framework symlinks, exclude Finder
   metadata, retain version data and package with top-level `pkgroot/`.
 - Use the normal `/Library/GPUBundles` GLD lookup path. Remove the obsolete
-  writable-System-volume staging helper. Reject another OS build and retain
-  installer rollback, trusted-lookup checking and the existing boot fallback.
+  writable-System-volume staging helper. Retain installer rollback, trusted-lookup
+  checking and the existing boot fallback.
 - Preserve approved external kexts such as MacPorts macFUSE when rebuilding the
   auxiliary collection, using permanent source paths for preflight and live
   builds. Reject an unsafe/missing source before modifying installed files.
+
+## macOS update policy
+
+At the user's request on 2026-10-30, remove the original exact-build guard from
+GLD/CGL activation, dispatch generation, installation and package verification.
+Automatic Zink selection continues on later Tahoe builds if Apple's private ABI
+remains compatible. `NVKZinkBuildOS` and `cgl-os-build.txt` identify the build
+used to generate the paired components; they do not restrict the installed OS.
+The user will test updates and request adapter changes when the layout changes.
+Existing symbol/profile/device checks, package pairing and Tahoe accelerator
+selection remain. A build number alone cannot prove or disprove compatibility.
+
+The version-policy regression reports a different `kern.osversion` only inside
+the probe process, then exercises automatic GLD selection and native GPU
+presentation against the unchanged host Apple binaries. Installer fixtures model
+a different Tahoe version/build, and packaging accepts newly generated matched
+components while rejecting mixed provenance. This does not qualify a future
+macOS binary or change the real OS version.
+
+The updated runtime passes 20 bounded GPU/CGL cases, including all 12 native
+frames with the simulated build. The original guarded binary fails that same
+version-policy control. All 17 package and eight native-installer cases pass,
+including matched components built on a different build and an installation
+fixture for Tahoe 26.7.2. Existing installer regression scripts also pass.
 
 ## Validation
 

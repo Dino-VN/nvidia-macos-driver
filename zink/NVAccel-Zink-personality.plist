@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The package builder adds this key to the complete Tahoe personality on
-     verified build 25G241. Keep the remaining fork personality keys unchanged. -->
+     macOS 26. Keep the remaining fork personality keys unchanged. -->
 <plist version="1.0"><dict>
 <key>IOGLBundleName</key><string>NVKZinkGLDriver</string>
 </dict></plist>

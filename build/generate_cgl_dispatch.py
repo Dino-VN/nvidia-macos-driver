@@ -46,9 +46,6 @@ def main():
     ap.add_argument('probe', type=Path)
     ap.add_argument('output', type=Path)
     args = ap.parse_args()
-    os_build = subprocess.check_output(['sw_vers', '-buildVersion'], text=True).strip()
-    if os_build != '25G241':
-        raise SystemExit('Verify CGL/GLI object layouts and swap lifecycle before porting this generator to ' + os_build)
     args.output.mkdir(parents=True, exist_ok=True)
     sdk = subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip()
     headers = Path(sdk) / 'System/Library/Frameworks/OpenGL.framework/Headers'

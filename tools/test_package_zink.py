@@ -149,14 +149,14 @@ class PackageZinkTests(unittest.TestCase):
         self.bundle(bundle, 'NVKZinkGLDriver')
         info = bundle / 'Contents/Info.plist'
         data = plistlib.loads(info.read_bytes())
-        data.update(NVKZinkExperimentalGLD=True, NVKZinkVerifiedOSBuild=build,
+        data.update(NVKZinkExperimentalGLD=True, NVKZinkBuildOS=build,
                     NVKZinkDiagnosticOnly=diagnostic)
         info.write_bytes(plistlib.dumps(data))
         self.put(self.zink / 'gld_bundle_probe', b'lookup checker')
         record(self.zink,'gld')
         self.zink_original = self.snapshot(self.zink)
 
-    def test_native_stage_selects_only_verified_tahoe_accelerators(self):
+    def test_native_stage_selects_only_tahoe_accelerators(self):
         self.native_bundle()
         self.stage(native_gld=True)
         self.unchanged()
@@ -175,11 +175,18 @@ class PackageZinkTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.unchanged()
 
-    def test_native_stage_rejects_unverified_os_pairing(self):
+    def test_native_stage_rejects_mismatched_component_provenance(self):
         self.native_bundle(build='25H999')
-        with self.assertRaisesRegex(ValueError, 'verified OS builds differ'):
+        with self.assertRaisesRegex(ValueError, 'build provenance differ'):
             self.stage(native_gld=True)
         self.assertFalse(self.out.exists())
+        self.unchanged()
+
+    def test_native_stage_accepts_components_generated_on_a_new_build(self):
+        (self.zink/'cgl-os-build.txt').write_text('25G242\n')
+        record(self.zink,'cgl')
+        self.native_bundle(build='25G242')
+        self.stage(native_gld=True)
         self.unchanged()
 
     def test_installer_command_passes_payload_flag_and_preserves_spaces(self):

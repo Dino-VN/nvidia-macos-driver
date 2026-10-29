@@ -23,9 +23,12 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>BNDL</string>
 <key>CFBundleVersion</key><string>0.1.0</string>
 <key>NVKZinkExperimentalGLD</key><true/>
-<key>NVKZinkVerifiedOSBuild</key><string>25G241</string>
 </dict></plist>
 PLIST
+# Record where these GLD exports were generated. Packaging checks the paired
+# CGL provenance; neither value restricts the macOS build allowed to load it.
+GLD_OS_BUILD=$(sw_vers -buildVersion)
+/usr/libexec/PlistBuddy -c "Add :NVKZinkBuildOS string $GLD_OS_BUILD" "$BUNDLE/Contents/Info.plist"
 codesign --force --sign - "$BUNDLE"
 clang -arch x86_64 -mmacosx-version-min=15.5 -Wall -Wextra -Werror \
   "$REPO/tools/gld_bundle_probe.c" -o "$ZINK_OUTPUT/gld_bundle_probe"

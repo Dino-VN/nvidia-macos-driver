@@ -14,7 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/sysctl.h>
 
 #define EXPORT __attribute__((visibility("default")))
 #define PREFIX_BYTES 0x1e80
@@ -229,16 +228,9 @@ static void missing_entrypoint(const char *name)
 #include "cgl_dispatch.inc"
 _Static_assert(sizeof(entries) / sizeof(entries[0]) <= MAX_ENTRIES, "adapter inventory too large");
 
-static bool supported_os(void)
-{
-   char build[128]; size_t length = sizeof(build);
-   return sysctlbyname("kern.osversion", build, &length, NULL, 0) == 0 &&
-          strcmp(build, NVK_CGL_OS_BUILD) == 0;
-}
-
 __attribute__((constructor)) static void initialize_appkit_compatibility(void)
 {
-   if (supported_os()) nvk_cgl_install_lwjgl_appkit();
+   nvk_cgl_install_lwjgl_appkit();
 }
 
 static bool native_surface_copy_context(void)
@@ -287,7 +279,7 @@ static void use_zink(struct nvk_cgl_bridge *b)
  * The GLD proxy owns this registration and calls destroy during teardown. */
 EXPORT int nvk_cgl_prepare_gld(void *engine, void *driver)
 {
-   if (!supported_os() || !engine || !driver) return 0;
+   if (!engine || !driver) return 0;
    if (native_surface_copy_context()) return 0;
    unsigned char profile = *(unsigned char *)((char *)engine + 0xc6a6);
    if (profile > 1) return 0;
@@ -376,7 +368,6 @@ EXPORT void nvk_cgl_destroy_gld(void *driver)
 EXPORT int nvk_cgl_attach(CGLContextObj context, unsigned width, unsigned height)
 {
    last_error = NULL;
-   if (!supported_os()) return fail("CGL dispatch ABI requires rebuilding for this macOS build");
    if (!context || context != CGLGetCurrentContext() || !width || !height)
       return fail("Attach requires a current CGL context and nonzero dimensions");
    GLint profile = 0;

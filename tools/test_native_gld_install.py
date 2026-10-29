@@ -28,7 +28,7 @@ class NativeGLDInstall(Install):
             info.write_bytes(plistlib.dumps(data))
         self.gld_info = self.payload / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/Info.plist'
         self.gld_info.parent.mkdir(parents=True)
-        self.gld_info.write_bytes(plistlib.dumps({'NVKZinkVerifiedOSBuild': '25G241'}))
+        self.gld_info.write_bytes(plistlib.dumps({'NVKZinkBuildOS': '25G241'}))
         binary = self.gld_info.parent / 'MacOS/NVKZinkGLDriver'
         binary.parent.mkdir()
         load = struct.pack('<6I', 0x32, 24, 1, 0x000f0500, 0x000f0500, 0)
@@ -90,13 +90,16 @@ class NativeGLDInstall(Install):
         self.assert_restored(self.run_install(FAKE_GLD_LOOKUP_FAIL='1'))
         self.assertFalse(plugin.exists())
 
-    def test_other_build_is_rejected_before_live_replacement(self):
-        self.gld_info.write_bytes(plistlib.dumps({'NVKZinkVerifiedOSBuild': '25H999'}))
-        self.refresh_manifest()
+    def test_os_update_keeps_native_gld_selection(self):
+        tool = self.bin/'sw_vers'
+        tool.write_text(tool.read_text().replace("'25G241' if", "'25G242' if"))
+        self.env['FAKE_OS_VERSION'] = '26.7.2'
         result = self.run_install()
-        self.assert_restored(result)
-        self.assertIn('requires macOS build 25H999', result.stdout + result.stderr)
-        self.assertFalse((self.root / 'creates').exists())
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assert_creates(2)
+        info = self.root/'Library/Extensions/NVAccel.kext/Contents/Info.plist'
+        self.assertEqual(plistlib.loads(info.read_bytes())['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
+        self.assertEqual((self.root/'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver').read_bytes(),self.new_gld)
 
     def external_extension(self):
         # Model an approved macFUSE-style bundle outside /Library/Extensions.

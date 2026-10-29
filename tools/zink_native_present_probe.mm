@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <initializer_list>
+#include <sys/sysctl.h>
 
 static unsigned verified;
 static unsigned red = 255, green_value = 255;
@@ -114,6 +115,13 @@ int main(int argc, char **argv)
          else require(false, "Unknown option");
       }
       if (defaults) unsetenv("NVKZINK_PRESENT"); else setenv("NVKZINK_PRESENT", "native", 1);
+      const char *expected_build = getenv("ZINK_TEST_OS_BUILD");
+      if (expected_build) {
+         char observed[128]; size_t length = sizeof(observed);
+         require(!sysctlbyname("kern.osversion",observed,&length,nullptr,0) &&
+                 !strcmp(observed,expected_build),"Process-local OS build simulation must be active");
+         printf("Process-local simulated OS build: %s; actual CGL layout is unchanged\n",observed);
+      }
       setenv("VK_DRIVER_FILES", argv[2], 1);
       void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL); require(library, dlerror() ?: "CGL load");
       auto attach = (int(*)(CGLContextObj,unsigned,unsigned))dlsym(library, "nvk_cgl_attach");

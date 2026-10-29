@@ -5,18 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/sysctl.h>
 
 #define EXPORT __attribute__((visibility("default")))
 #include "gld_forward.inc"
 static int available;
-static int verified;
 
 __attribute__((constructor)) static void initialize(void)
 {
-   char build[128]; size_t length = sizeof(build);
-   verified = sysctlbyname("kern.osversion", build, &length, NULL, 0) == 0 &&
-              strcmp(build, "25G241") == 0;
    void *apple = dlopen("/System/Library/Extensions/AppleMetalOpenGLRenderer.bundle/Contents/MacOS/AppleMetalOpenGLRenderer",
                         RTLD_NOW | RTLD_LOCAL);
    if (!apple) { fprintf(stderr, "NVKZinkGLDriver: %s\n", dlerror()); return; }
@@ -32,7 +27,7 @@ __attribute__((constructor)) static void initialize(void)
 
 EXPORT int gldGetVersion(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
 {
-   if (!available || !verified) return 0;
+   if (!available) return 0;
    return ((int (*)(uint32_t *, uint32_t *, uint32_t *, uint32_t *))gld_targets[GLD_INDEX_gldGetVersion])(a,b,c,d);
 }
 
@@ -42,7 +37,7 @@ EXPORT int gldGetVersion(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
 EXPORT int gldCreateContext(void *share, void **output, void *pixel_format,
                            void *config, void *state, void *plugin_state)
 {
-   if (!available || !verified) return 10006;
+   if (!available) return 10006;
    int result = ((int (*)(void *, void **, void *, void *, void *, void *))
                  gld_targets[GLD_INDEX_gldCreateContext])(share, output, pixel_format, config, state, plugin_state);
    if (!result && output && *output && state)
