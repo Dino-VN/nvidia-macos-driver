@@ -1,5 +1,11 @@
 # Changelog
 
+## Fork IOSurface wrapper CPU repair
+
+- WindowServer wrapped the same window and screen-capture IOSurfaces in a fresh Metal texture every composite (about 400 a second with one browser window, more while screen sharing). Each wrapper imported the surface's VRAM again with four RM calls and freed it with two, about 1 ms of CPU, keeping WindowServer busy and making screen sharing lag.
+- The import of a released wrapper is now kept for the surface's next wrapper: up to 64 imports, each released 250 ms after its last use and re-imported at most every 2 s. `NVMTL_VRAM_KEEP=0` restores the previous behaviour.
+- On an RTX 2060/Tahoe 26.7.1, a wrapper costs about 40 µs of CPU instead of 1 ms (wrap and clear: 320 µs instead of 1.6 ms). 900 GPU/CPU pixel round-trips and all eight `bench_surface_order` modes match the previous plugin. The plugin has not yet run inside WindowServer during a real screen share.
+
 ## Fork translator regression repair
 
 - Repair malformed pointer address-space parsing, direct buffer-address-table access and device-pointer round-trips through local variables and callbacks.
