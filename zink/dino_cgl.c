@@ -118,6 +118,23 @@ static struct dino_cgl_bridge *bridge_current(void *engine)
        !dino_zink_make_current(thread_bridge->zink)) {
       fail("No attached Zink context current on this thread"); return NULL;
    }
+   /* GLFW can resize a Cocoa window through a path that does not pass the
+    * CGLSetSurface/NSOpenGLContext viewport callers above.  The native CGL
+    * surface still exposes its backing dimensions through this public CGL
+    * parameter, so check it at the frame boundary as a fallback. */
+   if (thread_bridge->automatic) {
+      GLint surface[2] = {0, 0};
+      if (CGLGetParameter(thread_bridge->context, kCGLCPSurfaceBackingSize, surface) == kCGLNoError &&
+          surface[0] > 0 && surface[1] > 0 &&
+          ((unsigned)surface[0] != thread_bridge->width ||
+           (unsigned)surface[1] != thread_bridge->height)) {
+         thread_bridge->width = (unsigned)surface[0];
+         thread_bridge->height = (unsigned)surface[1];
+         thread_bridge->native_x = 0;
+         thread_bridge->native_y = 0;
+         thread_bridge->resize_pending = true;
+      }
+   }
    /* NSOpenGLContext can update a surface while another CGL context is current.
     * Mesa requires this drawable current before reallocating its buffers. */
    if (thread_bridge->resize_pending) {

@@ -109,6 +109,11 @@ changing its viewport alone does not change the drawable dimensions. Automatic
 registrations do not retain their CGL context; GLD destruction releases Mesa and
 restores the original dispatch pointers.
 
+At the frame boundary the automatic path also reads
+`kCGLCPSurfaceBackingSize`. This catches Cocoa/GLFW window resizes that update
+the native surface without reaching either observed viewport caller, then
+reallocates the Zink drawable before the next presentation.
+
 `libGFXShared::gfxInitializeLibrary` reads `IOGLBundleName` and uses
 `gpu_bundle_find_trusted`. This macOS build searches `/Library/GPUBundles` before
 `/System/Library/Extensions`, with `KernelExtensionManagement` trust checks.
