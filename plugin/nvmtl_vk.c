@@ -6635,13 +6635,29 @@ static nvk_buffer *nvmtl_host_pages(nvk_buffer *cache, void *base, size_t bytes,
     return b;
 }
 static void nvmtl_host_pages_done(nvk_buffer *cache, nvk_buffer *hb) { if (hb && hb != cache) nvmtl_vk_buffer_destroy(hb); }
+// A plane need not start on a page: a two-plane 420v surface (ScreenCaptureKit's output, Discord's and Chromium's capture
+// conversion) puts plane 0 at +0x40 and plane 1 at +0x40 past a page, so both were refused the import and copied by the
+// CPU every frame. The import starts at the page holding the plane (the surface is mapped in whole pages) and the copy
+// starts the returned number of bytes into it; *bytes grows by the same amount. -1 when that offset is not whole texels.
+static long nvmtl_host_page_start(void **base, size_t *bytes, size_t bpp)
+{
+    const uintptr_t b = (uintptr_t)*base, ib = g_host_align ? b & ~(uintptr_t)(g_host_align - 1) : b;
+    if ((b - ib) % bpp) return -1;
+    *base = (void *)ib; *bytes += (size_t)(b - ib);
+    return (long)(b - ib);
+}
 int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t row_bytes, size_t bytes, nvk_buffer *cache)
 {
     const size_t bpp = img->bpp ? img->bpp : 4;
     // bufferRowLength counts texels, so the row pitch has to be a whole number of them
     if (img->bw > 1 || img->bh > 1 || !row_bytes || row_bytes % bpp || row_bytes < (size_t)img->w * bpp) return -1;
-    if (g_host_align) bytes = (bytes + g_host_align - 1) & ~(g_host_align - 1);
-    if ((size_t)img->h * row_bytes > bytes) return -1;
+    const long at = nvmtl_host_page_start(&base, &bytes, bpp);
+    if (at < 0 || !img->h) return -1;
+    const size_t end = (size_t)at + (size_t)(img->h - 1) * row_bytes + (size_t)img->w * bpp;
+    // the span nvmtl_vk_image_read_host imports (whole pages inside the allocation), so one kept import serves both;
+    // a plane that ends in the allocation's last partial page imports that page too
+    if (g_host_align) bytes = (bytes & ~(g_host_align - 1)) >= end ? bytes & ~(g_host_align - 1) : (bytes + g_host_align - 1) & ~(g_host_align - 1);
+    if (end > bytes) return -1;
     nvk_buffer tmp, *hp = nvmtl_host_pages(cache, base, bytes, &tmp);
     if (!hp) return -1;
     nvk_buffer hb = *hp;
@@ -6652,7 +6668,7 @@ int nvmtl_vk_image_write_host(nvk_queue *q, nvk_image *img, void *base, size_t r
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, (VkImage)img->img, range };
     pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
-    VkBufferImageCopy bic = { 0, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
+    VkBufferImageCopy bic = { (VkDeviceSize)at, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
     pvkCmdCopyBufferToImage(c.cb, (VkBuffer)hb.buf, (VkImage)img->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bic);
     VkImageMemoryBarrier toRead = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL,
         VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -6766,8 +6782,10 @@ int nvmtl_vk_image_read_host(nvk_queue *q, nvk_image *img, void *base, size_t ro
 {
     const size_t bpp = img->bpp ? img->bpp : 4;
     if (img->bw > 1 || img->bh > 1 || !row_bytes || row_bytes % bpp || row_bytes < (size_t)img->w * bpp) return -1;
+    const long at = nvmtl_host_page_start(&base, &bytes, bpp);
+    if (at < 0) return -1;
     if (g_host_align) bytes = bytes & ~(g_host_align - 1);   // never import past the surface's allocation
-    if (!img->h || (size_t)(img->h - 1) * row_bytes + (size_t)img->w * bpp > bytes) return -1;
+    if (!img->h || (size_t)at + (size_t)(img->h - 1) * row_bytes + (size_t)img->w * bpp > bytes) return -1;
     nvmtl_vk_image_upload_barrier(img);   // a readback must observe a pending async upload: finish it first
     nvk_buffer tmp, *hp = nvmtl_host_pages(cache, base, bytes, &tmp);
     if (!hp) return -1;
@@ -6782,7 +6800,7 @@ int nvmtl_vk_image_read_host(nvk_queue *q, nvk_image *img, void *base, size_t ro
     pvkCmdPipelineBarrier(c.cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, NULL, 0, NULL, 1, &toSrc);
     img->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    VkBufferImageCopy bic = { 0, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
+    VkBufferImageCopy bic = { (VkDeviceSize)at, (uint32_t)(row_bytes / bpp), 0, { nvmtl_copy_aspect(img), 0, 0, 1 }, { 0, 0, 0 }, { img->w, img->h, 1 } };
     pvkCmdCopyImageToBuffer(c.cb, img->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, hb.buf, 1, &bic);
     // the CPU reads these pages after the fence: make the transfer writes visible to host reads
     VkMemoryBarrier toHost = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };

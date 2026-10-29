@@ -3,8 +3,9 @@
 ## Fork IOSurface wrapper CPU repair
 
 - WindowServer wrapped the same window and screen-capture IOSurfaces in a fresh Metal texture every composite (about 400 a second with one browser window, more while screen sharing). Each wrapper imported the surface's VRAM again with four RM calls and freed it with two, about 1 ms of CPU, keeping WindowServer busy and making screen sharing lag.
-- The import of a released wrapper is now kept for the surface's next wrapper: up to 64 imports, each released 250 ms after its last use and re-imported at most every 2 s. `NVMTL_VRAM_KEEP=0` restores the previous behaviour.
-- On an RTX 2060/Tahoe 26.7.1, a wrapper costs about 40 µs of CPU instead of 1 ms (wrap and clear: 320 µs instead of 1.6 ms). 900 GPU/CPU pixel round-trips and all eight `bench_surface_order` modes match the previous plugin. The plugin has not yet run inside WindowServer during a real screen share.
+- The import of a released wrapper is now kept for the surface's next wrapper: up to 64 imports, each released 250 ms after its last use and re-imported at most every 2 s. Imported surface pages of private images are kept the same way. `NVMTL_VRAM_KEEP=0` restores the previous behaviour.
+- Two-plane 420v capture surfaces (Discord's ScreenCaptureKit conversion output) were copied by the CPU every frame because their planes start 0x40 bytes into a page. Their pages are now imported from the page boundary and copied by the GPU. Uploads and readbacks of one surface now import the same page span, so neither discards the other's kept import.
+- On an RTX 2060/Tahoe 26.7.1, a wrapper costs about 40 µs of CPU instead of 1 ms (wrap and clear: 260 µs instead of 1.6 ms). A 4096x2304 420v write/read test frame drops from about 32 ms to 12 ms of CPU; 1080p and smaller frames are no slower. 900 BGRA and 960 420v GPU/CPU pixel round-trips and all nine `bench_surface_order` modes pass. A first live Discord share ran with the earlier build in apps only; WindowServer still needs a restart to load it.
 
 ## Fork translator regression repair
 

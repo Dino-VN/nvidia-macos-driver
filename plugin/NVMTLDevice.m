@@ -984,11 +984,12 @@ static void nvmtl_vram_tag_set(IOSurfaceRef surf, NSUInteger plane, uint32_t see
 // wrapper that goes away is kept here, holding its surface so the ID cannot be reused, and the next wrapper of the same
 // surface takes it instead of importing again. A kept import is dropped after NVMTL_VRAM_KEEP_IDLE_NS without a taker and
 // is never handed out past NVMTL_VRAM_KEEP_AGE_NS from its import, so a backing the family replaced is picked up again
-// as before. NVMTL_VRAM_KEEP=0 turns it off.
+// as before. A private image's imported surface pages (nvmtl_vk_image_write_host / _read_host) are kept the same way:
+// pinning and mapping them costs more than copying a 1080p frame. NVMTL_VRAM_KEEP=0 turns both off.
 #define NVMTL_VRAM_KEEP_N       64
 #define NVMTL_VRAM_KEEP_IDLE_NS (250ull * 1000 * 1000)
 #define NVMTL_VRAM_KEEP_AGE_NS  (2000ull * 1000 * 1000)
-typedef struct { IOSurfaceRef surf; NSUInteger plane; size_t need; nvk_buffer vb; uint64_t born, parked; } nvmtl_vram_kept;
+typedef struct { IOSurfaceRef surf; NSUInteger plane; size_t need; nvk_buffer vb; uint64_t born, parked; int host; } nvmtl_vram_kept;
 static nvmtl_vram_kept g_vram_kept[NVMTL_VRAM_KEEP_N];
 static unsigned g_vram_kept_n, g_vram_kept_sweep;
 static unsigned long long g_vram_kept_hit, g_vram_kept_miss;
@@ -1006,7 +1007,8 @@ static nvmtl_vram_kept nvmtl_vram_keep_take_at(unsigned k) {
     g_vram_kept[k] = g_vram_kept[--g_vram_kept_n];
     return e;
 }
-static void nvmtl_vram_keep_release(nvmtl_vram_kept *e) { nvmtl_vk_buffer_destroy(&e->vb); if (e->surf) CFRelease(e->surf); }
+static void nvmtl_vram_keep_drop(int host, nvk_buffer *vb) { if (host) nvmtl_vk_host_pages_drop(vb); else nvmtl_vk_buffer_destroy(vb); }
+static void nvmtl_vram_keep_release(nvmtl_vram_kept *e) { nvmtl_vram_keep_drop(e->host, &e->vb); if (e->surf) CFRelease(e->surf); }
 static void nvmtl_vram_keep_schedule(void);
 static void nvmtl_vram_keep_sweep(void) {
     nvmtl_vram_kept gone[NVMTL_VRAM_KEEP_N]; unsigned ng = 0;
@@ -1028,33 +1030,35 @@ static void nvmtl_vram_keep_schedule(void) {
                            dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ nvmtl_vram_keep_sweep(); });
 }
 // A kept import of this surface and size, or an import made now. born is the import's time, for nvmtl_vram_keep_put.
-static int nvmtl_vram_keep_get(IOSurfaceRef surf, NSUInteger plane, size_t need, nvk_buffer *out, uint64_t *born) {
+// host: kept surface pages of any size (nvmtl_host_pages checks them), never imported here.
+static int nvmtl_vram_keep_get(int host, IOSurfaceRef surf, NSUInteger plane, size_t need, nvk_buffer *out, uint64_t *born) {
     if (nvmtl_vram_keep_on()) {
         const uint64_t now = nvmtl_vram_keep_now();
         nvmtl_vram_kept e = { 0 }, old = { 0 }; int found = 0, stale = 0;
         pthread_mutex_lock(&g_vram_kept_lock);
         for (unsigned k = 0; k < g_vram_kept_n; k++) {
-            if (g_vram_kept[k].surf != surf || g_vram_kept[k].plane != plane || g_vram_kept[k].need != need) continue;
+            if (g_vram_kept[k].host != host || g_vram_kept[k].surf != surf || g_vram_kept[k].plane != plane || g_vram_kept[k].need != need) continue;
             if (now - g_vram_kept[k].born < NVMTL_VRAM_KEEP_AGE_NS) { e = nvmtl_vram_keep_take_at(k); found = 1; }
             else { old = nvmtl_vram_keep_take_at(k); stale = 1; }
             break;
         }
-        if (found) g_vram_kept_hit++; else g_vram_kept_miss++;
+        if (!host) { if (found) g_vram_kept_hit++; else g_vram_kept_miss++; }
         const unsigned long long hit = g_vram_kept_hit, miss = g_vram_kept_miss;
         pthread_mutex_unlock(&g_vram_kept_lock);
         if (stale) nvmtl_vram_keep_release(&old);
-        { static unsigned n; if (n++ < 4 || n % 20000 == 0) nvlog("item 7: kept family VRAM import %s (%llu reused, %llu imported)", found ? "reused" : "missed", hit, miss); }
+        if (!host) { static unsigned n; if (n++ < 4 || n % 20000 == 0) nvlog("item 7: kept family VRAM import %s (%llu reused, %llu imported)", found ? "reused" : "missed", hit, miss); }
         if (found) { *out = e.vb; *born = e.born; CFRelease(e.surf); return 0; }
     }
     *born = nvmtl_vram_keep_now();
+    if (host) { memset(out, 0, sizeof *out); return -1; }
     return nvmtl_vk_surface_vram(IOSurfaceGetID(surf), (uint32_t)plane, need, out);
 }
 // The texture's import, kept for the surface's next wrapper or released. Clears *vb either way.
-static void nvmtl_vram_keep_put(IOSurfaceRef surf, NSUInteger plane, nvk_buffer *vb, uint64_t born) {
-    if (!vb->buf) return;
+static void nvmtl_vram_keep_put(int host, IOSurfaceRef surf, NSUInteger plane, nvk_buffer *vb, uint64_t born) {
+    if (!vb->buf) { memset(vb, 0, sizeof *vb); return; }
     const uint64_t now = nvmtl_vram_keep_now();
-    if (!surf || !nvmtl_vram_keep_on() || now - born >= NVMTL_VRAM_KEEP_AGE_NS) { nvmtl_vk_buffer_destroy(vb); return; }
-    nvmtl_vram_kept e = { surf, plane, vb->size, *vb, born, now }, evict = { 0 }; int evicted = 0;
+    if (!surf || !nvmtl_vram_keep_on() || now - born >= NVMTL_VRAM_KEEP_AGE_NS) { nvmtl_vram_keep_drop(host, vb); return; }
+    nvmtl_vram_kept e = { surf, plane, host ? 0 : vb->size, *vb, born, now, host }, evict = { 0 }; int evicted = 0;
     CFRetain(surf);
     pthread_mutex_lock(&g_vram_kept_lock);
     if (g_vram_kept_n == NVMTL_VRAM_KEEP_N) {   // full: the entry parked longest ago goes
@@ -1074,7 +1078,7 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
         size_t row = IOSurfaceGetBytesPerRow(surf), sh = IOSurfaceGetHeight(surf);
         if ((size_t)w * (bpp ? bpp : 4) <= row && h <= sh && row % 32 == 0) {
             nvk_buffer vb; uint64_t born = 0;
-            if (!nvmtl_vram_keep_get(surf, 0, row * h, &vb, &born)) {
+            if (!nvmtl_vram_keep_get(0, surf, 0, row * h, &vb, &born)) {
                 if (!nvmtl_vk_image_create_buffer_alias(w, h, vkf, bpp, a8, stex, 1, &vb, 0, row, &t->_i)) {
                     t->_vramBorn = born;
                     t->_vramBuf = vb; t->_vramOn = YES; g_surf_vram++;
@@ -1102,7 +1106,9 @@ static int nvmtl_surface_image_create(NVMTLTexture *t, IOSurfaceRef surf, NSUInt
               (plane != 0 || pplanes > 1) ? "more than one plane" : ((size_t)w * (bpp ? bpp : 4) > prow || h > IOSurfaceGetHeight(surf)) ? "image larger than the surface"
               : (prow % 32) ? "the row is not a multiple of 32 bytes" : "the family VRAM could not be used", prow, pplanes);
     }
-    return nvmtl_vk_image_create_typed(w, h, vkf, bpp, a8, 1, stex, 2u, 1u, &t->_i);
+    const int rc = nvmtl_vk_image_create_typed(w, h, vkf, bpp, a8, 1, stex, 2u, 1u, &t->_i);
+    if (!rc && surf) (void)nvmtl_vram_keep_get(1, surf, plane, 0, &t->_hostPages, &t->_vramBorn);
+    return rc;
 }
 
 static char nvmtl_surface_cache_key;
