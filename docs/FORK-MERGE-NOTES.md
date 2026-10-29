@@ -19,6 +19,33 @@ Before each merge:
 The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integrated on
 2026-10-29. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
 
+## Native Zink OpenGL integration
+
+Preserve `zink/` and its pinned Mesa overlay, build/packaging tools and local
+validation probes. The native GLD is intended to select Zink/NVK automatically
+for normal OpenGL apps and OpenGL Minecraft, without a mod, attach call or
+launch argument. Its private CGL ABI currently requires x86_64 Tahoe 25G241;
+do not broaden that gate without recovering and testing the new build's ABI.
+The Zink package builder selects the GLD by default. Keep the original complete
+base-package builder and its Minecraft/Wine/dual-OS support, then add the Zink
+payload with `build/package_zink.py`. A local test build is not a release.
+
+Retain private frontend/renderer selection, one process-owned GPU screen with
+separate GL share groups, framebuffer invalidation after swap/resize, GPU VRAM
+copy/dirty/generation-tag ordering and per-context native targets. Keep strict
+same-device checks and uncertain-work quarantine. GPU IOSurface/Apple
+presentation is a compatibility/comparison path, never a reason to execute
+application shaders in Apple's OpenGL renderer or silently use CPU pixels.
+Keep the Zink batch condition-variable and Darwin barrier repairs; the latter
+must have one serial return only after every other waiter leaves. Compare an
+equivalent upstream fix before removing either repair. Preserve the descriptor-
+set, staging-upload and bounded texture-worker fixes in the pinned overlay.
+
+Preserve native GLD rollback/build gating and external-kext preservation during
+both preflight and live kernel-collection builds. Do not replace permanent
+external kext paths with disposable preflight paths. See
+[Zink integration review](ZINK-PR2-REVIEW.md) for the review and validation limits.
+
 ## Upstream 2.6.4 integration
 
 Take sampler-array lowering, texture-array element routing through the per-draw

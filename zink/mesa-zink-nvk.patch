@@ -1,0 +1,255 @@
+--- a/src/gallium/drivers/zink/meson.build
++++ b/src/gallium/drivers/zink/meson.build
+@@ -77,7 +77,8 @@
+     endif
+     inc_zink_vk += include_directories(moltenvk_includes)
+   else
+-    error('moltenvk-dir is required but not set.')
++    # Native Vulkan drivers on Darwin do not use MoltenVK's private API.
++    zink_c_args += '-DNVK_ZINK_NVK'
+   endif
+ 
+   zink_c_args += ['-x','objective-c'] # Put compiler into objective-C mode to allow for MacOS types, like IOSurface and CAMetalLayer
+@@ -106,6 +107,7 @@
+     idep_vulkan_wsi_defines, idep_vulkan_util, dep_libdrm, vulkan_wsi_deps, idep_ntv,
+   ],
+   c_args: zink_c_args,
++  cpp_args: host_machine.system() == 'darwin' and with_moltenvk_dir == '' ? ['-DNVK_ZINK_NVK'] : [],
+ )
+ 
+ zink_deps = [libzink]
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -80,7 +80,7 @@
+ #endif
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(NVK_ZINK_NVK)
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+@@ -3254,6 +3254,15 @@
+    if (!screen->resizable_bar)
+       screen->info.have_EXT_host_image_copy = false;
+ 
++#if defined(NVK_ZINK_NVK)
++   /* Darwin NVK maps/unmaps GPU memory and CPU-tiles every host image copy.
++    * Animated texture uploads spend nearly all frame time on this path.
++    * Use staging buffers and GPU buffer-to-image copies instead.
++    */
++   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_NVK)
++      screen->info.have_EXT_host_image_copy = false;
++#endif
++
+    /* required for SSO usage */
+    if (!screen->info.have_KHR_maintenance11)
+       screen->info.have_EXT_shader_object = false;
+@@ -3481,7 +3490,11 @@
+ 
+    u_trace_state_init();
+ 
++#if defined(NVK_ZINK_NVK)
++   screen->loader_lib = util_dl_open("@rpath/libnvk_zink_vulkan.dylib");
++#else
+    screen->loader_lib = util_dl_open(VK_LIBNAME);
++#endif
+    if (!screen->loader_lib) {
+       if (!screen->driver_name_is_inferred)
+          mesa_loge("ZINK: failed to load "VK_LIBNAME);
+@@ -3833,6 +3846,12 @@
+    }
+    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO) {
+       switch(screen->info.driver_props.driverID) {
++#if defined(NVK_ZINK_NVK)
++      /* Darwin NVK's descriptor-buffer texel views currently read zero.
++       * Descriptor sets pass both shader stages and PBO upload regressions.
++       */
++      case VK_DRIVER_ID_MESA_NVK:
++#endif
+       /* descriptor buffer is not performant with virt yet */
+       case VK_DRIVER_ID_MESA_VENUS:
+       /* db descriptor mode is known to be broken on IMG proprietary drivers */
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -60,7 +60,7 @@
+ #define DRM_FORMAT_MOD_LINEAR 0
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(NVK_ZINK_NVK)
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -260,3 +260,8 @@
+   subdir('frontends/torx')
+   subdir('targets/torx')
+ endif
++
++# Standalone native Vulkan frontend; no Apple GLD ABI is assumed.
++if host_machine.system() == 'darwin' and with_gallium_zink and with_moltenvk_dir == ''
++  subdir('targets/nvk-zink')
++endif
+--- a/src/gallium/drivers/zink/zink_instance.py
++++ b/src/gallium/drivers/zink/zink_instance.py
+@@ -80,7 +80,7 @@
+ 
+ #include <vulkan/vulkan_core.h>
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(NVK_ZINK_NVK)
+ #include "MoltenVK/mvk_vulkan.h"
+ // Source of MVK_VERSION
+ #include "MoltenVK/mvk_config.h"
+@@ -252,7 +252,7 @@
+ 
+    VkInstanceCreateInfo ici = {0};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(NVK_ZINK_NVK)
+    ici.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+ #endif
+    ici.pApplicationInfo = &ai;
+--- a/src/gallium/auxiliary/util/u_threaded_context.h
++++ b/src/gallium/auxiliary/util/u_threaded_context.h
+@@ -582,6 +582,9 @@
+    bool unsynchronized_create_fence_fd;
+    /* if true, texture_subdata calls may occur unsynchronized with PIPE_MAP_UNSYNCHRONIZED */
+    bool unsynchronized_texture_subdata;
++   /* Zero keeps the default threshold. Larger inline texture uploads can
++    * avoid executing driver copy commands on the application thread. */
++   unsigned max_texture_subdata_bytes;
+    /* if true, parse and track renderpass info during execution */
+    bool parse_renderpass_info;
+    /* callbacks for drivers to read their DSA/FS state and update renderpass info accordingly
+--- a/src/gallium/auxiliary/util/u_threaded_context.c
++++ b/src/gallium/auxiliary/util/u_threaded_context.c
+@@ -3333,8 +3333,12 @@
+    if (tc->options.parse_renderpass_info && tc->in_renderpass)
+       ended = tc_check_fb_access(tc, NULL, resource);
+ 
++   /* Bound optional larger payloads to the available batch slot capacity. */
++   unsigned max_bytes = tc->options.max_texture_subdata_bytes ?
++                        tc->options.max_texture_subdata_bytes : TC_MAX_SUBDATA_BYTES;
++   max_bytes = MIN2(max_bytes, (TC_SLOTS_PER_BATCH - call_size(tc_texture_subdata) - 1) * 8);
+    /* Small uploads can be enqueued, big uploads must sync. */
+-   if (size <= TC_MAX_SUBDATA_BYTES) {
++   if (size <= max_bytes) {
+       struct tc_texture_subdata *p =
+          tc_add_slot_based_call(tc, TC_CALL_texture_subdata, tc_texture_subdata, size);
+ 
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -6203,6 +6203,11 @@
+                                                         .driver_calls_flush_notify = !screen->driver_workarounds.track_renderpasses,
+                                                         .unsynchronized_get_device_reset_status = true,
+                                                         .unsynchronized_texture_subdata = true,
++#if defined(__APPLE__) && defined(NVK_ZINK_NVK)
++                                                        /* Minecraft animation tiles exceed the 320-byte default.
++                                                         * Keep their GPU upload command recording on the worker. */
++                                                        .max_texture_subdata_bytes = screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_NVK ? 4096 : 0,
++#endif
+                                                         .parse_renderpass_info = screen->driver_workarounds.track_renderpasses,
+                                                         .dsa_parse = zink_tc_parse_dsa,
+                                                         .fs_parse = zink_tc_parse_fs,
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -652,9 +652,13 @@
+    int num_si = ZINK_SUBMIT_MAX;
+    while (!bs->fence.batch_id)
+       bs->fence.batch_id = (uint32_t)p_atomic_inc_return(&screen->curr_batch);
++   /* Pair the predicate update with the waiter's lock. Otherwise submission
++    * can signal between its predicate check and cnd_wait, losing the wakeup. */
++   mtx_lock(&bs->usage.mtx);
+    bs->usage.usage = bs->fence.batch_id;
+    assert(bs->usage.usage);
+    bs->usage.unflushed = false;
++   mtx_unlock(&bs->usage.mtx);
+ 
+    uint64_t batch_id = bs->fence.batch_id;
+    /* first submit is just for acquire waits since they have a separate array */
+@@ -842,7 +846,9 @@
+ 
+    bs->usage.submit_count++;
+ end:
++   mtx_lock(&bs->usage.mtx);
+    cnd_broadcast(&bs->usage.flush);
++   mtx_unlock(&bs->usage.mtx);
+ 
+    post_submit(bs, screen);
+ 
+@@ -1208,11 +1214,14 @@
+          return true;
+       } else { //multi-context
+          mtx_lock(&u->mtx);
+-         if (trywait) {
+-            struct timespec ts = {0, 10000};
+-            cnd_timedwait(&u->flush, &u->mtx, &ts);
+-         } else
++         while (u->unflushed && zink_batch_submit_count_diff(u->submit_count, submit_count) <= 1) {
++            if (trywait) {
++               struct timespec ts = {0, 10000};
++               cnd_timedwait(&u->flush, &u->mtx, &ts);
++               break;
++            }
+             cnd_wait(&u->flush, &u->mtx);
++         }
+          mtx_unlock(&u->mtx);
+       }
+    }
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -219,6 +219,7 @@
+ {
+    barrier->count = count;
+    barrier->waiters = 0;
++   barrier->leaving = 0;
+    barrier->sequence = 0;
+    (void) mtx_init(&barrier->mutex, mtx_plain);
+    cnd_init(&barrier->condvar);
+@@ -235,6 +236,9 @@
+ {
+    mtx_lock(&barrier->mutex);
+ 
++   /* Finish the previous generation before another can enter. */
++   while (barrier->leaving)
++      cnd_wait(&barrier->condvar, &barrier->mutex);
+    assert(barrier->waiters < barrier->count);
+    barrier->waiters++;
+ 
+@@ -246,13 +250,19 @@
+       } while (sequence == barrier->sequence);
+    } else {
+       barrier->waiters = 0;
++      barrier->leaving = barrier->count;
+       barrier->sequence++;
+       cnd_broadcast(&barrier->condvar);
+    }
+ 
++   /* One serial return, after every other waiter stopped using the barrier.
++    * util_queue_finish destroys this stack-owned barrier on that return. */
++   bool serial = --barrier->leaving == 0;
++   if (serial)
++      cnd_broadcast(&barrier->condvar);
+    mtx_unlock(&barrier->mutex);
+ 
+-   return true;
+-}
+-
+-#endif
++   return serial;
++}
++
++#endif
+--- a/src/util/u_thread.h
++++ b/src/util/u_thread.h
+@@ -125,6 +125,7 @@
+ typedef struct {
+    unsigned count;
+    unsigned waiters;
++   unsigned leaving;
+    uint64_t sequence;
+    mtx_t mutex;
+    cnd_t condvar;

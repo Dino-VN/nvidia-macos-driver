@@ -19,6 +19,7 @@ testing is done on an RTX 5060, so other cards may have problems that haven't be
 - Installing macOS from Windows: [1401](https://github.com/nullmoth/1401)
 - How it works: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)
 - Fork display rotation on Tahoe: [support, costs and testing](docs/DISPLAY-ROTATION.md)
+- Native OpenGL through Zink/NVK: [build and compatibility notes](docs/ZINK-OPENGL.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 If your PC doesn't boot macOS with OpenCore yet, set that up first with the
@@ -32,6 +33,20 @@ Support the work: https://buymeacoffee.com/nullmoth
 | GPUs | NVIDIA Turing and later; developed on an RTX 5060 |
 | Metal | Metal 3: argument buffers tier 2, ray tracing, mesh shaders, MPS, MetalFX path |
 | Also | OpenGL (through Apple's GL-on-Metal), OpenCL, Core Image, Core ML |
+
+## Native OpenGL with Zink
+
+The optional [Zink/NVK integration](docs/ZINK-OPENGL.md) sends OpenGL shaders
+through Mesa/Zink directly to native NVK, bypassing Apple GL-on-Metal and
+NVMTL's application shader translation. AppKit windows present through GPU
+copies into native drawables, using the Minecraft bridge's VRAM handoff
+protocol. Metal allocation and macOS composition remain.
+
+This currently requires an explicitly built local Zink package and Intel
+**Tahoe 26.7.1 / 25G241**; ordinary packages keep Apple's OpenGL renderer.
+Focused GPU/CGL checks do not qualify full games, another OS build or an FPS
+gain. See the [integration review](docs/ZINK-PR2-REVIEW.md) and
+[local testing/install guide](docs/COMBINED-INSTALL.md).
 
 ## Minecraft native Vulkan
 
