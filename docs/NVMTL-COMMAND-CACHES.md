@@ -46,3 +46,7 @@ thread; they are not application FPS or whole-system CPU measurements.
 
 See `NVMTL-COMMAND-CACHE-RESULTS.json` for the recorded host checks, GPU measurements,
 build identity and remaining qualification limits.
+
+WindowServer-specific dynamic-state and IOSurface metadata caching is documented in
+`NVMTL-WINDOWSERVER-CACHES.md`, with its isolated compositor-like measurements in
+`NVMTL-WINDOWSERVER-CACHE-RESULTS.json`.
