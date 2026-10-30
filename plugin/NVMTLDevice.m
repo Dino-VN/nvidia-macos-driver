@@ -1983,6 +1983,9 @@ static void nvmtl_log_compute_descriptor(MTLComputePipelineDescriptor *d) {
 
 - (id<MTLSamplerState>)newSamplerStateWithDescriptor:(MTLSamplerDescriptor *)sd {
     if (nvmtl_vk_init()) return nil;
+    // The backend interns immutable VkSampler handles. Keep each Metal wrapper independent: its label,
+    // pixel-coordinate metadata and lazily assigned resource ID belong to this caller. Caching wrappers
+    // also keeps them alive after callers release them and can create a cycle if they retain the device.
     NVMTLSamplerState *s = [NVMTLSamplerState new];
     s->_label = [sd.label copy];
     if (!sd.normalizedCoordinates) {
