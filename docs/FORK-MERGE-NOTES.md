@@ -65,11 +65,24 @@ separate GL share groups, framebuffer invalidation after swap/resize, GPU VRAM
 copy/dirty/generation-tag ordering and per-context native targets. Keep strict
 same-device checks and uncertain-work quarantine. GPU IOSurface/Apple
 presentation is a compatibility/comparison path, never a reason to execute
-application shaders in Apple's OpenGL renderer or silently use CPU pixels.
+application shaders in Apple's OpenGL renderer outside the explicit client
+compatibility options below, or silently use CPU pixels.
 Keep the Zink batch condition-variable and Darwin barrier repairs; the latter
 must have one serial return only after every other waiter leaves. Compare an
 equivalent upstream fix before removing either repair. Preserve the descriptor-
 set, staging-upload and bounded texture-worker fixes in the pinned overlay.
+
+Keep native display synchronization tied to each context's CGL swap interval,
+including render-thread changes and independent windows. Preserve the explicit
+`NVKZINK_DISABLE=1` diagnostic opt-out before any GL objects are created.
+OBS 33.0.1's opt-in `NVKZinkCaptureCompatibility` preference (or process-local
+`NVKZINK_OBS_COMPAT=1`) is checked only for `com.obsproject.obs-studio`. It keeps
+the whole OBS context in Apple's driver and changes RGBA16F ScreenCaptureKit
+requests to BGRA8. Never switch an existing context's object namespace or enable
+this mode globally. The user confirms moving OBS capture after a normal launch
+on RTX 2060 SUPER / Tahoe 26.7.1; this qualifies the SDR compatibility mode,
+not native Zink IOSurface imports, HDR capture or encoder performance. See
+[the setup and rollback](ZINK-OPENGL.md#obs-display-capture-compatibility).
 
 Preserve native GLD rollback, build provenance and external-kext preservation during
 both preflight and live kernel-collection builds. Do not replace permanent
