@@ -1,5 +1,10 @@
 # Changelog
 
+## Fork installer permanent-path repair
+
+- Recover stale kernel-collection paths by matching the installed extension's bundle ID and recorded version. Stop on missing, mismatched or ambiguous replacements.
+- Build removal collections from permanent installed paths, retaining external extensions such as macFUSE and verifying their presence before and after publication. Preserve firmware during removal rollback.
+
 ## Fork screen-capture copy and wrapper reuse
 
 - Reuse released IOSurface VRAM and host-page imports with count, byte, idle-time and maximum-age bounds. Retain the surface while cached; `NVMTL_VRAM_KEEP=0` disables reuse.

@@ -18,6 +18,8 @@ rollback_removal() {
   for k in $KEXTS; do [ ! -e "$RB/$k.kext" ] || ditto "$RB/$k.kext" "$EXT/$k.kext" || failed=1; done
   for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl NVKZinkGLDriver.bundle nvmtl-allow.txt; do [ ! -e "$RB/$b" ] || ditto "$RB/$b" "$GB/$b" || failed=1; done
   [ ! -e "$RB/kexts" ] || ditto "$RB/kexts" /Library/NullMoth/kexts || failed=1
+  [ ! -d "$RB/firmware-new" ] || ditto "$RB/firmware-new" /Library/NullMoth/nvfw || failed=1
+  [ ! -d "$RB/firmware-old" ] || ditto "$RB/firmware-old" /Users/Shared/nvfw || failed=1
   [ ! -e "$RB/driver-version" ] || cp -p "$RB/driver-version" /Library/NullMoth/driver-version || failed=1
   [ ! -e "$RB/update-pending" ] || cp -p "$RB/update-pending" /Library/NullMoth/update-pending || failed=1
   [ ! -e "$RB/com.nullmoth.osupdate.plist" ] || cp -p "$RB/com.nullmoth.osupdate.plist" /Library/LaunchDaemons/ || failed=1
@@ -50,36 +52,126 @@ BK=${1:-}
 [ -z "$BK" ] || [ -d "$BK" ] || die "no backup at $BK"
 BUILD=$(sw_vers -buildVersion)
 printf '%s\n' "$BUILD" | grep -Eq '^[0-9]+[A-Za-z][A-Za-z0-9]+$' || die "cannot identify the current macOS build"
-# Rebuild from the current third-party repository. A same-build backup can
-# still predate unrelated driver changes and is not a removal candidate.
-left=$(find "$EXT" -maxdepth 1 -name '*.kext' 2>/dev/null | while read -r x; do
-  n=$(basename "$x" .kext); if [[ " $KEXTS " == *" $n "* ]]; then continue; fi
-  [ -d "$x/Contents/MacOS" ] && echo "$x"
-  done | wc -l | tr -d ' ')
-if [ "$left" = 0 ]; then
+require_install_directory() {
+  local metadata permissions entry listing grants
+  [ ! -L "$1" ] && [ -d "$1" ] || die "installer parent must be a real directory (no driver changes made)"
+  metadata=$(stat -f '%u %Lp' "$1" 2>/dev/null) || die "cannot verify installer parent ownership"
+  case "$metadata" in
+    "0 "[0-7][0-7][0-7]|"0 "[0-7][0-7][0-7][0-7]) ;;
+    *) die "installer parent is not a verified root-owned directory (no driver changes made)";;
+  esac
+  permissions=${metadata#* }
+  [ $((8#$permissions & 022)) -eq 0 ] || die "installer parent is writable by another account or group (no driver changes made)"
+  listing=$(ls -lde "$1" 2>/dev/null)
+  entry=$(printf '%s\n' "$listing" | head -1 | awk '{print $1}')
+  [ -n "$entry" ] || die "cannot inspect installer parent access controls"
+  # A deny entry only takes access away (some Macs carry "group:everyone deny delete" on /Library); an allow entry can
+  # hand another account write access the mode bits above never show, so any allow entry still stops the install and
+  # is named in the log.
+  case "$entry" in *+*)
+    grants=$(printf '%s\n' "$listing" | tail -n +2 | grep -E '^[[:space:]]*[0-9]+:.*[[:space:]]allow[[:space:]]' || true)
+    [ -z "$grants" ] || die "installer parent $1 has access-control entries that allow access ($(printf '%s' "$grants" | tr -s ' \n' ' ')) (no driver changes made)"
+    ;;
+  esac
+}
+
+# Shared with uninstall.sh: resolve old staging references by bundle identity,
+# never by filename. Existing permanent paths may contain a pending update;
+# recovery of a missing/temporary path requires the recorded version too.
+permanent_kext_path() {
+  local wanted_id=$1 wanted_version=$2 recorded=$3 candidate resolved found="" id version
+  if [ -d "$recorded" ]; then
+    resolved=$(cd "$recorded" && pwd -P) || return 1
+    case "$resolved" in /private/var/tmp/*|/var/tmp/*|/private/tmp/*|/tmp/*) ;;
+      *)
+        id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$resolved/Contents/Info.plist" 2>/dev/null) || id=''
+        if [ "$id" = "$wanted_id" ]; then printf '%s\n' "$resolved"; return 0; fi
+        ;;
+    esac
+  fi
+  for candidate in "$EXT"/*.kext /Library/Apple/System/Library/Extensions/*.kext; do
+    [ -d "$candidate" ] && [ ! -L "$candidate" ] || continue
+    id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist" 2>/dev/null) || continue
+    [ "$id" = "$wanted_id" ] || continue
+    version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$candidate/Contents/Info.plist" 2>/dev/null) || continue
+    [ -n "$wanted_version" ] && [ "$version" = "$wanted_version" ] || continue
+    resolved=$(cd "$candidate" && pwd -P) || return 1
+    if [ -n "$found" ] && [ "$found" != "$resolved" ]; then
+      echo "Ambiguous installed copies of $wanted_id version $wanted_version" >&2; return 1
+    fi
+    found=$resolved
+  done
+  [ -n "$found" ] || { echo "No installed match for $wanted_id version $wanted_version (recorded at $recorded)" >&2; return 1; }
+  printf '%s\n' "$found"
+}
+
+# Include only permanent installed paths in a collection that will survive this
+# process. A copied temporary repository leaves broken paths after cleanup.
+KEEP_KEXT_ARGS=(); KEEP_KEXT_IDS=""
+keep_kext() {
+  local path=$1 id=$2 parent
+  printf '%s' "$id" | grep -Eq '^[A-Za-z0-9_.-]+$' || die "invalid preserved extension identity"
+  case "$id" in com.nullmoth.NVRM|com.nullmoth.NVAccel|com.nullmoth.NVRMFB|com.nullmoth.NVRMAGDC|org.hackintosh.experimental.NVPrimarySelector) return;; esac
+  case " $KEEP_KEXT_IDS " in *" $id "*) return;; esac
+  parent=$path
+  while :; do
+    require_install_directory "$parent"
+    [ "$parent" != / ] || break
+    parent=$(dirname "$parent")
+  done
+  KEEP_KEXT_ARGS+=(-p "$path")
+  KEEP_KEXT_IDS="$KEEP_KEXT_IDS $id"
+}
+for x in "$EXT"/*.kext; do
+  [ -d "$x" ] || continue
+  n=$(basename "$x" .kext); case " $KEXTS " in *" $n "*) continue;; esac
+  id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$x/Contents/Info.plist" 2>/dev/null) \
+    || die "cannot identify installed extension $x"
+  permanent_path=$(cd "$x" && pwd -P) || die "cannot resolve $x"
+  keep_kext "$permanent_path" "$id"
+done
+RB=$(mktemp -d /var/tmp/nullmoth-remove.XXXX) && [ -n "$RB" ] || die "cannot create the removal preflight directory"
+mkdir -p "$RB/repo" || die "cannot create the removal repository"
+if [ -s "$KC" ]; then
+  kmutil inspect -a x86_64 -A "$KC" --show-extension-info > "$RB/existing-kexts" 2>/dev/null \
+    || die "cannot inspect the existing collection before preserving extensions"
+  while IFS=$'\t' read -r external_id external_version external_path external_rest; do
+    case "$external_path" in *.kext) ;; *) continue;; esac
+    case "$external_id" in com.nullmoth.NVRM|com.nullmoth.NVAccel|com.nullmoth.NVRMFB|com.nullmoth.NVRMAGDC|org.hackintosh.experimental.NVPrimarySelector) continue;; esac
+    case " $KEEP_KEXT_IDS " in *" $external_id "*) continue;; esac
+    case "$external_path" in /System/*) continue;; esac
+    permanent_path=$(permanent_kext_path "$external_id" "$external_version" "$external_path") \
+      || die "cannot preserve existing extension $external_id from a permanent installed path"
+    keep_kext "$permanent_path" "$external_id"
+  done < "$RB/existing-kexts"
+fi
+if [ "${#KEEP_KEXT_ARGS[@]}" = 0 ]; then
   REMOVE_KC=1
 else
-  RB=$(mktemp -d /var/tmp/nullmoth-remove.XXXX) && [ -n "$RB" ] || die "cannot create the removal preflight directory"
-  mkdir -p "$RB/repo" || die "cannot create the removal repository"
-  for x in "$EXT"/*.kext; do
-    [ -d "$x" ] || continue
-    n=$(basename "$x" .kext); if [[ " $KEXTS " == *" $n "* ]]; then continue; fi
-    cp -Rp "$x" "$RB/repo/" || die "cannot stage $n for the removal collection"
-  done
   NEWKC="$KC.nullmoth-remove-new"; rm -f "$NEWKC" || die "cannot clear the removal candidate"
-  kmutil create -n aux --volume-root / ${KARG[@]+"${KARG[@]}"} -B $KB -S $KS --repository "$RB/repo" -A "$NEWKC" -z >/dev/null 2>&1 || die "kmutil could not rebuild the collection"
+  kmutil create -n aux --volume-root / ${KARG[@]+"${KARG[@]}"} -B $KB -S $KS --repository "$RB/repo" ${KEEP_KEXT_ARGS[@]+"${KEEP_KEXT_ARGS[@]}"} -A "$NEWKC" -z >/dev/null 2>&1 || die "kmutil could not rebuild the collection"
   [ -s "$NEWKC" ] || die "kmutil produced no removal collection"
-  INS=$(kmutil inspect -a x86_64 -A "$NEWKC" 2>/dev/null) || die "cannot inspect the removal collection"
+  INS=$(kmutil inspect -a x86_64 -A "$NEWKC" --show-extension-info 2>/dev/null) || die "cannot inspect the removal collection"
   printf '%s\n' "$INS" | grep -Eq 'com\.nullmoth|org\.hackintosh\.experimental\.NVPrimarySelector' && die "the removal collection still lists the NVIDIA driver or selector"
-  # Other processes can move or delete files in /Library/KernelCollections between this check and the publish below.
-  # A private copy of the verified collection lets the publish go ahead when the candidate there is gone.
+  for kept_id in $KEEP_KEXT_IDS; do
+    printf '%s\n' "$INS" | awk '{print $1}' | grep -Fxq "$kept_id" || die "removal collection dropped $kept_id"
+  done
+  # Keep a private verified copy in case the candidate path is removed before publish.
   cp -p "$NEWKC" "$RB/removal-candidate.kc" || die "cannot keep a copy of the removal collection"
   CANDIDATE=$NEWKC
 fi
 # Finish all collection checks before changing installed files.
+if [ "${CHECK:-0}" = 1 ]; then
+  [ -z "$NEWKC" ] || rm -f "$NEWKC" || die "cannot remove the check-only collection"
+  rm -rf "$RB"
+  echo "CHECK PASS (nothing changed)"
+  exit 0
+fi
 if [ -z "$RB" ]; then RB=$(mktemp -d /var/tmp/nullmoth-remove.XXXX) && [ -n "$RB" ] || die "cannot create the removal backup"; fi
 for k in $KEXTS; do [ ! -e "$EXT/$k.kext" ] || ditto "$EXT/$k.kext" "$RB/$k.kext" || die "cannot back up $k"; done
 for b in NVMTLDriver.bundle NVIDIAShared.bundle nvmtl NVKZinkGLDriver.bundle nvmtl-allow.txt; do [ ! -e "$GB/$b" ] || ditto "$GB/$b" "$RB/$b" || die "cannot back up $b"; done
+[ ! -d /Library/NullMoth/nvfw ] || ditto /Library/NullMoth/nvfw "$RB/firmware-new" || die "cannot back up firmware"
+[ ! -d /Users/Shared/nvfw ] || ditto /Users/Shared/nvfw "$RB/firmware-old" || die "cannot back up legacy firmware"
 for f in /Library/NullMoth/kexts /Library/NullMoth/driver-version /Library/NullMoth/update-pending /Library/LaunchDaemons/com.nullmoth.osupdate.plist "$KC"; do
   [ ! -e "$f" ] || cp -Rp "$f" "$RB/" || die "cannot back up the removal state"
 done
@@ -106,8 +198,11 @@ else
   cp -p "$CANDIDATE" "$KC" || die "cannot publish the verified backup collection"
 fi
 if [ -f "$KC" ]; then
-  FINAL_INS=$(kmutil inspect -a x86_64 -A "$KC" 2>/dev/null) || die "cannot verify the published removal collection"
+  FINAL_INS=$(kmutil inspect -a x86_64 -A "$KC" --show-extension-info 2>/dev/null) || die "cannot verify the published removal collection"
   printf '%s\n' "$FINAL_INS" | grep -Eq 'com\.nullmoth|org\.hackintosh\.experimental\.NVPrimarySelector' && die "the kernel collection still lists the NVIDIA driver or selector"
+  for kept_id in $KEEP_KEXT_IDS; do
+    printf '%s\n' "$FINAL_INS" | awk '{print $1}' | grep -Fxq "$kept_id" || die "published removal collection dropped $kept_id"
+  done
 fi
 REMOVING=0
 rm -rf "$RB"

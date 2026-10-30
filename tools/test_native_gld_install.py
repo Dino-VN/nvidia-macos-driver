@@ -147,6 +147,66 @@ if name=='kmutil' and a[0]=='inspect':
         self.assert_restored(result)
         self.assertFalse((self.root/'creates').exists())
 
+    def cached_extension(self, identifier='com.highpoint-tech.kext.HighPointRR', version='4.22.1',
+                         installed_id=None, installed_version=None, second_copy=False):
+        import json
+        source = self.root / 'Library/Extensions/HighPointRR.kext'
+        (source / 'Contents').mkdir(parents=True)
+        (source / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+            'CFBundleIdentifier': installed_id or identifier,
+            'CFBundleVersion': installed_version or version}))
+        if second_copy:
+            other = self.root / 'Library/Extensions/AnotherName.kext/Contents'
+            other.mkdir(parents=True)
+            (other/'Info.plist').write_bytes((source/'Contents/Info.plist').read_bytes())
+        recorded = '/private/var/tmp/nullmoth-remove.deleted/repo/HighPointRR.kext'
+        tool = self.bin/'kmutil'
+        tool.write_text(tool.read_text() + '''
+if name=='kmutil' and a[0]=='inspect':
+ p=Path(a[a.index('-A')+1])
+ if p==r/'Library/KernelCollections/AuxiliaryKernelExtensions.kc':
+  print(''' + repr(identifier+'\t'+version+'\t'+recorded) + ''')
+ else: print(''' + repr(identifier+' '+version) + ''')
+''')
+        return source
+
+    def test_deleted_removal_path_recovers_exact_installed_identity(self):
+        import json
+        source = self.cached_extension()
+        result = self.run_install()
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        commands = [json.loads(line) for line in (self.root/'calls.jsonl').read_text().splitlines()]
+        creates = [call for call in commands if call[:2]==['kmutil','create']]
+        self.assertEqual(len(creates), 2)
+        for call in creates:
+            self.assertIn(str(source.resolve()), call)
+            self.assertFalse(any('nullmoth-remove.deleted' in arg for arg in call))
+
+    def test_stale_removal_reference_check_only_does_not_install(self):
+        self.cached_extension()
+        result = self.run_install(CHECK='1')
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('CHECK PASS', result.stdout)
+        self.assert_creates(1)
+        for path, data in self.old.items(): self.assertEqual(path.read_bytes(), data)
+
+    def test_stale_reference_does_not_accept_same_filename_wrong_identity(self):
+        self.cached_extension(installed_id='org.other.HighPointRR')
+        self.assert_restored(self.run_install())
+        self.assertFalse((self.root/'creates').exists())
+
+    def test_stale_reference_does_not_substitute_different_version(self):
+        self.cached_extension(installed_version='9.0')
+        self.assert_restored(self.run_install())
+        self.assertFalse((self.root/'creates').exists())
+
+    def test_stale_reference_refuses_ambiguous_installed_copies(self):
+        self.cached_extension(second_copy=True)
+        result = self.run_install()
+        self.assert_restored(result)
+        self.assertIn('Ambiguous',result.stdout+result.stderr)
+        self.assertFalse((self.root/'creates').exists())
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -21,6 +21,14 @@ The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integ
 
 ## Capture import reuse and planar GPU copies
 
+Preserve the installer/uninstaller permanent-path repair: recover obsolete
+temporary collection references only through an unambiguous installed bundle
+ID/version match. Published removal collections must use permanent `-p` paths,
+preserve non-default external extensions, and verify retained IDs both before
+and after publication. Keep firmware in removal rollback and the check-only
+uninstaller mode. Never publish a collection whose dependencies live only in a
+temporary staging repository that cleanup deletes.
+
 Retain the bounded IOSurface import cache and shared page-span calculation from
 PR #3. Cache only released wrapper imports, retaining the surface while idle;
 keep count/byte/idle/age limits, opt-outs, separate host-page accounting and GPU

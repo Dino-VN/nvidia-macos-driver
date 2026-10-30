@@ -306,6 +306,36 @@ kmutil_blocker() {  # <kmutil log> <extensions folder>: prints a sentence for th
   printf '%s needs %s, which this macOS does not have, so macOS cannot build a kernel collection while it is there. It is not part of this driver. Move %s out of %s (or load it from OpenCore instead), then run 1401 again' \
     "$id" "$dep" "${path:-the kext with that identifier}" "$ext"
 }
+# Shared with uninstall.sh: resolve old staging references by bundle identity,
+# never by filename. Existing permanent paths may contain a pending update;
+# recovery of a missing/temporary path requires the recorded version too.
+permanent_kext_path() {
+  local wanted_id=$1 wanted_version=$2 recorded=$3 candidate resolved found="" id version
+  if [ -d "$recorded" ]; then
+    resolved=$(cd "$recorded" && pwd -P) || return 1
+    case "$resolved" in /private/var/tmp/*|/var/tmp/*|/private/tmp/*|/tmp/*) ;;
+      *)
+        id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$resolved/Contents/Info.plist" 2>/dev/null) || id=''
+        if [ "$id" = "$wanted_id" ]; then printf '%s\n' "$resolved"; return 0; fi
+        ;;
+    esac
+  fi
+  for candidate in "$EXT"/*.kext /Library/Apple/System/Library/Extensions/*.kext; do
+    [ -d "$candidate" ] && [ ! -L "$candidate" ] || continue
+    id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist" 2>/dev/null) || continue
+    [ "$id" = "$wanted_id" ] || continue
+    version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$candidate/Contents/Info.plist" 2>/dev/null) || continue
+    [ -n "$wanted_version" ] && [ "$version" = "$wanted_version" ] || continue
+    resolved=$(cd "$candidate" && pwd -P) || return 1
+    if [ -n "$found" ] && [ "$found" != "$resolved" ]; then
+      echo "Ambiguous installed copies of $wanted_id version $wanted_version" >&2; return 1
+    fi
+    found=$resolved
+  done
+  [ -n "$found" ] || { echo "No installed match for $wanted_id version $wanted_version (recorded at $recorded)" >&2; return 1; }
+  printf '%s\n' "$found"
+}
+
 step "3. test kernel collection"
 T=$(mktemp -d /var/tmp/nullmoth.XXXX) && [ -n "$T" ] && mkdir -p "$T/repo" || die "create private preflight directory"
 # Preserve installed extensions outside the default repositories (for example
@@ -319,9 +349,9 @@ if [ -s "$KC" ]; then
     case "$external_path" in *.kext) ;; *) continue;; esac
     case "$external_path" in "$EXT"/*|/Library/Apple/System/Library/Extensions/*|/System/*) continue;; esac
     printf '%s' "$external_id" | grep -Eq '^[A-Za-z0-9_.-]+$' || die "invalid external extension identity"
-    [ -d "$external_path" ] && [ -f "$external_path/Contents/Info.plist" ] \
-      || die "existing collection refers to missing external extension $external_path"
-    permanent_path=$(cd "$external_path" && pwd -P) || die "cannot resolve $external_path"
+    case "$external_id" in com.nullmoth.NVRM|com.nullmoth.NVAccel|com.nullmoth.NVRMFB|com.nullmoth.NVRMAGDC) continue;; esac
+    permanent_path=$(permanent_kext_path "$external_id" "$external_version" "$external_path") \
+      || die "cannot preserve existing extension $external_id from a permanent installed path"
     parent=$permanent_path
     while :; do
       require_install_directory "$parent"
