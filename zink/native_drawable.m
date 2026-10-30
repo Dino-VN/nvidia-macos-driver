@@ -11,7 +11,7 @@
 @property(strong) CAMetalLayer *layer;
 @property uint32_t deviceID;
 @property unsigned width, height;
-@property BOOL pending, opaque;
+@property BOOL pending, opaque, displaySync;
 @end
 @implementation NVKZinkTarget
 @end
@@ -93,7 +93,7 @@ void nvk_native_remove(CGLContextObj context)
 }
 
 static void configure(NVKZinkTarget *target, uint32_t vendor, uint32_t deviceID,
-                       unsigned width, unsigned height, BOOL opaque)
+                       unsigned width, unsigned height, BOOL opaque, BOOL displaySync)
 {
    NSCAssert([NSThread isMainThread], @"Layer configuration belongs to main");
    id<MTLDevice> device = metal_device(vendor, deviceID);
@@ -116,6 +116,11 @@ static void configure(NVKZinkTarget *target, uint32_t vendor, uint32_t deviceID,
       target.layer.device = device;
       target.layer.opaque = opaque;
       target.opaque = opaque;
+      /* CGLSetParameter updates the Apple context carrier, but our native
+       * drawable bypasses Apple's swap. Mirror its requested interval here;
+       * CAMetalLayer otherwise enables display synchronization by default. */
+      target.layer.displaySyncEnabled = displaySync;
+      target.displaySync = displaySync;
       target.layer.frame = view.bounds;
       target.layer.contentsScale = view.wantsBestResolutionOpenGLSurface ? view.window.backingScaleFactor : 1;
       target.layer.drawableSize = CGSizeMake(width, height);
@@ -128,6 +133,9 @@ int nvk_native_acquire(CGLContextObj context, uint32_t vendor, uint32_t deviceID
 {
    if (!context || !frame || !surface || !width || !height) return 0;
    *frame = NULL; *surface = NULL;
+   GLint interval = 1;
+   CGLGetParameter(context, kCGLCPSwapInterval, &interval);
+   BOOL displaySync = interval != 0;
    @autoreleasepool {
       @try {
          NSMutableDictionary *table = bindings();
@@ -143,20 +151,22 @@ int nvk_native_acquire(CGLContextObj context, uint32_t vendor, uint32_t deviceID
          BOOL setup = NO;
          @synchronized(target) {
             if (!target.pending && (!target.layer || target.deviceID != deviceID ||
-                                    target.width != width || target.height != height || target.opaque != (opaque != 0))) {
+                                    target.width != width || target.height != height ||
+                                    target.opaque != (opaque != 0) || target.displaySync != displaySync)) {
                target.pending = YES; setup = YES;
             }
          }
          if (setup) {
-            if ([NSThread isMainThread]) configure(target, vendor, deviceID, width, height, opaque != 0);
-            else dispatch_async(dispatch_get_main_queue(), ^{ configure(target, vendor, deviceID, width, height, opaque != 0); });
+            if ([NSThread isMainThread]) configure(target, vendor, deviceID, width, height, opaque != 0, displaySync);
+            else dispatch_async(dispatch_get_main_queue(), ^{ configure(target, vendor, deviceID, width, height, opaque != 0, displaySync); });
          }
          CAMetalLayer *layer;
          @synchronized(target) {
             if (target.pending) return 2;
             layer = target.layer;
             if (!layer) return 0;
-            if (target.width != width || target.height != height || target.deviceID != deviceID) return 2;
+            if (target.width != width || target.height != height || target.deviceID != deviceID ||
+                target.opaque != (opaque != 0) || target.displaySync != displaySync) return 2;
          }
          id<CAMetalDrawable> drawable = [layer nextDrawable];
          if (!drawable) return 2;

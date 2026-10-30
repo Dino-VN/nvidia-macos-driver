@@ -41,6 +41,8 @@ def main():
         ('native-gld-auto','zink_native_present_probe',['automatic','default'],True,None),
         ('native-gld-worker','zink_native_present_probe',['automatic','worker','transparent'],True,'native'),
         ('native-multiple-windows','zink_native_present_probe',['automatic','windows'],True,'native'),
+        ('native-swap-interval','zink_native_present_probe',['swap-interval'],False,'native'),
+        ('native-gld-swap-interval','zink_native_present_probe',['automatic','worker','windows','swap-interval'],True,None),
         ('native-updated-os-build','zink_native_present_probe',['automatic','default'],True,None),
     ]
     results = []
@@ -48,10 +50,13 @@ def main():
         env = dict(os.environ,NVKZINK_REQUIRE_GPU='1')
         env.pop('DYLD_INSERT_LIBRARIES',None);env.pop('NVKZINK_PRESENT',None)
         env.pop('ZINK_TEST_OS_BUILD',None)
+        env.pop('ZINK_TEST_GLD_BUNDLE',None);env.pop('ZINK_TEST_APPLE_GLD',None)
         if name == 'native-updated-os-build': env['ZINK_TEST_OS_BUILD']='25G242'
         if mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
         if automatic:
             env.update(ZINK_TEST_GLD_BUNDLE=str((runtime/'NVKZinkGLDriver.bundle').resolve(strict=True)),DYLD_INSERT_LIBRARIES=str(shim))
+        else:
+            env.update(ZINK_TEST_APPLE_GLD='1',DYLD_INSERT_LIBRARIES=str(shim))
         library = runtime/('libnvk_zink.dylib' if binary=='zink_probe' else 'libnvk_cgl.dylib')
         icd = '/nonexistent/zink-test-icd.json' if mode=='invalid-icd' else str(runtime/'nvk_icd.json')
         argv = [str(runtime/binary),str(library),icd]+options

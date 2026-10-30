@@ -12,8 +12,12 @@
 extern int gpu_bundle_find_trusted(const char *, char *, size_t);
 static int lookup(const char *name, char *output, size_t bytes)
 {
+    /* Explicit-attachment probes still need an Apple carrier when the host
+     * already selects our automatic GLD. Keep this override process-local. */
+    if (getenv("ZINK_TEST_APPLE_GLD") && !strcmp(name,"NVKZinkGLDriver"))
+        return gpu_bundle_find_trusted("AppleMetalOpenGLRenderer",output,bytes);
     const char *bundle = getenv("ZINK_TEST_GLD_BUNDLE");
-    if (bundle && !strcmp(name,"AppleMetalOpenGLRenderer")) {
+    if (bundle && (!strcmp(name,"AppleMetalOpenGLRenderer") || !strcmp(name,"NVKZinkGLDriver"))) {
         char path[PATH_MAX];
         if (!realpath(bundle,path) || strlen(path)+1 > bytes) return -1;
         memcpy(output,path,strlen(path)+1);
@@ -24,6 +28,15 @@ static int lookup(const char *name, char *output, size_t bytes)
 }
 static void *open_bundle(const char *path, int mode)
 {
+    const char *suffix = "/Contents/MacOS/NVKZinkGLDriver";
+    size_t length = strlen(path), tail = strlen(suffix);
+    if (getenv("ZINK_TEST_APPLE_GLD") && length >= tail && !strcmp(path+length-tail,suffix)) {
+        char apple[PATH_MAX], executable[PATH_MAX];
+        if (gpu_bundle_find_trusted("AppleMetalOpenGLRenderer",apple,sizeof(apple))) return NULL;
+        int size = snprintf(executable,sizeof(executable),"%s/Contents/MacOS/AppleMetalOpenGLRenderer",apple);
+        if (size<0 || (size_t)size>=sizeof(executable)) return NULL;
+        return dlopen(executable,mode);
+    }
     const char *bundle = getenv("ZINK_TEST_GLD_BUNDLE");
     char original[PATH_MAX], replacement[PATH_MAX];
     if (bundle) {

@@ -2,6 +2,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/CAMetalLayer.h>
 #include <OpenGL/gl3.h>
 #include "nvk_zink.h"
 #include "nvk_cgl.h"
@@ -11,6 +12,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <initializer_list>
+#include <chrono>
 #include <sys/sysctl.h>
 
 static unsigned verified;
@@ -19,6 +21,23 @@ static bool transparent;
 static int reject(const nvk_zink_present_event *) { return 0; }
 static int uncertain(const nvk_zink_present_event *) { return -1; }
 static void require(bool ok, const char *what) { if (!ok) throw std::runtime_error(what); }
+static void check_swap_interval(NSOpenGLView *view, CGLContextObj context, GLint interval)
+{
+   require([NSThread isMainThread], "Inspect native layer on main");
+   GLint observed = -1;
+   require(!CGLGetParameter(context,kCGLCPSwapInterval,&observed) && observed == interval,
+           "CGL must retain the application's requested swap interval");
+   CAMetalLayer *native = nil;
+   for (CALayer *layer in view.layer.sublayers)
+      if ([layer isKindOfClass:[CAMetalLayer class]]) {
+         require(!native,"One native layer per view"); native = (CAMetalLayer *)layer;
+      }
+   require(native,"Native presentation layer must exist");
+   require(native.displaySyncEnabled == (interval != 0),
+           "Native layer must follow the CGL swap interval");
+   printf("PASS swap interval %d: native display synchronization %s\n",interval,
+          native.displaySyncEnabled ? "enabled" : "disabled");
+}
 static void check(VkResult status) { require(status == VK_SUCCESS, "Vulkan diagnostic operation failed"); }
 static void draw_pattern(unsigned width, unsigned height)
 {
@@ -100,9 +119,10 @@ static int observe(const nvk_zink_present_event *event)
 int main(int argc, char **argv)
 {
    @autoreleasepool { try {
-      require(argc >= 3, "usage: native-probe libnvk_cgl.dylib nvk_icd.json [transparent] [automatic] [worker] [reject|uncertain] [default]");
+      require(argc >= 3, "usage: native-probe libnvk_cgl.dylib nvk_icd.json [transparent] [automatic] [worker] [reject|uncertain] [default] [windows] [swap-interval] [pacing]");
       setvbuf(stdout, nullptr, _IOLBF, 0);
       bool automatic = false, worker = false, defaults = false, windows = false;
+      bool swap_interval = false, pacing = false;
       int failure = 0;
       for (int i = 3; i < argc; ++i) {
          if (!strcmp(argv[i], "transparent")) transparent = true;
@@ -112,6 +132,8 @@ int main(int argc, char **argv)
          else if (!strcmp(argv[i], "uncertain")) failure = -1;
          else if (!strcmp(argv[i], "default")) defaults = true;
          else if (!strcmp(argv[i], "windows")) windows = true;
+         else if (!strcmp(argv[i], "swap-interval")) swap_interval = true;
+         else if (!strcmp(argv[i], "pacing")) { pacing = true; swap_interval = true; }
          else require(false, "Unknown option");
       }
       if (defaults) unsetenv("NVKZINK_PRESENT"); else setenv("NVKZINK_PRESENT", "native", 1);
@@ -141,6 +163,8 @@ int main(int argc, char **argv)
       NSOpenGLContext *context = view.openGLContext; [context makeCurrentContext]; [context update];
       CGLContextObj cgl = context.CGLContextObj; GLint opacity = !transparent;
       require(!CGLSetParameter(cgl,kCGLCPSurfaceOpacity,&opacity), "Opacity");
+      GLint initial_interval = 1;
+      if (swap_interval) require(!CGLSetParameter(cgl,kCGLCPSwapInterval,&initial_interval), "Initial swap interval");
       if (!automatic) require(attach(cgl,128,128), error());
       printf("Native test renderer: %s\n", glGetString(GL_RENDERER));
       auto present = (int(*)(CGLContextObj))dlsym(library,"nvk_cgl_present"); require(present,"Present API");
@@ -157,6 +181,16 @@ int main(int argc, char **argv)
          }
       }
       require(verified==12,"Every native frame must be verified");
+      if (swap_interval) {
+         check_swap_interval(view,cgl,initial_interval);
+         for (GLint interval : {0,1,0}) {
+            unsigned before = verified;
+            require(!CGLSetParameter(cgl,kCGLCPSwapInterval,&interval),"Change swap interval");
+            draw_pattern(640,480); require(present(cgl),error());
+            require(verified==before+1,"Swap-interval change must preserve the copied frame");
+            check_swap_interval(view,cgl,interval);
+         }
+      }
       if (worker) {
          [NSOpenGLContext clearCurrentContext];
          [window setContentSize:NSMakeSize(80,112)]; [context update];
@@ -166,12 +200,26 @@ int main(int argc, char **argv)
             @autoreleasepool { try {
                require(!CGLSetCurrentContext(cgl), "Worker current");
                require(resize(cgl,80,112),error());
-               for (unsigned attempts=0; attempts<40 && verified<15; ++attempts) {
+               unsigned expected = verified + 3;
+               for (unsigned attempts=0; attempts<40 && verified<expected; ++attempts) {
                   draw_pattern(80,112);
                   require(present(cgl),error());
                   [NSThread sleepForTimeInterval:0.01];
                }
-               require(verified==15,"Worker frames must all reach the native drawable"); passed = true;
+               require(verified==expected,"Worker frames must all reach the native drawable");
+               if (swap_interval) for (GLint interval : {1,0,1,0}) {
+                  unsigned before = verified;
+                  require(!CGLSetParameter(cgl,kCGLCPSwapInterval,&interval),"Worker swap interval");
+                  for (unsigned attempts=0; attempts<40 && verified==before; ++attempts) {
+                     draw_pattern(80,112); require(present(cgl),error());
+                     [NSThread sleepForTimeInterval:0.01];
+                  }
+                  require(verified==before+1,"Worker interval change must reach the native drawable");
+                  /* The probe checks AppKit state on main while the worker
+                   * keeps ownership of its CGL context. */
+                  dispatch_sync(dispatch_get_main_queue(), ^{ check_swap_interval(view,cgl,interval); });
+               }
+               passed = true;
                CGLSetCurrentContext(nullptr);
             } catch (const std::exception &error) { fprintf(stderr,"Worker: %s\n",error.what()); }
             dispatch_semaphore_signal(done); }
@@ -194,13 +242,36 @@ int main(int argc, char **argv)
          second_window.contentView = second_view; [second_window orderFront:nil];
          [second makeCurrentContext]; [second update]; CGLContextObj other = second.CGLContextObj;
          require(!CGLSetParameter(other,kCGLCPSurfaceOpacity,&opacity),"Second window opacity");
+         GLint second_interval = 1;
+         if (swap_interval) require(!CGLSetParameter(other,kCGLCPSwapInterval,&second_interval),"Second window swap interval");
          if (!automatic) require(attach(other,48,64),error());
          require(glIsTexture(shared_texture),"CGL sharing must preserve the actual GL object");
          for (unsigned i=0;i<3;++i) { require(resize(other,48,64),error());draw_pattern(48,64);require(present(other),error()); }
+         if (swap_interval) { check_swap_interval(second_view,other,1); check_swap_interval(view,cgl,0); }
          require(detach(other),error()); [second_window orderOut:nil];
          [context makeCurrentContext]; draw_pattern(worker ? 80 : 640,worker ? 112 : 480);
          require(present(cgl),error()); glDeleteTextures(1,&shared_texture);
          puts("PASS: two native windows retain independent targets and shared GL objects");
+      }
+      if (pacing) {
+         /* Measure actual presentation without the diagnostic readback. This
+          * is a report, not a speed assertion: other GPU clients may run. */
+         observer(nullptr);
+         unsigned width = worker ? 80 : 640, height = worker ? 112 : 480;
+         for (GLint interval : {0,1,0}) {
+            require(!CGLSetParameter(cgl,kCGLCPSwapInterval,&interval),"Pacing swap interval");
+            draw_pattern(width,height); require(present(cgl),error()); check_swap_interval(view,cgl,interval);
+            unsigned frames = 0;
+            auto start = std::chrono::steady_clock::now(); double seconds;
+            do {
+               @autoreleasepool {
+                  draw_pattern(width,height); require(present(cgl),error()); ++frames;
+               }
+               seconds = std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+            } while (seconds < 1.0);
+            printf("PACING interval=%d frames=%u seconds=%.3f fps=%.1f\n",interval,frames,seconds,frames/seconds);
+         }
+         observer(observe);
       }
       if (failure) {
          draw_pattern(worker ? 80 : 640,worker ? 112 : 480);

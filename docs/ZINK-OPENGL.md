@@ -27,6 +27,14 @@ there is no game-frame CPU readback, CPU row conversion or CPU pixel upload.
 Metal still allocates the drawable and macOS composites it. This is a GPU-copy
 path, not zero-copy scan-out, and it still waits for GPU completion on the CPU.
 
+Native presentation follows the context's CGL swap interval: `0` disables
+CAMetalLayer display synchronization and a nonzero interval enables it. An
+application's VSync toggle takes effect on subsequent frames, independently for
+each context, including render-thread clients. Intervals greater than one do not
+currently add multi-refresh pacing. With VSync off, render throughput can exceed
+the monitor's refresh rate; GPU copy completion is still required before a frame
+is published. The display's physical refresh rate does not change.
+
 The private frontend and renderer live under
 `/Library/GPUBundles/nvmtl/zink`. They do not change `VK_DRIVER_FILES`, the default
 ICD, Minecraft's runtime, Wine's provider or their paired DXVK/vkd3d DLLs.
