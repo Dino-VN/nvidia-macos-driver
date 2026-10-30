@@ -48,6 +48,10 @@ installed runtime can continue selecting Zink after a macOS update without
 rebuilding. The build recorded in the package is provenance, not an activation
 whitelist. The user requested this policy and will test macOS updates.
 
+A user reports that Minecraft continued launching with Zink after upgrading
+from macOS 26.7.1 to 26.7.2 without rebuilding the CGL adapter. This records
+Minecraft compatibility for that update; local diagnostics below use 25G241.
+
 Apple's private ABI is still an assumption: a layout change can require an
 adapter update and can break OpenGL before a clean fallback is possible. Existing
 symbol/profile/device checks remain; they do not prove full layout compatibility.
