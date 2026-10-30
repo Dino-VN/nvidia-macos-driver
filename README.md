@@ -123,6 +123,24 @@ argument that points to the standard installed directory. Use `-Dnvkbridge.enabl
 Fabric Essential and NeoForge gameplay were checked on RTX 2060 SUPER / Tahoe 26.7.1.
 See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
 
+## OBS display capture
+
+OBS **33.0.1** has an opt-in compatibility mode in this fork's Zink builds.
+On the tested Intel Tahoe system, OBS's OpenGL capture textures cannot import
+through Zink, and ScreenCaptureKit's requested RGBA16F stream fails to start.
+Quit OBS, enable the saved setting, then reopen OBS normally:
+
+```sh
+defaults write com.obsproject.obs-studio NVKZinkCaptureCompatibility -bool true
+```
+
+Select the display explicitly in **macOS Screen Capture** and click **OK**.
+This uses Apple's OpenGL renderer and **8-bit BGRA SDR capture for OBS only**;
+Minecraft and other applications continue using Zink. A moving desktop preview
+is user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. Recording, streaming and HDR
+capture still need separate testing. See the
+[compatibility details and rollback](docs/ZINK-OPENGL.md#obs-display-capture-compatibility).
+
 ## Wine / CrossOver native Vulkan
 
 The Wine/NVK runtime lets compatible macOS Wine builds use this fork's native

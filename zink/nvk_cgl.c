@@ -68,6 +68,7 @@ static int materialize(struct nvk_cgl_bridge *b);
 static void release_gpu_present(struct nvk_cgl_bridge *b);
 static void drain_native_cleanups(struct nvk_cgl_bridge *b);
 void nvk_cgl_install_lwjgl_appkit(void);
+int nvk_cgl_obs_compatibility_enabled(void);
 
 __attribute__((noinline)) static int fail(const char *error) { last_error = error; return 0; }
 EXPORT const char *nvk_cgl_last_error(void) { return last_error ? last_error : "none"; }
@@ -280,6 +281,10 @@ static void use_zink(struct nvk_cgl_bridge *b)
 EXPORT int nvk_cgl_prepare_gld(void *engine, void *driver)
 {
    if (!engine || !driver) return 0;
+   /* Keep an entire application's GL objects in Apple's driver when testing
+    * clients that require CGL/IOSurface interop. Never switch a live context. */
+   const char *disabled = getenv("NVKZINK_DISABLE");
+   if ((disabled && !strcmp(disabled, "1")) || nvk_cgl_obs_compatibility_enabled()) return 0;
    if (native_surface_copy_context()) return 0;
    unsigned char profile = *(unsigned char *)((char *)engine + 0xc6a6);
    if (profile > 1) return 0;

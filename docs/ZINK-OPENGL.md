@@ -95,6 +95,42 @@ Zink. `NVKZINK_REQUIRE_GPU=1` makes the standalone probe reject missing GPU-copy
 support; `NVKZINK_RGBX=1` tests alpha-less drawables. These names intentionally
 survive the installed Metal plugin's filtering of internal `NVK_` variables.
 
+### OBS display capture compatibility
+
+OBS 33.0.1 needs two compatibility measures on the tested Intel Tahoe/NVIDIA
+system. Its OpenGL capture textures fail to import through
+`CGLTexImageIOSurface2D` while the context uses Zink. Its ScreenCaptureKit source
+also requests RGBA16F frames, which fail to start with “The stream is nil” even
+with Apple's OpenGL renderer. Separate diagnostics receive BGRA8 frames and
+verify Apple's BGRA8/RGBA16F texture imports successfully.
+
+After installing a driver build with this repair, quit OBS and enable its saved
+compatibility setting:
+
+```sh
+defaults write com.obsproject.obs-studio NVKZinkCaptureCompatibility -bool true
+```
+
+Open OBS normally, add **macOS Screen Capture**, explicitly select the display,
+and click **OK**. The setting keeps OBS's entire OpenGL context in Apple's
+renderer and changes its RGBA16F capture request to **8-bit BGRA SDR**. It is
+checked only for the `com.obsproject.obs-studio` application; other applications
+continue to select Zink. OBS 33.0.1's moving desktop preview is user-confirmed on
+RTX 2060 SUPER / Tahoe 26.7.1. HDR capture, encoding and streaming need separate
+testing. This is a compatibility path, not native Zink IOSurface import support.
+
+To turn the mode off, quit OBS and run:
+
+```sh
+defaults delete com.obsproject.obs-studio NVKZinkCaptureCompatibility
+```
+
+For a single launch, `NVKZINK_OBS_COMPAT=1 /Applications/OBS.app/Contents/MacOS/obs`
+enables the same mode; `NVKZINK_OBS_COMPAT=0` overrides a saved setting for that
+process. For other CGL interoperability diagnostics,
+`NVKZINK_DISABLE=1 /path/to/application` keeps automatic contexts in Apple's
+renderer for that process. It does not alter ScreenCaptureKit formats.
+
 Copy/import failures do not publish partial frames. Uncertain completion stops
 the affected share group and retains its GPU resources until process exit.
 Normal context teardown drains accepted work before freeing imports. One private

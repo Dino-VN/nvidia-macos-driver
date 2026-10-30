@@ -59,23 +59,31 @@ check. WindowServer can reuse BGRA surface imports for OBS capture too. A Metal
 client that consumes or produces compatible video planes can use the repaired
 GPU upload/readback path.
 
-OBS uses several different paths. At inspected OBS source
-`65c320b46e1af5c7a555161aea6182cdf7a8c524`, its
-[ScreenCaptureKit callback](https://github.com/obsproject/obs-studio/blob/65c320b46e1af5c7a555161aea6182cdf7a8c524/plugins/mac-capture/mac-sck-common.m)
+OBS uses several different paths. In OBS **33.0.1**, its
+[ScreenCaptureKit callback](https://github.com/obsproject/obs-studio/blob/33.0.1/plugins/mac-capture/mac-sck-common.m)
 locks the CVPixelBuffer before retrieving its IOSurface. Its
-[screen source](https://github.com/obsproject/obs-studio/blob/65c320b46e1af5c7a555161aea6182cdf7a8c524/plugins/mac-capture/mac-sck-video-capture.m)
-selects BGRA for ordinary SDR capture, and its
-[macOS OpenGL backend](https://github.com/obsproject/obs-studio/blob/65c320b46e1af5c7a555161aea6182cdf7a8c524/libobs-opengl/gl-cocoa.m)
+[screen source](https://github.com/obsproject/obs-studio/blob/33.0.1/plugins/mac-capture/mac-sck-video-capture.m)
+requests RGBA16F on macOS 15+ and BGRA8 on older macOS versions. Its
+[macOS OpenGL backend](https://github.com/obsproject/obs-studio/blob/33.0.1/libobs-opengl/gl-cocoa.m)
 imports/rebinds those surfaces through `CGLTexImageIOSurface2D`.
 Consequently, NV12 improvements are not proof of an OBS screen-source speedup,
 and a later Metal-texture reader cannot eliminate that earlier CVPixelBuffer lock.
 
 This changes no encoder, codec registration, VideoToolbox service or OBS
 backend. It does not add NVENC support to a client that cannot already use the
-driver's encoder. OBS's OpenGL/IOSurface behavior with the optional native Zink
-GLD also needs separate application testing; the Metal tests below do not
-qualify that interoperability. Do not force a different OBS renderer or encoder
-as part of installing these capture changes.
+driver's encoder. The Metal tests below do not qualify OBS's native Zink
+OpenGL/IOSurface interoperability. Subsequent application tests reproduced
+`CGLTexImageIOSurface2D` error 10007 under Zink; Apple's OpenGL context imports
+BGRA8 and RGBA16F successfully, including pixel checks. A separate ScreenCaptureKit
+probe receives BGRA8 frames but returns CoreGraphics error 1003, “The stream is
+nil,” for RGBA16F. The stream-start failure also appears in pre-Zink OBS logs.
+
+The [opt-in OBS compatibility mode](ZINK-OPENGL.md#obs-display-capture-compatibility)
+uses Apple's complete OpenGL context and requests BGRA8 capture for OBS only.
+The user confirms its moving desktop preview on RTX 2060 SUPER / Tahoe 26.7.1.
+This does not implement native Zink IOSurface texture imports or establish
+recording/encoding performance. Installing the capture changes does not enable
+the mode or select a different OBS encoder.
 
 ## Validation and limits
 

@@ -31,6 +31,7 @@ def main():
         ('gld-core','cgl_zink_probe',['--system'],True,'gpu'),
         ('gld-core32','cgl_zink_probe',['--system','--core32'],True,'gpu'),
         ('gld-legacy','cgl_zink_legacy_probe',['--system'],True,'gpu'),
+        ('gld-apple-iosurface','cgl_iosurface_probe',['--require-apple'],True,'disabled'),
         ('gld-window','cgl_zink_window_probe',['--system','--appkit-present'],True,'gpu'),
         ('gld-rgbx-worker','cgl_zink_window_probe',['--system','--legacy','--no-alpha','--appkit-present','--render-thread'],True,'gpu'),
         ('native-default','zink_native_present_probe',['default'],False,None),
@@ -43,6 +44,8 @@ def main():
         ('native-multiple-windows','zink_native_present_probe',['automatic','windows'],True,'native'),
         ('native-swap-interval','zink_native_present_probe',['swap-interval'],False,'native'),
         ('native-gld-swap-interval','zink_native_present_probe',['automatic','worker','windows','swap-interval'],True,None),
+        ('native-obs-policy-isolation','zink_native_present_probe',['automatic','default'],True,None),
+        ('native-optout-zero','zink_native_present_probe',['automatic','default'],True,None),
         ('native-updated-os-build','zink_native_present_probe',['automatic','default'],True,None),
     ]
     results = []
@@ -51,8 +54,13 @@ def main():
         env.pop('DYLD_INSERT_LIBRARIES',None);env.pop('NVKZINK_PRESENT',None)
         env.pop('ZINK_TEST_OS_BUILD',None)
         env.pop('ZINK_TEST_GLD_BUNDLE',None);env.pop('ZINK_TEST_APPLE_GLD',None)
+        env.pop('NVKZINK_DISABLE',None)
+        env.pop('NVKZINK_OBS_COMPAT',None)
         if name == 'native-updated-os-build': env['ZINK_TEST_OS_BUILD']='25G242'
-        if mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
+        if name == 'native-obs-policy-isolation': env['NVKZINK_OBS_COMPAT']='1'
+        if name == 'native-optout-zero': env['NVKZINK_DISABLE']='0'
+        if mode=='disabled': env['NVKZINK_DISABLE']='1'
+        elif mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
         if automatic:
             env.update(ZINK_TEST_GLD_BUNDLE=str((runtime/'NVKZinkGLDriver.bundle').resolve(strict=True)),DYLD_INSERT_LIBRARIES=str(shim))
         else:

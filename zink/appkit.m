@@ -2,6 +2,7 @@
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 #import <dispatch/dispatch.h>
+#import <CoreVideo/CoreVideo.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
@@ -16,6 +17,56 @@ static void (*original_update)(id, SEL);
 static void (*original_clear)(id, SEL);
 static pthread_once_t installed = PTHREAD_ONCE_INIT;
 void nvk_cgl_lwjgl_drawable_size(CGLContextObj, unsigned, unsigned);
+
+/* OBS 33 requests RGBA16F screen streams on macOS 15+, which can fail before
+ * producing any frames on this driver. Its source handles BGRA8 dynamically.
+ * This explicit diagnostic workaround affects only the OBS application. */
+static void (*original_capture_format)(id, SEL, OSType);
+static pthread_once_t obs_policy_once = PTHREAD_ONCE_INIT;
+static BOOL obs_compatibility;
+
+static void read_obs_policy(void)
+{
+   if (![[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.obsproject.obs-studio"]) return;
+   const char *override = getenv("NVKZINK_OBS_COMPAT");
+   if (override) { obs_compatibility = !strcmp(override, "1"); return; }
+   Boolean valid = false;
+   obs_compatibility = CFPreferencesGetAppBooleanValue(CFSTR("NVKZinkCaptureCompatibility"),
+      CFSTR("com.obsproject.obs-studio"), &valid) && valid;
+}
+
+int nvk_cgl_obs_compatibility_enabled(void)
+{
+   pthread_once(&obs_policy_once, read_obs_policy);
+   return obs_compatibility;
+}
+
+static void obs_capture_format(id configuration, SEL selector, OSType format)
+{
+   original_capture_format(configuration, selector,
+      format == kCVPixelFormatType_64RGBAHalf ? kCVPixelFormatType_32BGRA : format);
+}
+
+static void install_obs_capture_compatibility(void)
+{
+   if (!nvk_cgl_obs_compatibility_enabled()) return;
+   void *framework = dlopen("/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit", RTLD_NOW | RTLD_LOCAL);
+   if (!framework) { fprintf(stderr,"NVK Zink: OBS capture compatibility could not load ScreenCaptureKit\n"); return; }
+   Class cls = NSClassFromString(@"SCStreamConfiguration");
+   SEL selector = NSSelectorFromString(@"setPixelFormat:");
+   Method method = class_getInstanceMethod(cls, selector);
+   NSMethodSignature *signature = method ? [NSMethodSignature signatureWithObjCTypes:method_getTypeEncoding(method)] : nil;
+   if (signature.numberOfArguments != 3 || strcmp(signature.methodReturnType, @encode(void)) ||
+       strcmp([signature getArgumentTypeAtIndex:2], @encode(OSType))) {
+      fprintf(stderr,"NVK Zink: OBS capture compatibility found an unsupported pixel-format setter\n"); return;
+   }
+   Dl_info image = {0};
+   if (!dladdr((void *)install_obs_capture_compatibility, &image) || !image.dli_fname ||
+       !dlopen(image.dli_fname, RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE)) return;
+   original_capture_format = (void *)method_getImplementation(method);
+   method_setImplementation(method, (IMP)obs_capture_format);
+   fprintf(stderr,"NVK Zink: OBS compatibility uses BGRA8 ScreenCaptureKit frames\n");
+}
 
 static void publish_view_size(NSOpenGLContext *context)
 {
@@ -82,6 +133,7 @@ static void lwjgl_clear_drawable(id context, SEL selector)
 
 static void install_hooks(void)
 {
+   install_obs_capture_compatibility();
    Class cls = [NSOpenGLContext class];
    Method set_view = class_getInstanceMethod(cls, @selector(setView:));
    Method update = class_getInstanceMethod(cls, @selector(update));
