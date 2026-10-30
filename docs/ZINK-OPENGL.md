@@ -185,14 +185,11 @@ presentation, context sharing, resize and teardown need testing on that OS.
 Building directly on Sequoia is another option; a matching SDK alone does not
 establish the private runtime ABI.
 
-Before installing, run **`Test-Zink.command`** from the complete package or
-compact test archive while the existing NVIDIA driver is running. It uses the
-packaged runtime in disposable processes, briefly opens diagnostic windows and
-creates a `NVIDIA-Zink-Test-*.tar.gz` log archive on the Desktop. It does not
-register a GLD, rebuild kernel collections or change system OpenGL selection.
-Return those logs when testing another configuration. After a
-successful installation/reboot, F3 or the application startup log should show
-`zink` and `NVK` without any Minecraft companion mod or JVM argument.
+The temporary Sequoia test download and packaged launcher were retired after
+the 25-case run succeeded. Developers can still use `tools/test_zink_runtime.py`
+with a runtime containing its GLD bundle, as described below. After installing
+the complete package and rebooting, F3 or the application startup log should
+show `zink` and `NVK` without any Minecraft companion mod or JVM argument.
 
 ### Build commands
 

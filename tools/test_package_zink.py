@@ -174,6 +174,10 @@ class PackageZinkTests(unittest.TestCase):
 
     def test_native_stage_selects_both_os_accelerators(self):
         self.native_bundle()
+        self.put(self.base/'Test-Zink.command',b'old Sequoia test launcher')
+        self.put(self.base/pkg.RUNTIME/'zink-tests/old.py',b'old packaged runner')
+        pkg.base_tools.write_manifest(self.base)
+        self.original = self.snapshot(self.base)
         self.stage(native_gld=True)
         self.unchanged()
         for relative in ('Library/Extensions/NVAccel.kext', 'Library/NullMoth/kexts/15/NVAccel.kext',
@@ -181,8 +185,8 @@ class PackageZinkTests(unittest.TestCase):
             info = plistlib.loads((self.out / relative / 'Contents/Info.plist').read_bytes())
             self.assertEqual(info['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
         self.assertEqual(json.loads((self.out/'PACKAGE-IDENTITY.json').read_text())['native_cgl_macos_majors'], ['15','26'])
-        self.assertTrue((self.out/'Test-Zink.command').is_file())
-        self.assertTrue((self.out/pkg.RUNTIME/'zink-tests/test_zink_runtime.py').is_file())
+        self.assertFalse((self.out/'Test-Zink.command').exists())
+        self.assertFalse((self.out/pkg.RUNTIME/'zink-tests').exists())
         self.assertTrue((self.out / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver').is_file())
         pkg.base_tools.verify_manifest(self.out)
 

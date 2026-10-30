@@ -180,13 +180,13 @@ def stage(base, zink, output, components=None, native_gld=False):
         for name in ('build_zink.sh', 'prepare_zink.py', 'build_cgl_zink.sh', 'generate_cgl_dispatch.py',
                      'build_gld_bridge.sh', 'generate_gld_forward.py', 'build_zink_vulkan.py', 'record_zink_runtime.py'):
             shutil.copy2(ROOT / 'build' / name, source_dir / name)
-        for name in ('Install.command', 'Uninstall.command', 'Verify.command', 'Test-Zink.command'):
+        for name in ('Install.command', 'Uninstall.command', 'Verify.command'):
             shutil.copy2(ROOT / 'package' / name, payload / name)
             (payload / name).chmod(0o755)
+        # Retire the one-off Sequoia qualification launcher from older bases.
+        (payload/'Test-Zink.command').unlink(missing_ok=True)
         test_dir = runtime / 'zink-tests'
-        test_dir.mkdir(exist_ok=True)
-        for name in ('test_zink_runtime.py', 'zink_gld_test_lookup.c'):
-            shutil.copy2(ROOT / 'tools' / name, test_dir / name)
+        if test_dir.exists(): shutil.rmtree(test_dir)
         # Use this checkout's installer fixes, preserving its private payload,
         # preflight, backup, rollback and OS accelerator-selection behavior.
         for name in ('install.sh', 'uninstall.sh'):

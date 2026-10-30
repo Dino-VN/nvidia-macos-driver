@@ -26,9 +26,8 @@ Follow any extension-approval instructions in **Privacy & Security** and reboot
 when requested. The installer backs up the previous driver and rebuilds the
 kernel collection. Do not also inject these kexts through `EFI/OC/Kexts`.
 
-For diagnostics, `Test-Zink.command` runs isolated GPU/CGL tests without
-installing anything; `Verify.command` checks the complete package. See the
-[package guide](docs/COMBINED-INSTALL.md).
+`Verify.command` checks the complete package and runs GPU/CGL diagnostics.
+See the [package guide](docs/COMBINED-INSTALL.md).
 
 ## 1401 Mac app
 

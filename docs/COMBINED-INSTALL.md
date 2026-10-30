@@ -15,13 +15,7 @@ application and boot-test results. Integration probes alone do not qualify a
 complete desktop session.
 
 Extract the archive to obtain `pkgroot/`. With the matching NVIDIA kernel driver
-already running, **run `Test-Zink.command` first on Sequoia** and return the
-Desktop `NVIDIA-Zink-Test-*.tar.gz` archive. This tests the supplied GLD through
-process-local lookup and never installs or registers it. Apple Command Line
-Tools are required. The compact `zink-sequoia-test/` archive contains the same
-test runtime and command, without installer or kernel files.
-
-Double-click `Verify.command` in the complete package to check hashes and run GPU/CGL
+already running, double-click `Verify.command` to check hashes and run GPU/CGL
 probes. Diagnostic windows briefly appear. The probes use package-local
 libraries; passing them does not prove global GLD registration or a successful
 reboot.
