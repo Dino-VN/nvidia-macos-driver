@@ -1187,8 +1187,8 @@ void nvmtl_texture_desc_swizzle(NVMTLTexture *t, MTLTextureDescriptor *d) {
     if (!_parent && _bparkable && _backBuf && _i.img) nvmtl_bpark_put(_backBuf, &_i, _pkey);
     if (!_parent) nvmtl_vk_image_destroy(&_i);
     if (_stTwin.img) nvmtl_vk_image_destroy(&_stTwin);
-    if (!_parent && _vramOn) { nvmtl_vk_buffer_destroy(&_vramBuf); _vramOn = NO; }
-    if (!_parent) nvmtl_vk_host_pages_drop(&_hostPages);
+    if (!_parent && _vramOn) { nvmtl_vram_keep_put(0, _surf, _plane, &_vramBuf, _vramBorn); _vramOn = NO; }
+    if (!_parent) nvmtl_vram_keep_put(1, _surf, _plane, &_hostPages, _vramBorn);
     if (_surfOwned && _surf) CFRelease(_surf);
     if (_subHeap) { NVMTLHeap *h = _subHeap; NSUInteger c = _subCharge; _subHeap = nil; _subCharge = 0;
                     if (_subPlaced && c) { _subPlaced = NO; [h nvmtlGiveRange:_heapOffset length:c]; }
@@ -1237,6 +1237,14 @@ static id nvmtl_surface_sync(NVMTLTexture *t) {
         return monitor;
     }
 }
+// The import must not include a page before this surface's owned mapping, even
+// on devices whose host-import alignment is larger than a system page.
+static bool nvmtl_surface_host_importable(NVMTLTexture *r, void *base) {
+    const size_t align = nvmtl_vk_host_import_align();
+    const uintptr_t allocation = (uintptr_t)IOSurfaceGetBaseAddress(r->_surf), plane = (uintptr_t)base;
+    return allocation && align && !(align & (align - 1)) && plane >= allocation &&
+           (plane & ~(uintptr_t)(align - 1)) >= allocation;
+}
 // NVMTL_SURFIN_UPLOAD=cpu: surface-in copies with the CPU (nvmtl_vk_image_write) instead of importing the pages
 static bool nvmtl_surfin_import(void) {
     static int on = -1;
@@ -1267,7 +1275,7 @@ static bool nvmtl_surfout_import(void) {
     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
     size_t row = IOSurfaceGetBytesPerRowOfPlane(r->_surf, (uint32_t)r->_plane);
     int rc = -1;
-    if (base && row && nvmtl_surfin_import()) {
+    if (base && row && nvmtl_surfin_import() && nvmtl_surface_host_importable(r, base)) {
         const size_t off = (size_t)((uint8_t *)base - (uint8_t *)IOSurfaceGetBaseAddress(r->_surf));
         rc = nvmtl_vk_image_write_host(r->_q, &r->_i, base, row, IOSurfaceGetAllocSize(r->_surf) - off, &r->_hostPages);
     }
@@ -1333,7 +1341,7 @@ static void nvmtl_surface_remark_later(NVMTLTexture *r, uint32_t seed) {
     void *base = IOSurfaceGetBaseAddressOfPlane(r->_surf, (uint32_t)r->_plane);
     size_t row = IOSurfaceGetBytesPerRowOfPlane(r->_surf, (uint32_t)r->_plane);
     int rc = -1;
-    if (base && row && nvmtl_surfout_import()) {
+    if (base && row && nvmtl_surfout_import() && nvmtl_surface_host_importable(r, base)) {
         const size_t off = (size_t)((uint8_t *)base - (uint8_t *)IOSurfaceGetBaseAddress(r->_surf));
         rc = nvmtl_vk_image_read_host(r->_q, &r->_i, base, row, IOSurfaceGetAllocSize(r->_surf) - off, &r->_hostPages);
     }

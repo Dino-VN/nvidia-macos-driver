@@ -24,6 +24,7 @@ enum { kIOSurfaceLockReadOnly = 1 };
 typedef struct { unsigned w,h,bpp; unsigned char gpu[4]; } Image;
 typedef struct { BOOL imported; } HostPages;
 static BOOL hostPagesAvailable;
+static size_t nvmtl_vk_host_import_align(void) { return 1; }
 static dispatch_semaphore_t entered, release_read;
 static unsigned uploads, gpu_seed;
 static unsigned long long g_surfin_skip, g_surfin_copy;

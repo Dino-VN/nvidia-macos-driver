@@ -1,11 +1,14 @@
 // bench_surface_wrappers_nv12: like bench_surface_wrappers, but a two-plane NV12 IOSurface (luma R8 + chroma RG8), as Photos and video decoders use.
 // A writable wrapper of each plane gets a pattern from a compute pass; a read-only wrapper of each plane then reads it back
 // (same command buffer / two command buffers / two queues).
-// build: clang -fobjc-arc -O1 -o bench_surface_wrappers_nv12 tools/bench_surface_wrappers_nv12.m -framework Metal -framework Foundation -framework IOSurface -framework CoreVideo
+// build: clang -fobjc-arc -O1 -o bench_surface_wrappers_nv12 tools/bench_surface_wrappers_nv12.m -framework Metal -framework Foundation -framework IOSurface -framework CoreVideo -framework IOKit
 // usage: bench_surface_wrappers_nv12
 #import <Metal/Metal.h>
 #import <IOSurface/IOSurface.h>
 #import <CoreVideo/CoreVideo.h>
+#import <IOKit/IOKitLib.h>
+#import <objc/message.h>
+#include <dlfcn.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -24,7 +27,18 @@ int main(void)
 {
     @autoreleasepool {
         setvbuf(stdout, NULL, _IONBF, 0);
-        id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); printf("device %s\n", dev.name.UTF8String);
+        id<MTLDevice> dev = nil;
+        const char *plugin = getenv("NM_TEST_PLUGIN");
+        if (plugin) {
+            if (!dlopen(plugin, RTLD_NOW | RTLD_LOCAL)) { fprintf(stderr, "%s\n", dlerror()); return 3; }
+            io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("NVAccel"));
+            if (!svc) return 4;
+            dev = ((id(*)(id, SEL, mach_port_t))objc_msgSend)([NSClassFromString(@"NVMTLDevice") alloc],
+                NSSelectorFromString(@"initWithAcceleratorPort:"), svc);
+            IOObjectRelease(svc);
+        } else dev = MTLCreateSystemDefaultDevice();
+        if (!dev) return 5;
+        printf("device %s\n", dev.name.UTF8String);
         NSError *e = nil; id<MTLLibrary> lib = [dev newLibraryWithSource:@(kSrc) options:nil error:&e];
         id<MTLComputePipelineState> wy = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"wy"] error:&e], wc = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"wc"] error:&e],
             ry = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"ry"] error:&e], rc = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"rc"] error:&e];

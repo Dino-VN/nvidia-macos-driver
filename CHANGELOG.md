@@ -1,5 +1,11 @@
 # Changelog
 
+## Fork screen-capture copy and wrapper reuse
+
+- Reuse released IOSurface VRAM and host-page imports with count, byte, idle-time and maximum-age bounds. Retain the surface while cached; `NVMTL_VRAM_KEEP=0` disables reuse.
+- Copy unaligned 420v/420f NV12 planes on the GPU when their page span is safely importable. Upload/readback share an import layout; invalid spans retain the existing CPU fallback.
+- Preserve WindowServer's kernel-gated completion/publication ordering and the native Minecraft/Wine/Zink VRAM tag format. This optimizes shared copy paths used by capture apps; encoder support is unchanged. See [capture review](docs/CAPTURE-PR3-REVIEW.md) for validation and limits.
+
 ## Fork integration with upstream 2.6.4 and native Wine D3D12
 
 - Merge upstream sampler arrays, texture-array element selection and older inline constexpr samplers while retaining the fork's translator address/rounding repairs, display/cursor fixes, all-app ANGLE policy and performance paths.

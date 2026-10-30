@@ -19,6 +19,24 @@ Before each merge:
 The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integrated on
 2026-10-29. The preceding base was 2.6.3 at `190a4d4`, integrated on 2026-10-28.
 
+## Capture import reuse and planar GPU copies
+
+Retain the bounded IOSurface import cache and shared page-span calculation from
+PR #3. Cache only released wrapper imports, retaining the surface while idle;
+keep count/byte/idle/age limits, opt-outs, separate host-page accounting and GPU
+cleanup outside its mutex. Do not broaden this into reuse of in-flight buffers
+or replace the stable parked backing without an import-invalidation contract.
+Host imports must stay within the owned mapping, use a texel-aligned offset and
+one overflow-checked span for both upload and readback. Preserve CPU fallback.
+
+Keep the three-word `NVMTLVramAt:pN` tag shared with Minecraft/Wine and Zink.
+The PR's incompatible four-word pending tag and capture-reader polling are
+excluded. Preserve the existing kernel-gated conditional completion, overlapping
+writer counts, deferred publication and uncertain-work quarantine. There is no
+new cross-process busy-wait or encoder change. See
+[capture review](CAPTURE-PR3-REVIEW.md) for the OBS path analysis, pixel tests and
+remaining live-application/hardware validation limits.
+
 ## Native Zink OpenGL integration
 
 Preserve `zink/` and its pinned Mesa overlay, build/packaging tools and local
