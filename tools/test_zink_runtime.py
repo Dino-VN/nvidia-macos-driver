@@ -51,7 +51,7 @@ def main():
         if name == 'native-updated-os-build': env['ZINK_TEST_OS_BUILD']='25G242'
         if mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
         if automatic:
-            env.update(ZINK_TEST_GLD_BUNDLE=str(runtime/'NVKZinkGLDriver.bundle'),DYLD_INSERT_LIBRARIES=str(shim))
+            env.update(ZINK_TEST_GLD_BUNDLE=str((runtime/'NVKZinkGLDriver.bundle').resolve(strict=True)),DYLD_INSERT_LIBRARIES=str(shim))
         library = runtime/('libnvk_zink.dylib' if binary=='zink_probe' else 'libnvk_cgl.dylib')
         icd = '/nonexistent/zink-test-icd.json' if mode=='invalid-icd' else str(runtime/'nvk_icd.json')
         argv = [str(runtime/binary),str(library),icd]+options
