@@ -114,6 +114,22 @@ class PackageZinkTests(unittest.TestCase):
             self.stage()
         self.assertFalse(self.out.exists())
 
+    def test_signed_shader_resources_survive_transient_cache_filter(self):
+        signed = Path('Library/GPUBundles/NVMTLDriver.bundle/Contents/Resources/sass/seed.bin')
+        framework = Path('Library/GPUBundles/Signed.framework/Versions/A/Resources/aircache/seed.bin')
+        transient = pkg.BASE_RUNTIME / 'spvcache/temporary.bin'
+        for relative in (signed, framework, transient):
+            self.put(self.base / relative, b'signed seed' if relative != transient else b'transient')
+        pkg.base_tools.write_manifest(self.base)
+        self.original = self.snapshot(self.base)
+        self.stage()
+        self.unchanged()
+        self.assertEqual((self.out / signed).read_bytes(), b'signed seed')
+        self.assertEqual((self.out / framework).read_bytes(), b'signed seed')
+        self.assertFalse((self.out / transient).exists())
+        self.assertTrue(any(command[:3] == ('codesign', '--verify', '--strict')
+                            and command[-1].endswith('/NVMTLDriver.bundle') for command in self.commands))
+
     def test_missing_firmware_version_cannot_publish_a_package(self):
         self.firmware = self.firmware.replace('615.78.08', '999.0')
         with self.assertRaisesRegex(ValueError, 'missing regular file'):

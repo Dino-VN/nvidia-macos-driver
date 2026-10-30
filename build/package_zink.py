@@ -30,11 +30,18 @@ def copy_bundle(source, dest):
     base_tools.validate_links(source.resolve())
     if dest.exists():
         shutil.rmtree(dest)
+    # Bundled shader seeds are signed resources, even when their directory is
+    # named "sass". Only strip transient caches outside bundles/frameworks.
+    def ignored(directory, names):
+        parts = (source.name, *Path(directory).relative_to(source).parts)
+        sealed = any(part.endswith(('.bundle', '.framework')) for part in parts)
+        return [name for name in names if name == '.DS_Store' or name.startswith('._')
+                or (not sealed and name in ('sass', 'aircache', 'spvcache'))]
+
     # Copy framework directory symlinks as links, and keep installation flags
-    # out of user-owned output. Finder metadata and shader caches are omitted.
+    # out of user-owned output.
     shutil.copytree(source, dest, symlinks=True, copy_function=copy_file,
-                    ignore=lambda directory, names: [name for name in names
-                       if name == '.DS_Store' or name.startswith('._') or name in ('sass','aircache','spvcache')])
+                    ignore=ignored)
 
 
 
@@ -150,6 +157,8 @@ def stage(base, zink, output, components=None, native_gld=False):
             run('install_name_tool', '-add_rpath', '@loader_path', binary)
             run('codesign', '--force', '--sign', '-', binary)
             run('codesign', '--verify', '--strict', binary)
+        for name in ('NVMTLDriver.bundle', 'NVIDIAShared.bundle'):
+            run('codesign', '--verify', '--strict', payload / 'Library/GPUBundles' / name)
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
         for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)

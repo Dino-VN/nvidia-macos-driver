@@ -3,6 +3,11 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
 /usr/bin/shasum -a 256 --strict -c SHA256SUMS --quiet
+for bundle in NVMTLDriver.bundle NVIDIAShared.bundle NVKZinkGLDriver.bundle; do
+  if [ -d "$HERE/Library/GPUBundles/$bundle" ]; then
+    /usr/bin/codesign --verify --strict "$HERE/Library/GPUBundles/$bundle"
+  fi
+done
 /bin/bash "$HERE/nullmoth-runtime-check.sh" "$HERE" "$(sw_vers -productVersion)"
 RUNTIME="$HERE/Library/GPUBundles/nvmtl/zink"
 export NVKZINK_PRESENT=gpu NVKZINK_REQUIRE_GPU=1
