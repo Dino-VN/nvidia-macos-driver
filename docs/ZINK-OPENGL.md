@@ -142,6 +142,35 @@ No controlled application FPS improvement is claimed.
 
 ## Building locally
 
+### Collecting Sequoia CGL evidence
+
+Give an **Intel Sequoia 15.5+** tester the standalone
+[NVIDIA-Sequoia-CGL-Collect.command](../tools/NVIDIA-Sequoia-CGL-Collect.command).
+They can run it as their logged-in desktop user, without `sudo`:
+
+```sh
+bash ~/Downloads/NVIDIA-Sequoia-CGL-Collect.command
+```
+
+It creates a `NVIDIA-CGL-*.tar.gz` archive on the Desktop to send back. Apple's
+Command Line Tools are needed for the full collection. If they are missing,
+the archive explains how to install them and rerun; the script does not install
+or download anything itself. The collector records the actual OS/build, renderer
+and loaded-module UUIDs, selected accelerator properties, GLD exports, static
+CGL/GLEngine disassembly and public GL dispatch offsets. LLDB can resolve cached
+modules even when their logical paths are absent from the filesystem; no Apple
+binary or complete dyld cache is copied. It opens only its own disposable,
+offscreen CGL contexts and never attaches to another process.
+
+This supplies evidence for a **separate Sequoia adapter**, not an instruction to
+enable Tahoe's adapter on Sequoia. First compare public dispatch and private
+context/share-group/GLD layouts, then build the matching CGL and GLD components
+and run isolated probes on Sequoia. GPU-copy presentation, context sharing,
+resize and teardown still need testing there. Building directly on Sequoia is
+another option; a matching SDK alone does not establish the private runtime ABI.
+
+### Build commands
+
 Use a separate, clean Mesa checkout at
 [`17ca6174dcc6cb22059ac343bc29f8af7800f42e`](https://gitlab.freedesktop.org/mesa/mesa/-/commit/17ca6174dcc6cb22059ac343bc29f8af7800f42e).
 Do not apply this overlay to the Mesa tree producing the installed NVMTL plugin.
