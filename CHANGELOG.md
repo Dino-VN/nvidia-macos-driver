@@ -1,5 +1,12 @@
 # Changelog
 
+## Native Zink Minecraft resize repair
+
+- Keep Minecraft's full drawable viewport in sync when AppKit grows or restores
+  the window. A stale viewport could leave the render confined to the original
+  lower-left resolution while the rest of the window stayed black; application
+  viewports that are intentionally smaller or offset remain unchanged.
+
 ## Fork integration with upstream 2.6.4 and native Wine D3D12
 
 - Merge upstream sampler arrays, texture-array element selection and older inline constexpr samplers while retaining the fork's translator address/rounding repairs, display/cursor fixes, all-app ANGLE policy and performance paths.

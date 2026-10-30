@@ -179,6 +179,17 @@ static struct nvk_cgl_bridge *bridge_current(void *engine)
    /* NSOpenGLContext can update a surface while another CGL context is current.
     * Mesa requires this drawable current before reallocating its buffers. */
    if (pending) {
+      /* LWJGL/OpenGL clients are not required to issue glViewport again when
+       * AppKit grows a window.  In that case the old viewport leaves the new
+       * framebuffer rendered only in its lower-left corner (the usual
+       * Minecraft maximize symptom).  Preserve an application viewport that
+       * is intentionally smaller or offset, but keep the common full-drawable
+       * viewport attached to the new drawable dimensions. */
+      unsigned old_width = thread_bridge->width, old_height = thread_bridge->height;
+      GLint viewport[4] = {0, 0, 0, 0};
+      glGetIntegerv(GL_VIEWPORT, viewport);
+      bool viewport_tracks_drawable = viewport[0] == 0 && viewport[1] == 0 &&
+         viewport[2] == (GLint)old_width && viewport[3] == (GLint)old_height;
       if (!nvk_zink_resize(thread_bridge->zink, width, height)) {
          pthread_mutex_lock(&bridges_lock);
          if (!thread_bridge->resize_pending) {
@@ -192,7 +203,11 @@ static struct nvk_cgl_bridge *bridge_current(void *engine)
       pthread_mutex_lock(&bridges_lock);
       thread_bridge->width = width; thread_bridge->height = height;
       pthread_mutex_unlock(&bridges_lock);
-      /* Resizing attachments must not overwrite the application viewport. */
+      if (viewport_tracks_drawable) {
+         void (*mesa_viewport)(GLint, GLint, GLsizei, GLsizei) =
+            (void *)nvk_zink_get_proc_address("glViewport");
+         if (mesa_viewport) mesa_viewport(native_x, native_y, (GLsizei)width, (GLsizei)height);
+      }
    }
    return thread_bridge;
 }
