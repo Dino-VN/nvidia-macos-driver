@@ -1,9 +1,12 @@
-# Local native OpenGL test package
+# Native OpenGL and screen-capture driver package
 
 This is a complete fork driver package with an **optional Zink/NVK OpenGL
 renderer**, tested on Intel macOS **26.7.1 / 25G241**. It includes the existing
-Minecraft and Wine runtimes. This local build has not been installed or
-boot-tested by the integration review, and no GitHub release has been published.
+Minecraft and Wine runtimes, plus bounded IOSurface import reuse and GPU copies
+for supported unaligned video planes. See `PACKAGE-IDENTITY.json` and the
+accompanying validation/release notes for source identity and the latest
+application and boot-test results. Integration probes alone do not qualify a
+complete desktop session.
 
 Extract the archive to obtain `pkgroot/`. With the matching NVIDIA kernel driver
 already running, double-click `Verify.command` to check hashes and run GPU/CGL
@@ -40,6 +43,12 @@ NVKZINK_PRESENT=native /path/to/application/executable
 
 Check that `GL_RENDERER` contains **zink** and **NVK**. Minecraft's native Vulkan
 bridge and Wine's runtime are independent and retain their existing setup.
+
+The screen-capture changes apply to shared driver operations used by capture
+apps. `NVMTL_VRAM_KEEP=0` disables cross-wrapper import reuse for a process;
+`NVMTL_VRAM_KEEP_MB` adjusts its idle-import budget (128 MiB by default).
+These changes do not select a different OBS renderer or add encoder support.
+See `CAPTURE-REVIEW.md` for the scope and application-testing limits.
 
 For rollback, reinstall the previous complete driver package and reboot. The
 normal installer removes the optional GLD bundle and restores the Apple OpenGL

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one complete local driver archive with Zink and native CGL adapters."""
+"""Build one complete driver archive with Zink and native CGL adapters."""
 import argparse
 import json
 import os
@@ -207,6 +207,7 @@ def stage(base, zink, output, components=None, native_gld=False):
                     'native_cgl_os_build': (runtime / 'cgl-os-build.txt').read_text().strip()}
         (payload / 'PACKAGE-IDENTITY.json').write_text(json.dumps(identity, indent=2) + '\n')
         shutil.copy2(ROOT / 'docs/COMBINED-INSTALL.md', payload / 'READ-ME.md')
+        shutil.copy2(ROOT / 'docs/CAPTURE-PR3-REVIEW.md', payload / 'CAPTURE-REVIEW.md')
         for major in ('15', '26'):
             plist = plistlib.loads((payload / 'Library/NullMoth/kexts' / major / 'NVAccel.kext/Contents/Info.plist').read_bytes())
             if plist.get('IOKitPersonalities', {}).get('NVAccel', {}).get('IOGLBundleName') == 'NVKZinkGLDriver' and not (native_gld and major == '26'):

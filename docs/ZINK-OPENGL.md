@@ -145,7 +145,7 @@ Arbitrary overlays of installed `/Library` contents are rejected.
 ```sh
 python3 build/package_zink.py --base /path/to/verified/pkgroot \
   --zink /path/to/zink-out --stage /path/to/new/pkgroot \
-  --archive /path/to/new/driver-zink-local.tar.gz --native-gld
+  --archive /path/to/new/nvidia-macos-driver-2.6.4-zink-nvk.tar.gz --native-gld
 ```
 
 The archive has one top-level `pkgroot/`. It preserves existing runtimes and
