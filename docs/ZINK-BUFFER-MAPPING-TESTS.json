@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "hardware": "RTX 2060 SUPER / Intel macOS Tahoe 26.7.1 (25G241), 8 GiB BAR1",
+  "scope": "Private Vulkan map failure injection; no installation or live BAR exhaustion",
+  "baseline": [
+    {
+      "case": "upload",
+      "returncode": -11,
+      "seconds": 0.774
+    },
+    {
+      "case": "map-failure",
+      "returncode": -11,
+      "seconds": 0.714
+    },
+    {
+      "case": "read-failure",
+      "returncode": -11,
+      "seconds": 0.598
+    }
+  ],
+  "repaired": [
+    {
+      "case": "upload",
+      "returncode": 0,
+      "seconds": 0.754
+    },
+    {
+      "case": "map-failure",
+      "returncode": 0,
+      "seconds": 0.696
+    },
+    {
+      "case": "read-failure",
+      "returncode": 0,
+      "seconds": 0.7
+    },
+    {
+      "case": "full-bar",
+      "returncode": 0,
+      "seconds": 0.658
+    }
+  ],
+  "repaired_zink_sha256": "ccb9907b1d22d74b5346f60bb83c8cfd01f166078c0a91a7f76d365b47cc5427",
+  "mesa_commit": "17ca6174dcc6cb22059ac343bc29f8af7800f42e",
+  "small_bar_case": "Report 256 MiB BAR and reject BAR maps >= 1 MiB; system upload maps succeed",
+  "failure_cases": "Reject maps >= 1 MiB, check GL_OUT_OF_MEMORY, disarm, then verify successful GPU cubemap uploads",
+  "original_sequoia_minecraft_retested": false,
+  "log_sha256": {
+    "baseline/map-failure.log": "204d6214bb516b97146987ff47e106dd8b51a0e6194565c13ec9bce8165e6a70",
+    "baseline/upload.log": "003bccb921b6719da0d6f6deec08ac14aa6a5b4db724da4df5cbb595f7ddfe39",
+    "baseline/read-failure.log": "204d6214bb516b97146987ff47e106dd8b51a0e6194565c13ec9bce8165e6a70",
+    "repaired-mapping/map-failure.log": "585e4bb0bf59d1ddfa47389ec7f307e30d9823017b262b3f269e40fc2c795351",
+    "repaired-mapping/upload.log": "5e5e708918f854b3d5018f03f97841c47121d4d3ae04078ed8251b6d5ed7dfcc",
+    "repaired-mapping/read-failure.log": "d7f171d7fc079f198928ab3a04b721f6edce5ec336de0eaeb05a0dee931aa150",
+    "repaired-mapping/full-bar.log": "198436c8d840ff98134ccc38950da06a2d8c921551cd3c4a93d83dc5811cd8e5"
+  },
+  "additional_validation": {
+    "gpu_cgl_presentation_cases_passed": 31,
+    "package_cases_passed": 18,
+    "cgl_loader_paths_verified": "All four Zink libraries resolved inside the isolated repaired runtime"
+  }
+}

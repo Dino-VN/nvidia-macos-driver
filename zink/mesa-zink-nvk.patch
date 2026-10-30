@@ -57,7 +57,40 @@
     if (!screen->loader_lib) {
        if (!screen->driver_name_is_inferred)
           mesa_loge("ZINK: failed to load "VK_LIBNAME);
-@@ -3833,6 +3846,12 @@
+@@ -3621,6 +3634,32 @@
+       if (biggest_vis_vram > biggest_vram * 0.9)
+          screen->resizable_bar = true;
+    }
++
++#if defined(NVK_ZINK_NVK)
++   if (zink_driverid(screen) == VK_DRIVER_ID_MESA_NVK && !screen->resizable_bar) {
++      /* CPU upload heaps also match DEVICE_LOCAL|HOST_VISIBLE memory. NVK
++       * lists that type first, but a successful VRAM allocation can still
++       * fail to map when the small BAR aperture fills up. Prefer system RAM
++       * for these heaps; keep device-local rendering and full-BAR behavior.
++       */
++      const enum zink_heap upload_heaps[] = {
++         ZINK_HEAP_HOST_VISIBLE_COHERENT,
++         ZINK_HEAP_HOST_VISIBLE_COHERENT_CACHED,
++      };
++      for (unsigned h = 0; h < ARRAY_SIZE(upload_heaps); h++) {
++         enum zink_heap heap = upload_heaps[h];
++         unsigned preferred = 0;
++         for (unsigned i = 0; i < screen->heap_count[heap]; i++) {
++            uint8_t type = screen->heap_map[heap][i];
++            if (screen->info.mem_props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
++               continue;
++            memmove(&screen->heap_map[heap][preferred + 1],
++                    &screen->heap_map[heap][preferred], i - preferred);
++            screen->heap_map[heap][preferred++] = type;
++         }
++      }
++   }
++#endif
+ 
+    setup_renderdoc(screen);
+    if (screen->threaded_submit && !util_queue_init(&screen->flush_queue, "zfq", 8, 1, UTIL_QUEUE_INIT_RESIZE_IF_FULL, screen)) {
+@@ -3833,6 +3872,12 @@
     }
     if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO) {
        switch(screen->info.driver_props.driverID) {
@@ -126,7 +159,26 @@
     /* callbacks for drivers to read their DSA/FS state and update renderpass info accordingly
 --- a/src/gallium/auxiliary/util/u_threaded_context.c
 +++ b/src/gallium/auxiliary/util/u_threaded_context.c
-@@ -3333,8 +3333,12 @@
+@@ -2880,8 +2880,16 @@
+ 
+    void *ret = pipe->buffer_map(pipe, tres->latest ? tres->latest : resource,
+                                 level, usage, box, transfer);
+-   threaded_transfer(*transfer)->valid_buffer_range = &tres->valid_buffer_range;
+-   threaded_transfer(*transfer)->cpu_storage_mapped = false;
++   /* Drivers leave the transfer unset when allocation or mapping fails.
++    * Let the uploader/GL caller report OOM instead of dereferencing NULL.
++    * The driver-thread state must still be restored below on failure.
++    */
++   if (ret) {
++      threaded_transfer(*transfer)->valid_buffer_range = &tres->valid_buffer_range;
++      threaded_transfer(*transfer)->cpu_storage_mapped = false;
++   } else {
++      *transfer = NULL;
++   }
+ 
+    if (!(usage & TC_TRANSFER_MAP_THREADED_UNSYNC))
+       tc_clear_driver_thread(tc);
+@@ -3333,8 +3341,12 @@
     if (tc->options.parse_renderpass_info && tc->in_renderpass)
        ended = tc_check_fb_access(tc, NULL, resource);
  

@@ -69,9 +69,13 @@ with **256 MiB BAR1** passes all **25 isolated native Zink tests**, including
 core/legacy contexts, GL sharing, native GPU-copy pixel checks, opacity, resize,
 worker threads, multiple windows, VSync toggles and failed-work quarantine.
 This validates the adapter's complete lifecycle, including the GLD state-to-GLI
-relation, in those probe processes. System-wide GLD registration, Sequoia kernel
-linking, reboot and Minecraft gameplay still need testing. The local Tahoe
-machine has 8 GiB BAR1.
+relation, in those probe processes. A subsequent Minecraft startup selected
+Zink successfully but exposed a separate upload-buffer mapping crash. Small-BAR
+upload heaps now prefer system memory, and failed maps return an OpenGL memory
+error instead of dereferencing an unset transfer. This repair applies to both
+Sequoia and Tahoe; see the [mapping investigation](ZINK-BUFFER-MAPPING.md).
+Minecraft gameplay on that Sequoia machine still needs retesting. The local
+Tahoe machine has 8 GiB BAR1.
 
 The adapter covers core 3.2/4.1 and legacy compatibility CGL contexts through the
 entrypoints exposed by the current Apple SDK/framework. Mesa reporting OpenGL
@@ -222,7 +226,11 @@ For a checkout extracted from the pinned mirror archive, set
 `ZINK_MESA_ARCHIVE=/path/to/mesa-source.tar.gz`. The accepted archive SHA-256 is
 `1328a4aaba2260c005ff46c88d572403f0b677cd87580050f4d1bfafe56388f0`;
 its URL is `https://codeload.github.com/chaotic-cx/mesa-mirror/tar.gz/17ca6174dcc6cb22059ac343bc29f8af7800f42e`.
-The builder checks extracted files against that archive. Source/build hashes,
+GitHub's regenerated archive with CSV CRLF checkout rules is also accepted:
+`79c8a65a5a5cf6968368e0b7338726465fc21444cc5d5583716eaf685ce879cf`.
+Its 12,909 file contents match the same pinned Git tree after normalizing those
+33 CSV files' line endings. The builder records the actual archive hash and
+checks extracted files against it. Source/build hashes,
 Mesa identity and the private renderer pairing are recorded in `ZINK-BUILD.json`
 and `NATIVE-BUILD.json`; packaging rejects stale or mismatched components.
 
@@ -249,7 +257,7 @@ python3 build/package_zink.py --base /path/to/verified/pkgroot \
 
 The archive has one top-level `pkgroot/`. It preserves existing runtimes and
 version metadata, adds Zink in its own subdirectory and selects `NVKZinkGLDriver`
-only for the Tahoe accelerator. `--native-gld` is the default. `--explicit-cgl-only` is a developer option
+for both Sequoia and Tahoe accelerators. `--native-gld` is the default. `--explicit-cgl-only` is a developer option
 for attachment tests without system OpenGL selection.
 
 Read the packaged [local installation guide](COMBINED-INSTALL.md) first. Run

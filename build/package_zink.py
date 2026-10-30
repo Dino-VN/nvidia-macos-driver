@@ -169,7 +169,8 @@ def stage(base, zink, output, components=None, native_gld=False):
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
         shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-ABI.json', runtime / 'CGL-ABI-EVIDENCE.json')
         shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-TESTS.json', runtime / 'CGL-SEQUOIA-TESTS.json')
-        for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md'):
+        for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md',
+                     'ZINK-BUFFER-MAPPING.md','ZINK-BUFFER-MAPPING-TESTS.json'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)
         source_dir = runtime / 'zink-source'
         if source_dir.exists(): shutil.rmtree(source_dir)

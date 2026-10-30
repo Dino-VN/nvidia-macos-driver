@@ -12,6 +12,10 @@ import tempfile
 
 MESA_COMMIT = '17ca6174dcc6cb22059ac343bc29f8af7800f42e'
 ARCHIVE_SHA256 = '1328a4aaba2260c005ff46c88d572403f0b677cd87580050f4d1bfafe56388f0'
+# GitHub regenerated the archive with .gitattributes CSV CRLF checkout rules.
+# All 12,909 blobs were checked against the same pinned Git tree; only those
+# line endings differ. Keep accepting existing verified build inputs too.
+ARCHIVE_SHA256_CRLF = '79c8a65a5a5cf6968368e0b7338726465fc21444cc5d5583716eaf685ce879cf'
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ('nvk_zink.c', 'nvk_zink.h', 'nvk_present.c', 'nvk_present.h', 'meson.build', 'zink_sync_probe.c')
 
@@ -33,9 +37,10 @@ def prepare(source, archive=None):
     # Internal Zink resources are accessed directly by the presentation bridge.
     # Patch applicability alone cannot establish a matching Mesa ABI.
     if archive:
-        if digest(archive.read_bytes()) != ARCHIVE_SHA256:
+        archive_digest = digest(archive.read_bytes())
+        if archive_digest not in (ARCHIVE_SHA256, ARCHIVE_SHA256_CRLF):
             raise ValueError('Mesa archive does not match the pinned source digest')
-        identity['archive_sha256'] = ARCHIVE_SHA256
+        identity['archive_sha256'] = archive_digest
         with tarfile.open(archive) as tar:
             for member in tar:
                 name = Path(*Path(member.name).parts[1:])
