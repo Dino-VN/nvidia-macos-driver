@@ -157,8 +157,14 @@ def stage(base, zink, output, components=None, native_gld=False):
             run('install_name_tool', '-add_rpath', '@loader_path', binary)
             run('codesign', '--force', '--sign', '-', binary)
             run('codesign', '--verify', '--strict', binary)
-        for name in ('NVMTLDriver.bundle', 'NVIDIAShared.bundle'):
-            run('codesign', '--verify', '--strict', payload / 'Library/GPUBundles' / name)
+        run('codesign', '--verify', '--strict', payload / 'Library/GPUBundles/NVMTLDriver.bundle')
+        # Upstream NVIDIAShared seals ELF/scripts as nested code with signatures
+        # in xattrs, which a portable tar does not retain. Check its executable
+        # and Mach-O children; the complete package manifest covers ELF/scripts.
+        shared = payload / 'Library/GPUBundles/NVIDIAShared.bundle'
+        run('codesign', '--verify', '--strict', '--ignore-resources', shared)
+        for name in ('libLLVM.dylib', 'libzstd.1.dylib', 'nvvmdrive'):
+            run('codesign', '--verify', '--strict', shared / 'Contents/PlugIns' / name)
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
         for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)
