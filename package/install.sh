@@ -192,7 +192,8 @@ ok "every file matches SHA256SUMS and both OS accelerators are present"
 GLD_BUNDLE=""
 if [ -d "$HERE/Library/GPUBundles/NVKZinkGLDriver.bundle" ]; then
   GLD_BUNDLE=NVKZinkGLDriver.bundle
-  [ "$MAJ" = 26 ] || die "this native GLD package selects the macOS 26 accelerator (no driver changes made)"
+  selected_gl=$(/usr/libexec/PlistBuddy -c 'Print :IOKitPersonalities:NVAccel:IOGLBundleName' "$VAR/NVAccel.kext/Contents/Info.plist" 2>/dev/null || true)
+  [ "$selected_gl" = NVKZinkGLDriver ] || die "this package does not enable native Zink for macOS $MAJ (no driver changes made)"
   [ -x "$HERE/Library/GPUBundles/nvmtl/zink/gld_bundle_probe" ] || die "native GLD lookup checker is missing"
 fi
 RUNTIME_PREFLIGHT="$SELF/nullmoth-runtime-check.sh"

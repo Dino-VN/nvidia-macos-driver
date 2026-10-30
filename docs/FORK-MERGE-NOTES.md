@@ -55,7 +55,12 @@ The user requested removal of the exact OS-build activation/build/install gate
 on 2026-10-30 and will test later macOS updates. Preserve that policy: a build
 number change alone must not disable Zink. Private ABI changes can still
 require a repair. Keep build provenance, symbol/slot/profile/device checks
-and the current Tahoe accelerator selection; these are not an OS-build whitelist.
+and Sequoia/Tahoe accelerator selection; these are not an OS-build whitelist.
+The 15.8.1 / 24H32 collection matches all 1,236 public dispatch entries and 131
+Apple GLD exports, together with the private dispatch/profile/share offsets.
+Retain the [static ABI review](ZINK-SEQUOIA-ABI.json) and distinguish that evidence
+from pending Sequoia native Zink hardware qualification. The shared adapter
+continues targeting macOS 15.5; do not copy Apple binaries into the runtime.
 The Zink package builder selects the GLD by default. Keep the original complete
 base-package builder and its Minecraft/Wine/dual-OS support, then add the Zink
 payload with `build/package_zink.py`. A local test build is not a release.

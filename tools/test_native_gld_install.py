@@ -21,6 +21,7 @@ class NativeGLDInstall(Install):
         super().setUp()
         self.env['FAKE_OS_VERSION'] = '26.7.1'
         for relative in ('Library/Extensions/NVAccel.kext',
+                         'Library/NullMoth/kexts/15/NVAccel.kext',
                          'Library/NullMoth/kexts/26/NVAccel.kext'):
             info = self.payload / relative / 'Contents/Info.plist'
             data = plistlib.loads(info.read_bytes()) if info.exists() else {}
@@ -68,13 +69,37 @@ class NativeGLDInstall(Install):
             data = plistlib.loads((self.root / relative / 'Contents/Info.plist').read_bytes())
             self.assertEqual(data['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
         data = plistlib.loads((self.root / 'Library/NullMoth/kexts/15/NVAccel.kext/Contents/Info.plist').read_bytes())
-        self.assertNotEqual(data.get('IOKitPersonalities', {}).get('NVAccel', {}).get('IOGLBundleName'), 'NVKZinkGLDriver')
+        self.assertEqual(data['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
         self.assertIn('NVKZinkGLDriver.bundle', (self.root / 'Library/NullMoth/lastgood.sh').read_text())
 
     def test_lookup_failure_restores_plugin_runtime_personalities_and_collection(self):
         result = self.run_install(FAKE_GLD_LOOKUP_FAIL='1')
         self.assert_restored(result)
         self.assertIn('does not trust the installed OpenGL bundle', result.stdout + result.stderr)
+        self.assert_creates(1)
+
+    def test_sequoia_native_install_uses_sequoia_accelerator(self):
+        self.env['FAKE_OS_VERSION'] = '15.8.1'
+        result = self.run_install()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assert_creates(2)
+        info = self.root/'Library/Extensions/NVAccel.kext/Contents/Info.plist'
+        self.assertEqual(plistlib.loads(info.read_bytes())['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
+        self.assertEqual((self.root/'Library/NullMoth/os-major').read_text().strip(), '15')
+
+    def test_old_tahoe_only_package_is_not_enabled_on_sequoia(self):
+        self.env['FAKE_OS_VERSION'] = '15.8.1'
+        info = self.payload/'Library/NullMoth/kexts/15/NVAccel.kext/Contents/Info.plist'
+        data = plistlib.loads(info.read_bytes());data['IOKitPersonalities']['NVAccel']['IOGLBundleName']='AppleMetalOpenGLRenderer'
+        info.write_bytes(plistlib.dumps(data));self.refresh_manifest()
+        result = self.run_install()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('does not enable native Zink for macOS 15',result.stdout+result.stderr)
+        self.assertFalse((self.root/'creates').exists())
+
+    def test_sequoia_native_lookup_failure_rolls_back(self):
+        self.env['FAKE_OS_VERSION'] = '15.8.1'
+        self.assert_restored(self.run_install(FAKE_GLD_LOOKUP_FAIL='1'))
         self.assert_creates(1)
 
     def test_late_collection_failure_restores_native_installation(self):

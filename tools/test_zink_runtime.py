@@ -20,7 +20,7 @@ def main():
     shim = out/'gld-test-lookup.dylib'
     subprocess.run(['clang','-arch','x86_64','-mmacosx-version-min=15.5','-dynamiclib',
         '-Wall','-Wextra','-Werror','-Wl,-undefined,dynamic_lookup','-Wl,-rpath,'+str(runtime),
-        str(ROOT/'tools/zink_gld_test_lookup.c'),'-o',str(shim)],check=True)
+        str(Path(__file__).with_name('zink_gld_test_lookup.c')),'-o',str(shim)],check=True)
     cases = [
         ('mesa-synchronization','zink_sync_probe',[],False,None),
         ('standalone','zink_probe',[],False,'gpu'),

@@ -172,15 +172,17 @@ class PackageZinkTests(unittest.TestCase):
         record(self.zink,'gld')
         self.zink_original = self.snapshot(self.zink)
 
-    def test_native_stage_selects_only_tahoe_accelerators(self):
+    def test_native_stage_selects_both_os_accelerators(self):
         self.native_bundle()
         self.stage(native_gld=True)
         self.unchanged()
-        for relative in ('Library/Extensions/NVAccel.kext', 'Library/NullMoth/kexts/26/NVAccel.kext'):
+        for relative in ('Library/Extensions/NVAccel.kext', 'Library/NullMoth/kexts/15/NVAccel.kext',
+                         'Library/NullMoth/kexts/26/NVAccel.kext'):
             info = plistlib.loads((self.out / relative / 'Contents/Info.plist').read_bytes())
             self.assertEqual(info['IOKitPersonalities']['NVAccel']['IOGLBundleName'], 'NVKZinkGLDriver')
-        info = plistlib.loads((self.out / 'Library/NullMoth/kexts/15/NVAccel.kext/Contents/Info.plist').read_bytes())
-        self.assertNotEqual(info.get('IOKitPersonalities', {}).get('NVAccel', {}).get('IOGLBundleName'), 'NVKZinkGLDriver')
+        self.assertEqual(json.loads((self.out/'PACKAGE-IDENTITY.json').read_text())['native_cgl_macos_majors'], ['15','26'])
+        self.assertTrue((self.out/'Test-Zink.command').is_file())
+        self.assertTrue((self.out/pkg.RUNTIME/'zink-tests/test_zink_runtime.py').is_file())
         self.assertTrue((self.out / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver').is_file())
         pkg.base_tools.verify_manifest(self.out)
 

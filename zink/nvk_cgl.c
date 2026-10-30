@@ -273,7 +273,8 @@ static void use_zink(struct nvk_cgl_bridge *b)
    *(void **)((char *)b->context + 0x1278) = (void *)swap_drawable;
 }
 
-/* GLD context creation runs before gliInitDispatchTable. On 25G241, GLI
+/* GLD context creation runs before gliInitDispatchTable. The 24H32 and 25G241
+ * evidence has the same dispatch layout. GLI
  * +b2c8 points at CGL+8 and +b2d0 at the saved public dispatch table. Give
  * GLEngine a private table to populate, and leave adapters in the original
  * saved table for CGL's final restore. This is distinct from the HAL table.

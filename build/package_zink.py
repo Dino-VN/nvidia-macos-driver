@@ -134,7 +134,8 @@ def stage(base, zink, output, components=None, native_gld=False):
             run('codesign', '--force', '--sign', '-', bundle)
             run('codesign', '--verify', '--strict', bundle)
             shutil.copy2(zink / 'gld_bundle_probe', runtime / 'gld_bundle_probe')
-            for relative in ('Library/Extensions/NVAccel.kext', 'Library/NullMoth/kexts/26/NVAccel.kext'):
+            for relative in ('Library/Extensions/NVAccel.kext', 'Library/NullMoth/kexts/15/NVAccel.kext',
+                             'Library/NullMoth/kexts/26/NVAccel.kext'):
                 plist = payload / relative / 'Contents/Info.plist'
                 data = plistlib.loads(plist.read_bytes())
                 data.setdefault('IOKitPersonalities', {}).setdefault('NVAccel', {})['IOGLBundleName'] = 'NVKZinkGLDriver'
@@ -166,6 +167,7 @@ def stage(base, zink, output, components=None, native_gld=False):
         for name in ('libLLVM.dylib', 'libzstd.1.dylib', 'nvvmdrive'):
             run('codesign', '--verify', '--strict', shared / 'Contents/PlugIns' / name)
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
+        shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-ABI.json', runtime / 'CGL-ABI-EVIDENCE.json')
         for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)
         source_dir = runtime / 'zink-source'
@@ -177,9 +179,13 @@ def stage(base, zink, output, components=None, native_gld=False):
         for name in ('build_zink.sh', 'prepare_zink.py', 'build_cgl_zink.sh', 'generate_cgl_dispatch.py',
                      'build_gld_bridge.sh', 'generate_gld_forward.py', 'build_zink_vulkan.py', 'record_zink_runtime.py'):
             shutil.copy2(ROOT / 'build' / name, source_dir / name)
-        for name in ('Install.command', 'Uninstall.command', 'Verify.command'):
+        for name in ('Install.command', 'Uninstall.command', 'Verify.command', 'Test-Zink.command'):
             shutil.copy2(ROOT / 'package' / name, payload / name)
             (payload / name).chmod(0o755)
+        test_dir = runtime / 'zink-tests'
+        test_dir.mkdir(exist_ok=True)
+        for name in ('test_zink_runtime.py', 'zink_gld_test_lookup.c'):
+            shutil.copy2(ROOT / 'tools' / name, test_dir / name)
         # Use this checkout's installer fixes, preserving its private payload,
         # preflight, backup, rollback and OS accelerator-selection behavior.
         for name in ('install.sh', 'uninstall.sh'):
@@ -215,8 +221,10 @@ def stage(base, zink, output, components=None, native_gld=False):
                     'gld_sha256': (base_tools.digest(payload / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver')
                                    if native_gld else None),
                     'zink_source_sha256': {p.name: base_tools.digest(p) for p in sorted(source_dir.iterdir()) if p.is_file()},
-                    'native_cgl': ('automatic GLD proxy; see docs/ZINK-PR2-REVIEW.md for process-local tests; installation/reboot untested'
+                    'native_cgl': ('automatic GLD proxy for Intel Sequoia 15.5+ and Tahoe; Sequoia ABI evidence reviewed, hardware Zink tests pending'
                                    if native_gld else 'explicit application attachment; GLD bundle is not included'),
+                    'native_cgl_macos_majors': ['15','26'] if native_gld else [],
+                    'native_cgl_abi_evidence_sha256': base_tools.digest(ROOT/'docs/ZINK-SEQUOIA-ABI.json'),
                     'private_vulkan_build': provenance,
                     'component_builds': components_record,
                     'native_cgl_os_build': (runtime / 'cgl-os-build.txt').read_text().strip()}
@@ -225,7 +233,7 @@ def stage(base, zink, output, components=None, native_gld=False):
         shutil.copy2(ROOT / 'docs/CAPTURE-PR3-REVIEW.md', payload / 'CAPTURE-REVIEW.md')
         for major in ('15', '26'):
             plist = plistlib.loads((payload / 'Library/NullMoth/kexts' / major / 'NVAccel.kext/Contents/Info.plist').read_bytes())
-            if plist.get('IOKitPersonalities', {}).get('NVAccel', {}).get('IOGLBundleName') == 'NVKZinkGLDriver' and not (native_gld and major == '26'):
+            if plist.get('IOKitPersonalities', {}).get('NVAccel', {}).get('IOGLBundleName') == 'NVKZinkGLDriver' and not native_gld:
                 raise ValueError('The incomplete diagnostic GLD must not be activated')
             base_tools.write_manifest(payload / 'Library/NullMoth/kexts' / major)
         names = sorted(p.relative_to(payload).as_posix() for p in payload.rglob('*') if p.is_file() or p.is_symlink())
@@ -251,7 +259,7 @@ def main():
     ap.add_argument('--components', type=Path, help='Deprecated; use build/stage_package.py to prepare matched components first')
     ap.add_argument('--stage', required=True, type=Path)
     ap.add_argument('--archive', required=True, type=Path)
-    ap.add_argument('--native-gld', action='store_true', default=True, help='Select native Zink OpenGL for applications (default; Tahoe accelerator)')
+    ap.add_argument('--native-gld', action='store_true', default=True, help='Select native Zink OpenGL for applications (default; Intel Sequoia/Tahoe accelerators)')
     ap.add_argument('--explicit-cgl-only', action='store_false', dest='native_gld', help='Developer-only package: do not select a system GLD')
     args = ap.parse_args()
     if args.archive.exists(): raise SystemExit('Archive already exists')

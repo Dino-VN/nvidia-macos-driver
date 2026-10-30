@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "architecture": "x86_64",
+  "activation_macos_majors": [
+    "15",
+    "26"
+  ],
+  "minimum_macos": "15.5",
+  "review": "Static ABI evidence supports a shared adapter; Sequoia native Zink hardware tests are pending",
+  "public_dispatch_entries_observed": 1236,
+  "public_dispatch_differences": 0,
+  "common_apple_gld_exports": 131,
+  "private_layout_offsets": {
+    "cgl_dispatch_prefix_bytes": 7808,
+    "cgl_swap_slot": 4728,
+    "gli_profile": 50854,
+    "gli_context_dispatch": 45768,
+    "gli_saved_dispatch": 45776,
+    "gli_share_group": 23296,
+    "gld_state_from_gli": 2272
+  },
+  "state_offset_limit": "The GLD state-to-GLI subtraction is retained from the Tahoe adapter; remote runtime probes must validate the complete lifecycle before qualification.",
+  "normalized_routines_matching": [
+    "CGLCreateContext",
+    "CGLSetCurrentContext",
+    "CGLFlushDrawable",
+    "CGLGetParameter",
+    "CGLSetParameter",
+    "CGLTexImageIOSurface2D",
+    "gliCreateContext",
+    "gldCreateContext",
+    "gldDestroyContext",
+    "gldPopulateContextDispatch"
+  ],
+  "nonidentical_routines": {
+    "gliInitDispatchTable": "Equivalent 975-entry initialization loop; different index scaling and conditional selection; same profile, context and saved-table offsets",
+    "gldUpdateDispatch": "Different internal code generation; forwarded to the native Apple delegate; not patched by this adapter"
+  },
+  "inputs": {
+    "Sequoia": {
+      "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t15.8.1\nBuildVersion:\t\t24H32",
+      "source_manifest_sha256": "51ba4af1c9c1a361dcbeb7781ea29ad9778bd1712efd95f304d86924be93577a",
+      "files": {
+        "cgl-static-disassembly.txt": "bd34bea188d504dd7da470ea0ae722830e10720a6d66b0dc90345af0080cf51c",
+        "observed-dispatch-offsets.json": "0b794f040c4fc8cbc115ca93cb8a69d132e9e5d9a40f6fd341e00850bc5dd77c",
+        "AppleMetalOpenGLRenderer-exports.txt": "7cdadadd2ce419020cc984df0bd86b5d40f25d0d884c7145b1d0c4aa465380c1"
+      },
+      "module_identities": {
+        "OpenGL": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "libGL": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "GLEngine": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/Resources/GLEngine.bundle/GLEngine",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "AppleMetalOpenGLRenderer": {
+          "path": "/System/Library/Extensions/AppleMetalOpenGLRenderer.bundle/Contents/MacOS/AppleMetalOpenGLRenderer",
+          "exists_on_disk": true,
+          "sha256": "be16139fb6bb6691769a835830b73295cc1e80fe960d382edb2cc6842536cc5b"
+        }
+      }
+    },
+    "Tahoe": {
+      "macos": "ProductName:\t\tmacOS\nProductVersion:\t\t26.7.1\nBuildVersion:\t\t25G241",
+      "source_manifest_sha256": "26743b333d1180af01d700d77edd2db0eaf8d7da0257432119fb3d4081d6c8ad",
+      "files": {
+        "cgl-static-disassembly.txt": "0aaacc60f9f68905539d56925a17d76269a32b6be6a2af08537c505504ba308e",
+        "observed-dispatch-offsets.json": "0b794f040c4fc8cbc115ca93cb8a69d132e9e5d9a40f6fd341e00850bc5dd77c",
+        "AppleMetalOpenGLRenderer-exports.txt": "a535f2b3273c4355ca762195ef030a350bf7377e3ab628374de8f2ea6bddd01d"
+      },
+      "module_identities": {
+        "OpenGL": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "libGL": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "GLEngine": {
+          "path": "/System/Library/Frameworks/OpenGL.framework/Versions/A/Resources/GLEngine.bundle/GLEngine",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        },
+        "AppleMetalOpenGLRenderer": {
+          "path": "/System/Library/Extensions/AppleMetalOpenGLRenderer.bundle/Contents/MacOS/AppleMetalOpenGLRenderer",
+          "exists_on_disk": true,
+          "sha256": "63ce9c00e9ddd7bbe152bd75cdc8e3583eaa2bea1aca5b0bac1959b0bac87c1a"
+        },
+        "NVKZinkGLDriver": {
+          "path": "/System/Library/Extensions/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver",
+          "exists_on_disk": false,
+          "note": "May be present only in the dyld shared cache; use LLDB evidence and runtime module UUIDs."
+        }
+      }
+    }
+  },
+  "hardware_testing": {
+    "Tahoe": "RTX 2060 SUPER / 25G241: 25 isolated GPU/CGL diagnostics; Minecraft and opt-in OBS capture verified",
+    "Sequoia": "15.8.1 / 24H32, RTX 2070 SUPER, 256 MiB BAR1: Apple core/legacy context creation captured; native Zink tests pending"
+  },
+  "policy": "OS build numbers are provenance, not an exact-build activation whitelist; no Apple binary/disassembly is included in this record"
+}

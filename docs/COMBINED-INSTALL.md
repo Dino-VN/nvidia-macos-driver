@@ -1,7 +1,10 @@
 # Native OpenGL and screen-capture driver package
 
 This is a complete fork driver package with an **optional Zink/NVK OpenGL
-renderer**, tested on Intel macOS **26.7.1 / 25G241**. It includes the existing
+renderer**, enabled for Intel **Sequoia 15.5+ and Tahoe 26**. Local hardware
+testing covers **26.7.1 / 25G241**. The Sequoia candidate uses reviewed
+**15.8.1 / 24H32** CGL evidence and still requires native Zink hardware tests.
+It includes the existing
 Minecraft and Wine runtimes, plus bounded IOSurface import reuse and GPU copies
 for supported unaligned video planes. See `PACKAGE-IDENTITY.json` and the
 accompanying validation/release notes for source identity and the latest
@@ -9,7 +12,13 @@ application and boot-test results. Integration probes alone do not qualify a
 complete desktop session.
 
 Extract the archive to obtain `pkgroot/`. With the matching NVIDIA kernel driver
-already running, double-click `Verify.command` to check hashes and run GPU/CGL
+already running, **run `Test-Zink.command` first on Sequoia** and return the
+Desktop `NVIDIA-Zink-Test-*.tar.gz` archive. This tests the supplied GLD through
+process-local lookup and never installs or registers it. Apple Command Line
+Tools are required. The compact `zink-sequoia-test/` archive contains the same
+test runtime and command, without installer or kernel files.
+
+Double-click `Verify.command` in the complete package to check hashes and run GPU/CGL
 probes. Diagnostic windows briefly appear. The probes use package-local
 libraries; passing them does not prove global GLD registration or a successful
 reboot.
@@ -27,8 +36,8 @@ previous driver and preserves its boot fallback. It accepts later Tahoe builds
 without an exact-build whitelist. Zink can continue working without rebuilding
 when Apple's private CGL ABI remains compatible; changes to that ABI still
 require updating the adapter. Other OS builds have not been hardware-tested.
-It installs `NVKZinkGLDriver.bundle` in `/Library/GPUBundles` and selects it only
-for the Tahoe accelerator. Existing OpenCore/SIP requirements still apply;
+It installs `NVKZinkGLDriver.bundle` in `/Library/GPUBundles` and selects it in
+both Sequoia and Tahoe accelerator variants. Existing OpenCore/SIP requirements still apply;
 no System volume mounting or authenticated-root change is needed.
 
 Normal OpenGL applications then use Zink without a companion mod. The default

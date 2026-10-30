@@ -1,6 +1,6 @@
 # NullMoth NVIDIA Driver for macOS
 
-**Minecraft:** [Zink OpenGL — Tahoe only](#opengl-through-zink-tahoe-only) ·
+**Minecraft:** [Zink OpenGL — Sequoia/Tahoe](#opengl-through-zink) ·
 [Minecraft NVK companion mod — Vulkan](https://github.com/HighDelay/minecraft-nvk) ·
 [Aetherium — optional Vulkan shader mod](https://github.com/HighDelay/aetherium)
 
@@ -43,8 +43,10 @@ NVMTL's application shader translation. AppKit windows present through GPU
 copies into native drawables, using the Minecraft bridge's VRAM handoff
 protocol. Metal allocation and macOS composition remain.
 
-This currently requires an explicitly built local Zink package and Intel
-**Tahoe 26**; testing covers **26.7.1 / 25G241**. There is no exact macOS-build
+This requires this fork's **Zink-enabled package** and Intel **Sequoia 15.5+ or
+Tahoe 26**. The Sequoia path is a test candidate: static CGL evidence from
+**15.8.1 / 24H32** matches the shared adapter; native Zink hardware testing is
+still pending. Tahoe testing covers **26.7.1 / 25G241**. There is no exact macOS-build
 activation guard: later updates can keep using the runtime if Apple's private
 CGL ABI remains compatible. Ordinary packages keep Apple's OpenGL renderer.
 Minecraft OpenGL rendering and VSync-off operation are user-confirmed on RTX
@@ -55,21 +57,26 @@ a controlled FPS gain remain unqualified. See the [integration review](docs/ZINK
 
 ## Minecraft native Vulkan
 
-Minecraft can use native NVK through **OpenGL with Zink on Tahoe, without the
+Minecraft can use native NVK through **OpenGL with Zink on Sequoia/Tahoe, without the
 companion mod**, or through its **official Vulkan renderer with NVK Bridge on
 Sequoia 15.5+ and Tahoe**. The simplified application rendering paths are:
 
 | Provider | Rendering path on this driver |
 |---|---|
 | Apple OpenGL | Minecraft OpenGL → Apple GL-on-Metal → Metal → NVMTL → NVK → NVIDIA GPU |
-| Zink (Tahoe only) | Minecraft OpenGL → Mesa OpenGL/Zink → native NVK → NVIDIA GPU |
+| Zink (Sequoia/Tahoe) | Minecraft OpenGL → Mesa OpenGL/Zink → native NVK → NVIDIA GPU |
 | MoltenVK | Minecraft Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
 | NVK Bridge | Minecraft Vulkan → native NVK runtime → NVIDIA GPU |
 
-### OpenGL through Zink (Tahoe only)
+<a id="opengl-through-zink-tahoe-only"></a>
 
-**Requires Intel macOS Tahoe 26 and this fork's Zink-enabled driver package.**
-This path is not enabled on Sequoia. Minecraft keeps using its OpenGL renderer;
+### OpenGL through Zink
+
+**Requires Intel macOS Sequoia 15.5+ or Tahoe 26 and this fork's Zink-enabled driver package.**
+Sequoia activation is included in the new test candidate; earlier Tahoe-only
+packages do not gain it from a documentation update. Run the supplied
+**`Test-Zink.command`** before installing on Sequoia and return its logs for
+validation. Minecraft keeps using its OpenGL renderer;
 the driver selects Zink automatically, without the Minecraft NVK companion mod,
 a mod loader or special JVM arguments.
 

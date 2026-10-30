@@ -55,9 +55,21 @@ Minecraft compatibility for that update; local diagnostics below use 25G241.
 Apple's private ABI is still an assumption: a layout change can require an
 adapter update and can break OpenGL before a clean fallback is possible. Existing
 symbol/profile/device checks remain; they do not prove full layout compatibility.
-The package currently selects only the **Tahoe/macOS 26 accelerator**. The
-standalone Mesa/NVK binaries target macOS 15.5, but that does **not** establish
-native CGL support on Sequoia or another major macOS release.
+The package selects native Zink for **Intel Sequoia 15.5+ and Tahoe 26**.
+The [Sequoia ABI review](ZINK-SEQUOIA-ABI.json) compares a real **15.8.1 / 24H32**
+collection with Tahoe: all 1,236 observed public dispatch entries and 131 GLD
+exports match, together with the private profile/context/dispatch/share-group
+offsets used by the adapter. The initialization loop has equivalent table
+bounds; the Apple renderer's internal dispatch code differs and remains
+delegated to Apple. This supports one shared adapter rather than a separate
+binary or an exact-build whitelist.
+
+**Sequoia hardware status:** the collected RTX 2070 SUPER machine creates Apple
+core and legacy contexts, but native Zink gameplay and GPU-copy presentation
+still need testing there. It has 256 MiB BAR1, unlike the local 8 GiB BAR1
+Tahoe machine. Static layout agreement is not a successful Sequoia Zink run.
+The existing GLD state-to-GLI relation is carried forward and needs lifecycle
+validation in the isolated probes.
 
 The adapter covers core 3.2/4.1 and legacy compatibility CGL contexts through the
 entrypoints exposed by the current Apple SDK/framework. Mesa reporting OpenGL
@@ -162,12 +174,21 @@ modules even when their logical paths are absent from the filesystem; no Apple
 binary or complete dyld cache is copied. It opens only its own disposable,
 offscreen CGL contexts and never attaches to another process.
 
-This supplies evidence for a **separate Sequoia adapter**, not an instruction to
-enable Tahoe's adapter on Sequoia. First compare public dispatch and private
-context/share-group/GLD layouts, then build the matching CGL and GLD components
-and run isolated probes on Sequoia. GPU-copy presentation, context sharing,
-resize and teardown still need testing there. Building directly on Sequoia is
-another option; a matching SDK alone does not establish the private runtime ABI.
+The supplied 24H32 collection supports the shared adapter described above.
+Future evidence should still compare public dispatch and private context,
+share-group and GLD layouts before activation on a new major OS. GPU-copy
+presentation, context sharing, resize and teardown need testing on that OS.
+Building directly on Sequoia is another option; a matching SDK alone does not
+establish the private runtime ABI.
+
+Before installing, run **`Test-Zink.command`** from the complete package or
+compact test archive while the existing NVIDIA driver is running. It uses the
+packaged runtime in disposable processes, briefly opens diagnostic windows and
+creates a `NVIDIA-Zink-Test-*.tar.gz` log archive on the Desktop. It does not
+register a GLD, rebuild kernel collections or change system OpenGL selection.
+Return those logs before treating the Sequoia path as qualified. After a
+successful installation/reboot, F3 or the application startup log should show
+`zink` and `NVK` without any Minecraft companion mod or JVM argument.
 
 ### Build commands
 
