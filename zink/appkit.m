@@ -20,7 +20,7 @@ void nvk_cgl_lwjgl_drawable_size(CGLContextObj, unsigned, unsigned);
 
 /* OBS 33 requests RGBA16F screen streams on macOS 15+, which can fail before
  * producing any frames on this driver. Its source handles BGRA8 dynamically.
- * This explicit diagnostic workaround affects only the OBS application. */
+ * This default compatibility mode affects only the OBS application. */
 static void (*original_capture_format)(id, SEL, OSType);
 static pthread_once_t obs_policy_once = PTHREAD_ONCE_INIT;
 static BOOL obs_compatibility;
@@ -29,10 +29,13 @@ static void read_obs_policy(void)
 {
    if (![[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.obsproject.obs-studio"]) return;
    const char *override = getenv("NVKZINK_OBS_COMPAT");
-   if (override) { obs_compatibility = !strcmp(override, "1"); return; }
+   if (override && (!strcmp(override, "0") || !strcmp(override, "1"))) {
+      obs_compatibility = !strcmp(override, "1"); return;
+   }
    Boolean valid = false;
-   obs_compatibility = CFPreferencesGetAppBooleanValue(CFSTR("NVKZinkCaptureCompatibility"),
-      CFSTR("com.obsproject.obs-studio"), &valid) && valid;
+   Boolean enabled = CFPreferencesGetAppBooleanValue(CFSTR("NVKZinkCaptureCompatibility"),
+      CFSTR("com.obsproject.obs-studio"), &valid);
+   obs_compatibility = valid ? enabled : YES;
 }
 
 int nvk_cgl_obs_compatibility_enabled(void)

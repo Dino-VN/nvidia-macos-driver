@@ -59,7 +59,11 @@ and Sequoia/Tahoe accelerator selection; these are not an OS-build whitelist.
 The 15.8.1 / 24H32 collection matches all 1,236 public dispatch entries and 131
 Apple GLD exports, together with the private dispatch/profile/share offsets.
 Retain the [static ABI review](ZINK-SEQUOIA-ABI.json) and distinguish that evidence
-from pending Sequoia native Zink hardware qualification. The shared adapter
+from application/boot qualification. The Sequoia RTX 2070 SUPER / 256 MiB BAR1
+machine subsequently passed all 25 isolated tests (native pixel copies, core/
+legacy contexts, sharing, resize, workers, windows, VSync and quarantine).
+Sequoia installation, kernel linking, reboot and gameplay remain untested.
+The shared adapter
 continues targeting macOS 15.5; do not copy Apple binaries into the runtime.
 The Zink package builder selects the GLD by default. Keep the original complete
 base-package builder and its Minecraft/Wine/dual-OS support, then add the Zink
@@ -80,8 +84,10 @@ set, staging-upload and bounded texture-worker fixes in the pinned overlay.
 Keep native display synchronization tied to each context's CGL swap interval,
 including render-thread changes and independent windows. Preserve the explicit
 `NVKZINK_DISABLE=1` diagnostic opt-out before any GL objects are created.
-OBS 33.0.1's opt-in `NVKZinkCaptureCompatibility` preference (or process-local
-`NVKZINK_OBS_COMPAT=1`) is checked only for `com.obsproject.obs-studio`. It keeps
+OBS 33.0.1's compatibility mode is enabled by default and checked only for
+`com.obsproject.obs-studio`. An explicit false `NVKZinkCaptureCompatibility`
+preference or process-local `NVKZINK_OBS_COMPAT=0` opts out; an explicit `1`
+environment override wins over a saved preference. The mode keeps
 the whole OBS context in Apple's driver and changes RGBA16F ScreenCaptureKit
 requests to BGRA8. Never switch an existing context's object namespace or enable
 this mode globally. The user confirms moving OBS capture after a normal launch

@@ -3,7 +3,10 @@
 This is a complete fork driver package with an **optional Zink/NVK OpenGL
 renderer**, enabled for Intel **Sequoia 15.5+ and Tahoe 26**. Local hardware
 testing covers **26.7.1 / 25G241**. The Sequoia candidate uses reviewed
-**15.8.1 / 24H32** CGL evidence and still requires native Zink hardware tests.
+**15.8.1 / 24H32** CGL evidence. The RTX 2070 SUPER machine with 256 MiB BAR1
+passes all 25 isolated native Zink tests, including GPU-copy pixel checks,
+contexts, sharing, worker threads, resize and VSync. System-wide GLD
+registration, kernel linking, reboot and Minecraft gameplay remain untested there.
 It includes the existing
 Minecraft and Wine runtimes, plus bounded IOSurface import reuse and GPU copies
 for supported unaligned video planes. See `PACKAGE-IDENTITY.json` and the
@@ -56,7 +59,8 @@ bridge and Wine's runtime are independent and retain their existing setup.
 The screen-capture changes apply to shared driver operations used by capture
 apps. `NVMTL_VRAM_KEEP=0` disables cross-wrapper import reuse for a process;
 `NVMTL_VRAM_KEEP_MB` adjusts its idle-import budget (128 MiB by default).
-These changes do not select a different OBS renderer or add encoder support.
+OBS separately uses automatic Apple OpenGL/BGRA8 SDR compatibility when this
+Zink runtime is loaded. It has an explicit opt-out; no encoder is added.
 See `CAPTURE-REVIEW.md` for the scope and application-testing limits.
 
 For rollback, reinstall the previous complete driver package and reboot. The
@@ -64,6 +68,17 @@ normal installer removes the optional GLD bundle and restores the Apple OpenGL
 selection from that package. `Uninstall.command` removes the NVIDIA driver
 entirely; it is not a Zink-only toggle. Existing Recovery/boot removal guidance
 from the driver README remains applicable if the desktop cannot start.
+
+## Recovery removal
+
+If the desktop cannot start:
+
+1. Boot into macOS Recovery, open Terminal, and run
+   `nvram "7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove=1"`, then reboot.
+2. Run `sudo ./uninstall.sh` from the extracted `pkgroot`.
+3. Before rebooting again, clear the recovery flag with
+   `nvram -d "7C436110-AB2A-4BBB-A880-FE41995C9F82:nullmoth-remove=1"`.
+4. Reinstall the previous working driver package.
 
 See `Library/GPUBundles/nvmtl/zink/ZINK-OPENGL.md` for build reproduction,
 context/API limits, mode selection and validation details. Other OS builds,

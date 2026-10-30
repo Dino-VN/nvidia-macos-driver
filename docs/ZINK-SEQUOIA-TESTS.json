@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "macos": "15.8.1",
+  "build": "24H32",
+  "gpu": "NVIDIA GeForce RTX 2070 SUPER (NVK TU104-A)",
+  "bar1_mib": 256,
+  "tested_source_commit": "53d2005967544775789d7b2cc2b0a5790ee1b1b6",
+  "passed": 25,
+  "failed": 0,
+  "cases": [
+    {
+      "case": "mesa-synchronization",
+      "returncode": 0,
+      "seconds": 0.069
+    },
+    {
+      "case": "standalone",
+      "returncode": 0,
+      "seconds": 0.586
+    },
+    {
+      "case": "private-icd-selection",
+      "returncode": 0,
+      "seconds": 0.588
+    },
+    {
+      "case": "core",
+      "returncode": 0,
+      "seconds": 0.798
+    },
+    {
+      "case": "core32",
+      "returncode": 0,
+      "seconds": 0.68
+    },
+    {
+      "case": "legacy",
+      "returncode": 0,
+      "seconds": 0.647
+    },
+    {
+      "case": "gld-core",
+      "returncode": 0,
+      "seconds": 0.72
+    },
+    {
+      "case": "gld-core32",
+      "returncode": 0,
+      "seconds": 0.667
+    },
+    {
+      "case": "gld-legacy",
+      "returncode": 0,
+      "seconds": 0.669
+    },
+    {
+      "case": "gld-apple-iosurface",
+      "returncode": 0,
+      "seconds": 0.343
+    },
+    {
+      "case": "gld-window",
+      "returncode": 0,
+      "seconds": 1.46
+    },
+    {
+      "case": "gld-rgbx-worker",
+      "returncode": 0,
+      "seconds": 1.539
+    },
+    {
+      "case": "native-default",
+      "returncode": 0,
+      "seconds": 1.849
+    },
+    {
+      "case": "native-transparent",
+      "returncode": 0,
+      "seconds": 1.86
+    },
+    {
+      "case": "native-worker",
+      "returncode": 0,
+      "seconds": 1.965
+    },
+    {
+      "case": "native-reject",
+      "returncode": 0,
+      "seconds": 2.009
+    },
+    {
+      "case": "native-uncertain",
+      "returncode": 0,
+      "seconds": 1.841
+    },
+    {
+      "case": "native-gld-auto",
+      "returncode": 0,
+      "seconds": 1.833
+    },
+    {
+      "case": "native-gld-worker",
+      "returncode": 0,
+      "seconds": 1.949
+    },
+    {
+      "case": "native-multiple-windows",
+      "returncode": 0,
+      "seconds": 2.06
+    },
+    {
+      "case": "native-swap-interval",
+      "returncode": 0,
+      "seconds": 2.325
+    },
+    {
+      "case": "native-gld-swap-interval",
+      "returncode": 0,
+      "seconds": 2.609
+    },
+    {
+      "case": "native-obs-policy-isolation",
+      "returncode": 0,
+      "seconds": 1.86
+    },
+    {
+      "case": "native-optout-zero",
+      "returncode": 0,
+      "seconds": 1.878
+    },
+    {
+      "case": "native-updated-os-build",
+      "returncode": 0,
+      "seconds": 1.856
+    }
+  ],
+  "limitations": [
+    "Process-local GLD redirection and packaged GPU/CGL probes only.",
+    "System-wide registration, Sequoia kernel linking, reboot and Minecraft gameplay are not established."
+  ],
+  "log_hashes": {
+    "core.log": "f0abd4a5fe28a3d4c6746a8e7c7225b1c155889103fe1dfed6789f2d9d16726f",
+    "core32.log": "f0abd4a5fe28a3d4c6746a8e7c7225b1c155889103fe1dfed6789f2d9d16726f",
+    "gld-apple-iosurface.log": "2ee1ec7d8a00a28c96f5efe44ecc723682c8a42aa5aed0dc1b78084e971277ce",
+    "gld-core.log": "4183072b7cc4c38fe81301b906e8f72fa7a504b1266da649022f009ffdf85d22",
+    "gld-core32.log": "4183072b7cc4c38fe81301b906e8f72fa7a504b1266da649022f009ffdf85d22",
+    "gld-legacy.log": "651667f0a0abcdbc55bd415af10da883b5d89c517621b05c61cd96e4a0414cc4",
+    "gld-rgbx-worker.log": "51e43b57052508b27620528bcb889894ea8ba61e07c19833e3e491e15515b98f",
+    "gld-window.log": "6efa6be983449a474fc23206b4beb8003446e26fd2bf099eb23ea4cdccb5f6ca",
+    "legacy.log": "96df0bf03915622c513e7cbb1c6c4671d4d8b1807f7dfe5a385da621d447f82a",
+    "mesa-synchronization.log": "af576d9d04897deccfe5ae12857f0031a5a092b5414ae280bdb4f479b7f0fd5b",
+    "native-default.log": "cc9c9899b2c3aa4b2e79586705211f53ae45294f07ea758d32675c192253cbaa",
+    "native-gld-auto.log": "625c4fa95dfaabbc46bb3824a6e23b6c21a658f3d5cdfa7a452ced7c82cd42bd",
+    "native-gld-swap-interval.log": "64115877a06c6b56d44ecb0a4c6b50ca173ef301854e959318de598dd01ca380",
+    "native-gld-worker.log": "c6070e4bbcd4783524676c867a4efe93c9b97808ae030a831d859ff98bb1d293",
+    "native-multiple-windows.log": "c1610f9b97d27429ac4bc8b24372cce6b43492a8a97e42156ccee2348525ac7b",
+    "native-obs-policy-isolation.log": "625c4fa95dfaabbc46bb3824a6e23b6c21a658f3d5cdfa7a452ced7c82cd42bd",
+    "native-optout-zero.log": "625c4fa95dfaabbc46bb3824a6e23b6c21a658f3d5cdfa7a452ced7c82cd42bd",
+    "native-reject.log": "8ca36c21fef9ac744ad076832ff94720df42d955f47ed57dd13f5ee4f76546ab",
+    "native-swap-interval.log": "623a5a5012e33193cdbdbd8499cf177e46fb858a9fcbae3cefe8f251ea592a83",
+    "native-transparent.log": "cc9c9899b2c3aa4b2e79586705211f53ae45294f07ea758d32675c192253cbaa",
+    "native-uncertain.log": "706259bee6e473059403aef4c9127fbc60a7b5e2c5e3cfb326d37a9004a20df4",
+    "native-updated-os-build.log": "78127dde452aa8bc57612d993d50fc9d38c267e83d5e2e0a7c0209e0d4b7034f",
+    "native-worker.log": "9b587d5a7ac1f41ee2a65fee9afdbcecea379c5201ae0d4f2c5874db8f9ab31b",
+    "private-icd-selection.log": "ab7aa296850e584131ccdbc8747332683cad900d1bdc15495d39063685c03ad1",
+    "standalone.log": "d910880e50a149ba17f82956468c508e0952995f5a9c73cec6502bb040ed864f"
+  }
+}

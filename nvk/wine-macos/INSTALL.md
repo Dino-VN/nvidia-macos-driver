@@ -142,6 +142,11 @@ provider automatically. No CrossOver installation files are replaced.
 
 ## D3D12 and DLSS
 
+First complete [Standalone Wine](#standalone-wine) or the
+[CrossOver setup](#crossover--opt-in-compatibility-test) above, including prefix
+initialization, the matched DXVK pair and the native-provider launch environment.
+This section adds optional D3D12/DLSS components; it does not replace that setup.
+
 These commands require a driver provider that reports `supports_d3d12: true`
 and, for DLSS, `supports_dlss: true` (2.6.4 Wine/NVK or newer). A launcher update
 alone cannot add them to an older provider. Use a separate initialized

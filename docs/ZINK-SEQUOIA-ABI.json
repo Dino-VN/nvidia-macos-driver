@@ -6,7 +6,7 @@
     "26"
   ],
   "minimum_macos": "15.5",
-  "review": "Static ABI evidence supports a shared adapter; Sequoia native Zink hardware tests are pending",
+  "review": "Shared CGL adapter validated by 25 process-local GPU/CGL tests on Sequoia 15.8.1; global installation and gameplay remain pending",
   "public_dispatch_entries_observed": 1236,
   "public_dispatch_differences": 0,
   "common_apple_gld_exports": 131,
@@ -19,7 +19,7 @@
     "gli_share_group": 23296,
     "gld_state_from_gli": 2272
   },
-  "state_offset_limit": "The GLD state-to-GLI subtraction is retained from the Tahoe adapter; remote runtime probes must validate the complete lifecycle before qualification.",
+  "state_offset_limit": "The GLD state-to-GLI relation is exercised successfully by core/legacy automatic GLD, shared-context, worker, resize and teardown probes on Sequoia.",
   "normalized_routines_matching": [
     "CGLCreateContext",
     "CGLSetCurrentContext",
@@ -107,7 +107,7 @@
   },
   "hardware_testing": {
     "Tahoe": "RTX 2060 SUPER / 25G241: 25 isolated GPU/CGL diagnostics; Minecraft and opt-in OBS capture verified",
-    "Sequoia": "15.8.1 / 24H32, RTX 2070 SUPER, 256 MiB BAR1: Apple core/legacy context creation captured; native Zink tests pending"
+    "Sequoia": "15.8.1 / 24H32, RTX 2070 SUPER, 256 MiB BAR1: all 25 isolated native Zink tests pass; see ZINK-SEQUOIA-TESTS.json"
   },
   "policy": "OS build numbers are provenance, not an exact-build activation whitelist; no Apple binary/disassembly is included in this record"
 }

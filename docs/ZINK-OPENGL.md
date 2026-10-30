@@ -64,12 +64,14 @@ bounds; the Apple renderer's internal dispatch code differs and remains
 delegated to Apple. This supports one shared adapter rather than a separate
 binary or an exact-build whitelist.
 
-**Sequoia hardware status:** the collected RTX 2070 SUPER machine creates Apple
-core and legacy contexts, but native Zink gameplay and GPU-copy presentation
-still need testing there. It has 256 MiB BAR1, unlike the local 8 GiB BAR1
-Tahoe machine. Static layout agreement is not a successful Sequoia Zink run.
-The existing GLD state-to-GLI relation is carried forward and needs lifecycle
-validation in the isolated probes.
+**Sequoia hardware status:** the RTX 2070 SUPER machine on **15.8.1 / 24H32**
+with **256 MiB BAR1** passes all **25 isolated native Zink tests**, including
+core/legacy contexts, GL sharing, native GPU-copy pixel checks, opacity, resize,
+worker threads, multiple windows, VSync toggles and failed-work quarantine.
+This validates the adapter's complete lifecycle, including the GLD state-to-GLI
+relation, in those probe processes. System-wide GLD registration, Sequoia kernel
+linking, reboot and Minecraft gameplay still need testing. The local Tahoe
+machine has 8 GiB BAR1.
 
 The adapter covers core 3.2/4.1 and legacy compatibility CGL contexts through the
 entrypoints exposed by the current Apple SDK/framework. Mesa reporting OpenGL
@@ -116,15 +118,10 @@ also requests RGBA16F frames, which fail to start with “The stream is nil” e
 with Apple's OpenGL renderer. Separate diagnostics receive BGRA8 frames and
 verify Apple's BGRA8/RGBA16F texture imports successfully.
 
-After installing a driver build with this repair, quit OBS and enable its saved
-compatibility setting:
-
-```sh
-defaults write com.obsproject.obs-studio NVKZinkCaptureCompatibility -bool true
-```
-
-Open OBS normally, add **macOS Screen Capture**, explicitly select the display,
-and click **OK**. The setting keeps OBS's entire OpenGL context in Apple's
+After installing a driver build with this repair, open OBS normally. The mode
+is **enabled by default for OBS**, with no preference or launch argument needed.
+Add **macOS Screen Capture**, explicitly select the display, and click **OK**.
+The mode keeps OBS's entire OpenGL context in Apple's
 renderer and changes its RGBA16F capture request to **8-bit BGRA SDR**. It is
 checked only for the `com.obsproject.obs-studio` application; other applications
 continue to select Zink. OBS 33.0.1's moving desktop preview is user-confirmed on
@@ -134,12 +131,19 @@ testing. This is a compatibility path, not native Zink IOSurface import support.
 To turn the mode off, quit OBS and run:
 
 ```sh
+defaults write com.obsproject.obs-studio NVKZinkCaptureCompatibility -bool false
+```
+
+Delete that preference to restore the automatic default:
+
+```sh
 defaults delete com.obsproject.obs-studio NVKZinkCaptureCompatibility
 ```
 
-For a single launch, `NVKZINK_OBS_COMPAT=1 /Applications/OBS.app/Contents/MacOS/obs`
-enables the same mode; `NVKZINK_OBS_COMPAT=0` overrides a saved setting for that
-process. For other CGL interoperability diagnostics,
+For a single launch, `NVKZINK_OBS_COMPAT=0 /Applications/OBS.app/Contents/MacOS/obs`
+disables the mode; `NVKZINK_OBS_COMPAT=1` enables it even with a saved opt-out.
+Explicit `0`/`1` environment values take priority over a saved preference.
+For other CGL interoperability diagnostics,
 `NVKZINK_DISABLE=1 /path/to/application` keeps automatic contexts in Apple's
 renderer for that process. It does not alter ScreenCaptureKit formats.
 
@@ -186,7 +190,7 @@ compact test archive while the existing NVIDIA driver is running. It uses the
 packaged runtime in disposable processes, briefly opens diagnostic windows and
 creates a `NVIDIA-Zink-Test-*.tar.gz` log archive on the Desktop. It does not
 register a GLD, rebuild kernel collections or change system OpenGL selection.
-Return those logs before treating the Sequoia path as qualified. After a
+Return those logs when testing another configuration. After a
 successful installation/reboot, F3 or the application startup log should show
 `zink` and `NVK` without any Minecraft companion mod or JVM argument.
 

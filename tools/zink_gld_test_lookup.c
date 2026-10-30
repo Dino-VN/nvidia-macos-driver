@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <sys/sysctl.h>
 #include <errno.h>
+#include <CoreFoundation/CoreFoundation.h>
 extern int gpu_bundle_find_trusted(const char *, char *, size_t);
 static int lookup(const char *name, char *output, size_t bytes)
 {
@@ -72,3 +73,17 @@ __attribute__((section("__DATA,__interpose"))) = { (const void *)open_bundle, (c
 
 __attribute__((used)) static struct { const void *replacement, *original; } version_hook
 __attribute__((section("__DATA,__interpose"))) = { (const void *)os_version, (const void *)sysctlbyname };
+
+/* Model absent/explicit OBS preferences without writing the user's defaults. */
+static Boolean obs_preference(CFStringRef key, CFStringRef domain, Boolean *valid)
+{
+    const char *value = getenv("ZINK_TEST_OBS_PREFERENCE");
+    if (value && CFEqual(key,CFSTR("NVKZinkCaptureCompatibility")) &&
+        CFEqual(domain,CFSTR("com.obsproject.obs-studio"))) {
+        if (valid) *valid = strcmp(value,"absent") != 0;
+        return !strcmp(value,"on");
+    }
+    return CFPreferencesGetAppBooleanValue(key,domain,valid);
+}
+__attribute__((used)) static struct { const void *replacement, *original; } preference_hook
+__attribute__((section("__DATA,__interpose"))) = { (const void *)obs_preference, (const void *)CFPreferencesGetAppBooleanValue };

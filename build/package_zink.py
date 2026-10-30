@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE_RUNTIME = Path('Library/GPUBundles/nvmtl')
 RUNTIME = BASE_RUNTIME / 'zink'
 ZINK_FILES = ('libnvk_zink_vulkan.dylib', 'libnvk_renderer.dylib', 'NATIVE-BUILD.json', 'libnvk_zink.dylib', 'libnvk_cgl.dylib', 'nvk_zink.h', 'nvk_cgl.h',
-              'zink_probe', 'zink_sync_probe', 'zink_native_present_probe', 'cgl_renderer_probe', 'cgl_zink_probe', 'cgl_zink_legacy_probe', 'cgl_iosurface_probe', 'cgl_zink_window_probe', 'cgl-os-build.txt', 'cgl-dispatch-map.json', 'ZINK-BUILD.json')
+              'zink_probe', 'zink_sync_probe', 'zink_native_present_probe', 'cgl_renderer_probe', 'cgl_zink_probe', 'cgl_zink_legacy_probe', 'cgl_iosurface_probe', 'obs_zink_policy_probe', 'cgl_zink_window_probe', 'cgl-os-build.txt', 'cgl-dispatch-map.json', 'ZINK-BUILD.json')
 
 
 def run(*args):
@@ -168,6 +168,7 @@ def stage(base, zink, output, components=None, native_gld=False):
             run('codesign', '--verify', '--strict', shared / 'Contents/PlugIns' / name)
         shutil.copy2(ROOT / 'docs/ZINK-OPENGL.md', runtime / 'ZINK-OPENGL.md')
         shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-ABI.json', runtime / 'CGL-ABI-EVIDENCE.json')
+        shutil.copy2(ROOT / 'docs/ZINK-SEQUOIA-TESTS.json', runtime / 'CGL-SEQUOIA-TESTS.json')
         for name in ('ZINK-PR2-REVIEW.md','COMBINED-INSTALL.md'):
             shutil.copy2(ROOT / 'docs' / name,runtime / name)
         source_dir = runtime / 'zink-source'
@@ -221,7 +222,7 @@ def stage(base, zink, output, components=None, native_gld=False):
                     'gld_sha256': (base_tools.digest(payload / 'Library/GPUBundles/NVKZinkGLDriver.bundle/Contents/MacOS/NVKZinkGLDriver')
                                    if native_gld else None),
                     'zink_source_sha256': {p.name: base_tools.digest(p) for p in sorted(source_dir.iterdir()) if p.is_file()},
-                    'native_cgl': ('automatic GLD proxy for Intel Sequoia 15.5+ and Tahoe; Sequoia ABI evidence reviewed, hardware Zink tests pending'
+                    'native_cgl': ('automatic GLD proxy for Intel Sequoia 15.5+ and Tahoe; Sequoia 15.8.1 passes 25 isolated probes, boot/gameplay tests pending'
                                    if native_gld else 'explicit application attachment; GLD bundle is not included'),
                     'native_cgl_macos_majors': ['15','26'] if native_gld else [],
                     'native_cgl_abi_evidence_sha256': base_tools.digest(ROOT/'docs/ZINK-SEQUOIA-ABI.json'),

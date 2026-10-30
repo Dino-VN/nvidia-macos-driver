@@ -78,12 +78,12 @@ BGRA8 and RGBA16F successfully, including pixel checks. A separate ScreenCapture
 probe receives BGRA8 frames but returns CoreGraphics error 1003, “The stream is
 nil,” for RGBA16F. The stream-start failure also appears in pre-Zink OBS logs.
 
-The [opt-in OBS compatibility mode](ZINK-OPENGL.md#obs-display-capture-compatibility)
+The [automatic OBS compatibility mode](ZINK-OPENGL.md#obs-display-capture-compatibility)
 uses Apple's complete OpenGL context and requests BGRA8 capture for OBS only.
 The user confirms its moving desktop preview on RTX 2060 SUPER / Tahoe 26.7.1.
 This does not implement native Zink IOSurface texture imports or establish
 recording/encoding performance. Installing the capture changes does not enable
-the mode or select a different OBS encoder.
+the mode for other applications or select a different OBS encoder.
 
 ## Validation and limits
 

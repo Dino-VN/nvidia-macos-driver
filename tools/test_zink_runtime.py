@@ -19,7 +19,7 @@ def main():
     out.mkdir(parents=True,exist_ok=False)
     shim = out/'gld-test-lookup.dylib'
     subprocess.run(['clang','-arch','x86_64','-mmacosx-version-min=15.5','-dynamiclib',
-        '-Wall','-Wextra','-Werror','-Wl,-undefined,dynamic_lookup','-Wl,-rpath,'+str(runtime),
+        '-Wall','-Wextra','-Werror','-Wl,-undefined,dynamic_lookup','-Wl,-rpath,'+str(runtime),'-framework','CoreFoundation',
         str(Path(__file__).with_name('zink_gld_test_lookup.c')),'-o',str(shim)],check=True)
     cases = [
         ('mesa-synchronization','zink_sync_probe',[],False,None),
@@ -32,6 +32,12 @@ def main():
         ('gld-core32','cgl_zink_probe',['--system','--core32'],True,'gpu'),
         ('gld-legacy','cgl_zink_legacy_probe',['--system'],True,'gpu'),
         ('gld-apple-iosurface','cgl_iosurface_probe',['--require-apple'],True,'disabled'),
+        ('obs-default','obs_zink_policy_probe',['enabled'],True,'obs-default'),
+        ('obs-preference-on','obs_zink_policy_probe',['enabled'],True,'obs-preference-on'),
+        ('obs-preference-off','obs_zink_policy_probe',['disabled'],True,'obs-preference-off'),
+        ('obs-environment-off','obs_zink_policy_probe',['disabled'],True,'obs-environment-off'),
+        ('obs-environment-on','obs_zink_policy_probe',['enabled'],True,'obs-environment-on'),
+        ('obs-invalid-environment','obs_zink_policy_probe',['enabled'],True,'obs-invalid-environment'),
         ('gld-window','cgl_zink_window_probe',['--system','--appkit-present'],True,'gpu'),
         ('gld-rgbx-worker','cgl_zink_window_probe',['--system','--legacy','--no-alpha','--appkit-present','--render-thread'],True,'gpu'),
         ('native-default','zink_native_present_probe',['default'],False,None),
@@ -56,10 +62,18 @@ def main():
         env.pop('ZINK_TEST_GLD_BUNDLE',None);env.pop('ZINK_TEST_APPLE_GLD',None)
         env.pop('NVKZINK_DISABLE',None)
         env.pop('NVKZINK_OBS_COMPAT',None)
+        env.pop('ZINK_TEST_OBS_PREFERENCE',None)
         if name == 'native-updated-os-build': env['ZINK_TEST_OS_BUILD']='25G242'
         if name == 'native-obs-policy-isolation': env['NVKZINK_OBS_COMPAT']='1'
         if name == 'native-optout-zero': env['NVKZINK_DISABLE']='0'
-        if mode=='disabled': env['NVKZINK_DISABLE']='1'
+        if mode and mode.startswith('obs-'):
+            env['ZINK_TEST_OBS_PREFERENCE']='absent'
+            if mode=='obs-preference-on': env['ZINK_TEST_OBS_PREFERENCE']='on'
+            if mode=='obs-preference-off': env['ZINK_TEST_OBS_PREFERENCE']='off'
+            if mode=='obs-environment-off': env.update(ZINK_TEST_OBS_PREFERENCE='on',NVKZINK_OBS_COMPAT='0')
+            if mode=='obs-environment-on': env.update(ZINK_TEST_OBS_PREFERENCE='off',NVKZINK_OBS_COMPAT='1')
+            if mode=='obs-invalid-environment': env['NVKZINK_OBS_COMPAT']='invalid'
+        elif mode=='disabled': env['NVKZINK_DISABLE']='1'
         elif mode and mode!='invalid-icd': env['NVKZINK_PRESENT']=mode
         if automatic:
             env.update(ZINK_TEST_GLD_BUNDLE=str((runtime/'NVKZinkGLDriver.bundle').resolve(strict=True)),DYLD_INSERT_LIBRARIES=str(shim))

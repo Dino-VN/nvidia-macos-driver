@@ -1,354 +1,126 @@
-# NullMoth NVIDIA Driver for macOS
+# NullMoth NVIDIA Driver for macOS — NVK fork
 
-**Minecraft:** [Zink OpenGL — Sequoia/Tahoe](#opengl-through-zink) ·
-[Minecraft NVK companion mod — Vulkan](https://github.com/HighDelay/minecraft-nvk) ·
-[Aetherium — optional Vulkan shader mod](https://github.com/HighDelay/aetherium)
+Metal driver with native Zink OpenGL and Vulkan runtimes for **Intel macOS Sequoia 15.5+
+and Tahoe 26**, with **NVIDIA Turing or newer** GPUs (GTX 16, RTX 20–50,
+Quadro RTX). Based on [NullMoth's driver](https://github.com/nullmoth/nvidia-macos-driver).
 
-**Windows games:** [Wine / CrossOver native NVK](#wine--crossover-native-vulkan) ·
-[YAAGL NVK for ZZZ, Genshin Impact and Honkai: Star Rail](https://github.com/HighDelay/yaagl-nvk)
-
-A Metal driver for NVIDIA GeForce cards on macOS 15 Sequoia (Intel Macs and OpenCore PCs). It is open source; the
-kernel extensions, the Metal plugin and the shader translator are in this repository. The 1401 app that installs it
-(Mac and Windows) is its own project: [1401](https://github.com/nullmoth/1401).
-
-Supported cards are Turing and newer: GTX 16, RTX 20, 30, 40 and 50, TITAN RTX, Quadro RTX and the T-series. Most
-testing is done on an RTX 5060, so other cards may have problems that haven't been found yet. See
-[card support](docs/CARD-SUPPORT.md) for what has been reported working.
-
-- Changes: [CHANGELOG.md](CHANGELOG.md), downloads on the [releases page](https://github.com/nullmoth/nvidia-macos-driver/releases)
-- Problems: [troubleshooting](docs/TROUBLESHOOTING.md), then Send logs from the 1401 app
-- Installing macOS from Windows: [1401](https://github.com/nullmoth/1401)
-- How it works: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)
-- Fork display rotation on Tahoe: [support, costs and testing](docs/DISPLAY-ROTATION.md)
-- Native OpenGL through Zink/NVK: [build and compatibility notes](docs/ZINK-OPENGL.md)
-- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
-
-If your PC doesn't boot macOS with OpenCore yet, set that up first with the
-[OpenCore Install Guide](https://dortania.github.io/OpenCore-Install-Guide/), then install the driver.
-
-Support the work: https://buymeacoffee.com/nullmoth
-
-| | |
-|---|---|
-| macOS | 15.5 Sequoia or later (tested 15.7.x and 15.8.1), or 26 Tahoe, x86_64 |
-| GPUs | NVIDIA Turing and later; developed on an RTX 5060 |
-| Metal | Metal 3: argument buffers tier 2, ray tracing, mesh shaders, MPS, MetalFX path |
-| Also | OpenGL (through Apple's GL-on-Metal), OpenCL, Core Image, Core ML |
-
-## Native OpenGL with Zink
-
-The optional [Zink/NVK integration](docs/ZINK-OPENGL.md) sends OpenGL shaders
-through Mesa/Zink directly to native NVK, bypassing Apple GL-on-Metal and
-NVMTL's application shader translation. AppKit windows present through GPU
-copies into native drawables, using the Minecraft bridge's VRAM handoff
-protocol. Metal allocation and macOS composition remain.
-
-This requires this fork's **Zink-enabled package** and Intel **Sequoia 15.5+ or
-Tahoe 26**. The Sequoia path is a test candidate: static CGL evidence from
-**15.8.1 / 24H32** matches the shared adapter; native Zink hardware testing is
-still pending. Tahoe testing covers **26.7.1 / 25G241**. There is no exact macOS-build
-activation guard: later updates can keep using the runtime if Apple's private
-CGL ABI remains compatible. Ordinary packages keep Apple's OpenGL renderer.
-Minecraft OpenGL rendering and VSync-off operation are user-confirmed on RTX
-2060 SUPER / Tahoe 26.7.1; another user reports Minecraft still selects Zink
-after updating to 26.7.2 without rebuilding CGL. Broader game compatibility and
-a controlled FPS gain remain unqualified. See the [integration review](docs/ZINK-PR2-REVIEW.md) and
-[local testing/install guide](docs/COMBINED-INSTALL.md).
-
-## Minecraft native Vulkan
-
-Minecraft can use native NVK through **OpenGL with Zink on Sequoia/Tahoe, without the
-companion mod**, or through its **official Vulkan renderer with NVK Bridge on
-Sequoia 15.5+ and Tahoe**. The simplified application rendering paths are:
-
-| Provider | Rendering path on this driver |
-|---|---|
-| Apple OpenGL | Minecraft OpenGL → Apple GL-on-Metal → Metal → NVMTL → NVK → NVIDIA GPU |
-| Zink (Sequoia/Tahoe) | Minecraft OpenGL → Mesa OpenGL/Zink → native NVK → NVIDIA GPU |
-| MoltenVK | Minecraft Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
-| NVK Bridge | Minecraft Vulkan → native NVK runtime → NVIDIA GPU |
-
-<a id="opengl-through-zink-tahoe-only"></a>
-
-### OpenGL through Zink
-
-**Requires Intel macOS Sequoia 15.5+ or Tahoe 26 and this fork's Zink-enabled driver package.**
-Sequoia activation is included in the new test candidate; earlier Tahoe-only
-packages do not gain it from a documentation update. Run the supplied
-**`Test-Zink.command`** before installing on Sequoia and return its logs for
-validation. Minecraft keeps using its OpenGL renderer;
-the driver selects Zink automatically, without the Minecraft NVK companion mod,
-a mod loader or special JVM arguments.
-
-Zink replaces Apple's OpenGL-to-Metal conversion and bypasses NVMTL's
-Metal/AIR-to-SPIR-V translation for game rendering. Mesa still implements
-OpenGL, Zink translates it to Vulkan, and NVK compiles GPU shaders. Finished
-frames are copied on the GPU into native Metal drawables, without game-frame
-CPU pixel readback or upload. Apple's CGL context management and macOS
-composition remain. A controlled FPS gain over Apple's OpenGL path has not
-been measured.
-
-1. Install this fork's **Zink-enabled** driver package and reboot; see the
-   [local testing/install guide](docs/COMBINED-INSTALL.md). Ordinary packages
-   retain Apple's OpenGL renderer.
-2. Launch Minecraft with its **OpenGL** renderer.
-3. Check F3 or the startup log: the renderer should contain **`zink`** and **`NVK`**.
-
-Minecraft's VSync setting controls native presentation; disabling it allows
-rendering above the display's refresh rate. See the
-[Zink compatibility and presentation notes](docs/ZINK-OPENGL.md).
-
-### Official Vulkan renderer with NVK Bridge
-
-The [Minecraft NVK companion mod](https://github.com/HighDelay/minecraft-nvk)
-lets Minecraft's official Vulkan renderer use this fork's native runtime.
-This removes MoltenVK's Vulkan-to-Metal conversion and NVMTL's Metal/AIR-to-SPIR-V translation from the
-game's rendering path. NVK still compiles shaders for the GPU. Finished frames are copied by the GPU into a
-Metal drawable for macOS presentation, without CPU pixel readback or upload. Fewer translation stages can
-reduce CPU and shader-conversion overhead; a controlled FPS gain over MoltenVK has not yet been measured.
-
-Requires Minecraft **26.3**, Java **25**, Fabric Loader **0.19.5+** or NeoForge **26.3.0.99+**,
-and Intel macOS **Sequoia 15.5+** or **Tahoe 26**.
-
-1. Install [this fork's driver package](https://github.com/HighDelay/nvidia-macos-driver/releases) with the native Minecraft runtime and reboot.
-2. Put the matching Fabric or NeoForge [NVK Bridge jar](https://github.com/HighDelay/minecraft-nvk/releases), **0.1.2 or newer**, in your instance's `mods` folder.
-3. Select **Vulkan** in Minecraft's graphics settings and restart the game.
-4. Check the `NVK Bridge` startup messages and F3 screen: the renderer should identify **NVK Mesa**.
-
-The mod automatically detects `/Library/GPUBundles/nvmtl/minecraft`; **no JVM argument is required**.
-[Aetherium](https://github.com/HighDelay/aetherium) is optional for Vulkan shader-pack support.
-
-For a custom runtime directory, set this optional Java/JVM argument:
-
-```text
--Dnvkbridge.runtime=/absolute/path/to/nvk-runtime
-```
-
-An explicit path takes priority over automatic detection. After updating the bridge jar, you can remove the old
-argument that points to the standard installed directory. Use `-Dnvkbridge.enabled=false` to disable the bridge.
-
-Fabric Essential and NeoForge gameplay were checked on RTX 2060 SUPER / Tahoe 26.7.1.
-See the [setup instructions](nvk/native-macos/INSTALL.md) for supported mod loaders and testing limits.
-
-## OBS display capture
-
-OBS **33.0.1** has an opt-in compatibility mode in this fork's Zink builds.
-On the tested Intel Tahoe system, OBS's OpenGL capture textures cannot import
-through Zink, and ScreenCaptureKit's requested RGBA16F stream fails to start.
-Quit OBS, enable the saved setting, then reopen OBS normally:
-
-```sh
-defaults write com.obsproject.obs-studio NVKZinkCaptureCompatibility -bool true
-```
-
-Select the display explicitly in **macOS Screen Capture** and click **OK**.
-This uses Apple's OpenGL renderer and **8-bit BGRA SDR capture for OBS only**;
-Minecraft and other applications continue using Zink. A moving desktop preview
-is user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. Recording, streaming and HDR
-capture still need separate testing. See the
-[compatibility details and rollback](docs/ZINK-OPENGL.md#obs-display-capture-compatibility).
-
-## Wine / CrossOver native Vulkan
-
-The Wine/NVK runtime lets compatible macOS Wine builds use this fork's native
-NVK renderer directly. For **D3D11** games, the included [DXVK NVK](https://github.com/HighDelay/dxvk-nvk)
-DLLs translate D3D11 to Vulkan:
-
-| Provider | Game rendering path on this driver |
-|---|---|
-| DXVK + MoltenVK | D3D11 → DXVK → Vulkan → MoltenVK → Metal → NVMTL → NVK → NVIDIA GPU |
-| DXVK + native NVK | D3D11 → DXVK → Wine's Vulkan bridge → native NVK → NVIDIA GPU |
-| vkd3d + native NVK | D3D12 → vkd3d-proton → Wine's Vulkan bridge → native NVK → NVIDIA GPU |
-
-As with the Minecraft bridge, this removes MoltenVK's Vulkan-to-Metal conversion
-and NVMTL's Metal/AIR-to-SPIR-V translation from game rendering. Wine, DXVK/vkd3d-proton and NVK
-shader compilation remain. The GPU still copies completed frames into Metal
-drawables for macOS presentation, without game-frame CPU pixel readback/upload.
-The optional HUD uploads only its small text bitmap. Fewer
-translation stages can reduce conversion overhead; **a controlled FPS improvement
-has not been measured**.
-
-Requires this fork's matching driver/runtime, Intel macOS **Sequoia 15.5+** or
-**Tahoe 26**, and a compatible x64 Wine build. This integration supports x64
-D3D11 and optional D3D12 with the 2.6.4 Wine/NVK provider or newer. **ZZZ and Honkai: Star Rail Global gameplay are verified on RTX 2060 SUPER /
-Tahoe 26.7.1 with YAAGL Wine 11.0-1, including scenery, characters and UI.
-GI, CN gameplay and commercial CrossOver remain unqualified.**
-
-**D3D12 and DLSS:** the provider includes
-[vkd3d-proton 3.1](https://github.com/HighDelay/vkd3d-nvk), optional NVIDIA
-NGX/DXVK-NVAPI and a native FPS/ms HUD. ZZZ D3D12 and DLSS Super Resolution
-Quality are user-confirmed on RTX 2060 SUPER / Tahoe 26.7.1. D3D11 stays the
-default; GI/HSR retain their D3D11 route. DLSSG uses normal hardware detection
-and has not been verified; ray tracing remains unqualified.
-
-An older D3D11-only provider does not gain these features from a launcher
-update. Install the matching 2.6.4 Wine/NVK driver build or newer; its helper
-reports `supports_d3d12` and `supports_dlss`.
-[Wine/CrossOver setup and rollback](nvk/wine-macos/INSTALL.md#d3d12-and-dlss).
-
-### YAAGL: ZZZ, Genshin Impact and Honkai: Star Rail
-
-1. Install [this fork's driver](https://github.com/HighDelay/nvidia-macos-driver/releases) and reboot.
-2. Get the matching [YAAGL NVK package](https://github.com/HighDelay/yaagl-nvk/releases)
-   for your game. The archive contains launchers only; no runtime is bundled.
-3. Open its supplied **Start** command, then select **Settings → Wine → NVIDIA
-   NVK + DXVK (local, experimental)**.
-4. Let setup download the pinned compatible Wine build, then select/install the
-   game directory and launch. The backend uses its own
-   prefix, selects D3D11 and installs the matched DLLs. The FPS overlay is enabled.
-
-The launcher provides configurations for all three games, including global/CN
-variants. It requires the driver runtime at **`/Library/GPUBundles/nvmtl/wine`**
-and uses both NVK and the patched DXVK pair from that directory. Only Wine is
-downloaded separately; YAAGL has no bundled runtime or separate DXVK download.
-It defaults to descriptor sets: the descriptor-buffer path lost ZZZ
-characters and HUD text in testing. See [YAAGL's setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
-
-### Your own Wine / CrossOver
-
-Driver releases carrying the compact runtime install it at
-`/Library/GPUBundles/nvmtl/wine`. Wine itself is supplied separately. Use a
-dedicated 64-bit Wine prefix or a duplicate CrossOver bottle, then install the
-runtime's matched DXVK DLL pair with `bin/nvk-runtime install`. Launch that game
-with a scoped `DYLD_LIBRARY_PATH` pointing to the runtime's `lib` directory,
-`WINEDLLOVERRIDES='d3d11,dxgi=n'`, and
-`DXVK_CONFIG='dxvk.enableDescriptorBuffer = False'`.
-
-**[Follow the Wine and CrossOver setup commands](nvk/wine-macos/INSTALL.md)** for
-prefix creation, bottle configuration, launching, logs and restoring the original
-DLLs. CrossOver is an opt-in compatibility test: Wine versions and loader/signing
-policies differ, so verify the loaded NVK libraries. This does not replace
-CrossOver.app's libraries or change the system's default Vulkan provider.
-
-## How it works
-
-```
-Metal app ─► NVMTLDriver.bundle ─► translator (Apple AIR → SPIR-V) ─► NVK (Mesa Vulkan + NAK compiler) ─► kexts ─► GPU
-```
-
-| Component | Path on disk | Source |
-|---|---|---|
-| Metal driver plugin | `/Library/GPUBundles/NVMTLDriver.bundle` | `plugin/` |
-| Shader translator | inside the plugin (`libnvmtl_translate.dylib`) | `translator/` (LGPL-3.0, based on metal2vulkan) |
-| Vulkan back end (NVK) | `/Library/GPUBundles/nvmtl/` | `nvk/nvk-macos.patch` on Mesa `17ca6174` |
-| Kernel extensions | `/Library/Extensions/NVRM, NVAccel, NVRMFB, NVRMAGDC` | `kexts/` |
-| GPU firmware (GSP) | `/Library/NullMoth/nvfw/nvidia/615.78.08` | NVIDIA, unmodified |
-
-The kernel side runs NVIDIA's own open GPU kernel modules (r615) under macOS. NVRMFB is the display framebuffer,
-NVAccel the accelerator WindowServer composites through, NVRMAGDC the display-policy shim.
+**[Driver downloads](https://github.com/HighDelay/nvidia-macos-driver-nvk/releases)** ·
+[Card support](docs/CARD-SUPPORT.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Install — by hand
 
-Use the 1401 Mac app below unless you manage your OpenCore config yourself. `install.sh` installs the driver files but
-does not change OpenCore, and the driver does not start until OpenCore has these settings:
+1. Configure [OpenCore](docs/OPENCORE-SETUP.md): required boot arguments, SIP,
+   SecureBootModel, Lilu/AMFIPass and BIOS settings are listed there.
+2. Download this fork's driver archive and extract its `pkgroot/` folder.
+3. Run:
 
-- `boot-args` include `nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth amfi_get_out_of_my_way=0x1 amfi=0x80
-  ipc_control_port_options=0`, and not `nv_disable=1` or `-wegnoegpu` (both hide the NVIDIA card)
-- `csr-active-config` includes the bits `0x0A43`
-- `Misc > Security > SecureBootModel` is `Disabled`
-- `Lilu.kext` and `AMFIPass.kext` are in `Kernel > Add` and enabled
-
-Download `nullmoth-nvidia-<version>.tar.gz` from **Releases**, then:
-
-```bash
-tar -xzf nullmoth-nvidia-*.tar.gz && cd pkgroot
-shasum -a 256 -c SHA256SUMS
+```sh
+cd ~/Downloads/pkgroot
+shasum -a 256 --strict -c SHA256SUMS --quiet
 sudo ./install.sh
 sudo shutdown -r now
 ```
 
-Every file must say OK in the check. `install.sh` copies the files and rebuilds the Auxiliary Kernel Collection; the
-restart is required, because logging out does not load the driver. (Paste the lines without anything after them: the
-Terminal on macOS does not treat `#` as a comment, so a pasted comment becomes part of the command.)
+Double-clicking `Install.command` is an alternative to running `install.sh`.
+Follow any extension-approval instructions in **Privacy & Security** and reboot
+when requested. The installer backs up the previous driver and rebuilds the
+kernel collection. Do not also inject these kexts through `EFI/OC/Kexts`.
 
-macOS asks you to **allow the extensions** in System Settings → Privacy & Security the first time. Allow, then reboot again.
+For diagnostics, `Test-Zink.command` runs isolated GPU/CGL tests without
+installing anything; `Verify.command` checks the complete package. See the
+[package guide](docs/COMBINED-INSTALL.md).
 
-## 1401 Mac app (recommended)
+## 1401 Mac app
 
-Download the latest `1401-Mac-<version>.dmg` from **Releases**, open it, and run **1401** (the driver package is inside the disk
-image, so nothing else to download). Follow its steps. A supported setup must use a verified or explicitly selected OpenCore partition. The app finds the OpenCore that started your Mac (in `EFI/OC` or `EFI/BOOT`, on an
-EFI or FAT32 partition), shows every change before making it, backs the config up, installs the driver, and adds
-**1401: Remove NVIDIA driver** to the OpenCore boot picker. Choosing that entry removes the driver at the next start and
-puts the Mac back exactly as it was before the install, OpenCore config included, then restarts by itself. The app also
-maps your USB ports and, if the driver ever crashes the Mac, offers to make a crash report you can upload yourself
-(it never sends anything on its own).
+Download the upstream [1401 Mac app](https://github.com/nullmoth/1401/releases),
+open its disk image and run **1401**, then follow its installer. It automates OpenCore
+configuration, driver installation and boot-menu recovery. Keep the OpenCore
+boot disk connected while using it. This fork's Zink and native gaming runtimes
+require **this fork's package**, installed using the method above.
 
-If something goes wrong, open 1401 > Crash report > Send logs to NullMoth. It uploads what 1401 did, the driver's
-state, crash reports and OpenCore's startup log, with names, serial numbers and addresses removed, and gives you a
-report ID to put in your issue or in Discord.
+## Uninstall / recovery
 
-Keep the USB stick or disk that OpenCore started from plugged in while the app runs, and for every restart after:
-that is the config the app changes. The app never copies OpenCore to your internal disk. The first start with the
-driver pauses for up to a minute at "PCI configuration end" while the GPU comes up.
-
-## Wiring into an existing OpenCore setup
-
-The kexts install into `/Library/Extensions` and load from the Auxiliary Kernel Collection — **do not** also inject
-them from `EFI/OC/Kexts`. OpenCore only needs to set SIP and boot-args.
-
-**`NVRAM → Add → 7C436110-AB2A-4BBB-A880-FE41995C9F82`**
-
-| Key | Value | Why |
-|---|---|---|
-| `csr-active-config` | `<430A0000>` (Data) | the tested value: unsigned kexts, plus what root patches need |
-| `boot-args` | `nvfb=1 nvaccel=1 nvfbheads=4 -nvkmsnosmooth amfi_get_out_of_my_way=0x1 amfi=0x80 ipc_control_port_options=0` | framebuffer + accelerator, 4 display heads; the AMFI args let WindowServer load the driver bundle |
-
-Optional boot arguments, for troubleshooting:
-
-| boot-arg | Effect |
-|---|---|
-| `-nvrmnoflip` | keeps the composited frame on the copy path: NVRM never turns on zero-copy scan-out (`debug.nvaccel_iop_flip`), so the display reads a finished copy instead of the surface the GPU may still be drawing. Try it first when the desktop flashes or tears while the cursor moves. |
-| `-nvrmnogo` | the driver idles until `nvrmctl go <pass>` instead of starting the GPU itself. |
-| `-nvrmnobootscreen` | do not snapshot the boot screen. |
-| `-nvrmnopm` | turns off system sleep support: NVRM stays out of the power tree, as before it had one. A Mac that sleeps then comes back without the GPU. See [docs/SLEEP-WAKE.md](docs/SLEEP-WAKE.md). |
-
-Add every key you set to `NVRAM → Delete` as well, so the values are rewritten each boot.
-
-| Setting | Value | Why |
-|---|---|---|
-| `UEFI → Quirks → ResizeGpuBars` | keep the existing value | Forced resizing can stop firmware before the picker; `-1` preserves firmware sizing |
-| `Booter → Quirks → ResizeAppleGpuBars` | keep the existing value | Large firmware BARs can stop PCI configuration; `0` is the installer-safe small-BAR setting |
-| `Kernel → Block` | `com.apple.iokit.IONDRVSupport`, Strategy `Exclude` | otherwise the firmware framebuffer takes display index 0 from NVRMFB |
-| `Misc → Security → SecureBootModel` | `Disabled` | Apple Secure Boot refuses kexts Apple did not sign |
-
-The macOS **installer** uses `ResizeAppleGpuBars` `0`, `ResizeGpuBars` `-1`, and IONDRVSupport
-not excluded: it runs on the firmware framebuffer. The Mac app keeps your existing BAR settings when it installs or
-updates the driver, and the driver sets up the BAR itself after macOS starts, so don't copy BAR values from someone
-else's board.
-
-Also required:
-- **BIOS:** Above 4G Decoding ON (the card maps memory above 4 GB), CSM OFF.
-- **SMBIOS:** a Mac model that runs macOS 15 with a discrete GPU (tested: `iMacPro1,1`, which 1401 uses).
-- **Remove** any `nv_disable=1`, WhateverGreen NVIDIA patches, or `agdpmod=pikera` for this card.
-- **With WhateverGreen installed** (for an Intel or AMD GPU), add `gfxrst=4` to boot-args. Without it, WhateverGreen's
-  boot screen copy can read freed memory when the NVIDIA display opens, and the Mac panics.
-- **No `DeviceProperties`** are needed for the NVIDIA card.
-
-Verify after the reboot:
-
-```bash
-kmutil showloaded --list-only | grep nullmoth
-system_profiler SPDisplaysDataType | head -20
+```sh
+cd ~/Downloads/pkgroot
+sudo ./uninstall.sh
+sudo shutdown -r now
 ```
 
-The first shows 4 lines; the second shows your GeForce with Metal: supported.
+If macOS cannot start, follow the [Recovery removal steps](docs/COMBINED-INSTALL.md#recovery-removal)
+using `nullmoth-remove=1`, then reinstall your previous working package.
 
-## Dual boot
+## Minecraft native Vulkan
 
-Nothing in the driver touches other disks. OpenCore's picker boots Windows (`ScanPolicy` 0 or including NTFS) and Linux
-(`OpenLinuxBoot.efi` in `UEFI → Drivers`, `LauncherOption = Full`) alongside macOS.
+[Companion mod](https://github.com/HighDelay/minecraft-nvk) ·
+[Aetherium — optional Vulkan shader mod](https://github.com/HighDelay/aetherium)
 
-## Uninstall
+| Renderer | Application shader path |
+| --- | --- |
+| Apple OpenGL | OpenGL → Apple GL-on-Metal → NVMTL → NVK → GPU |
+| Zink OpenGL | OpenGL → Mesa/Zink → native NVK → GPU |
+| Vulkan / MoltenVK | Vulkan → MoltenVK → Metal → NVMTL → NVK → GPU |
+| Vulkan / NVK Bridge | Vulkan → native NVK → GPU |
 
-```bash
-sudo ./uninstall.sh && sudo shutdown -r now
-```
+The native paths bypass Metal shader translation. Presentation still uses GPU
+copies into Metal drawables and macOS composition; no controlled FPS gain is claimed.
+
+<a id="native-opengl-with-zink"></a>
+<a id="opengl-through-zink-tahoe-only"></a>
+
+### OpenGL through Zink
+
+Install the Zink-enabled package for **Sequoia 15.5+ or Tahoe**, then launch
+Minecraft with **OpenGL**. No companion mod, mod loader or JVM argument is
+needed. F3/logs should show **zink** and **NVK**; Minecraft's VSync toggle works.
+
+Sequoia 15.8.1 / RTX 2070 SUPER passes all 25 isolated tests; system-wide boot and
+gameplay remain pending. Tahoe Minecraft gameplay is verified.
+[Compatibility, builds and test results](docs/ZINK-OPENGL.md).
+
+### Official Vulkan renderer with NVK Bridge
+
+Requires **Minecraft 26.3**, **Java 25**, and **Fabric 0.19.5+** or
+**NeoForge 26.3.0.99+**.
+
+1. Install this fork's driver with its Minecraft runtime and reboot.
+2. Add the matching [NVK Bridge jar](https://github.com/HighDelay/minecraft-nvk/releases)
+   (**0.1.2+**) to `mods/`.
+3. Select **Vulkan**, restart Minecraft, and check F3 for **NVK Mesa**.
+
+The mod finds the installed runtime automatically; no JVM argument is required.
+[Full setup and custom runtime options](nvk/native-macos/INSTALL.md).
+
+## Wine / CrossOver native Vulkan
+
+The driver bundles native NVK, **DXVK for D3D11**, **vkd3d-proton for D3D12**,
+DLSS Super Resolution support and an FPS HUD. This bypasses MoltenVK and NVMTL's
+shader translation; Wine and DXVK/vkd3d remain.
+
+**[Start with the complete Wine / CrossOver setup guide](nvk/wine-macos/INSTALL.md)**
+for a compatible Wine build, prefix/bottle creation, DXVK installation and launch
+commands. D3D12/DLSS are optional steps **after** that setup. The provider lives at
+`/Library/GPUBundles/nvmtl/wine`; Wine itself is installed separately.
+
+For **ZZZ, Genshin Impact or Honkai: Star Rail**, use
+[YAAGL NVK](https://github.com/HighDelay/yaagl-nvk/releases) and its
+[setup guide](https://github.com/HighDelay/yaagl-nvk/blob/main/docs/NVK.md).
+It downloads Wine and uses this driver's installed graphics runtime.
+ZZZ/HSR Global gameplay and ZZZ D3D12/DLSS SR are verified; GI and commercial CrossOver
+remain unqualified. DLSSG and ray tracing are unqualified.
+
+## OBS display capture
+
+OBS compatibility is **enabled automatically for OBS only**: Apple's OpenGL
+renderer plus **8-bit BGRA SDR capture**. Other apps continue using Zink.
+Select your display in **macOS Screen Capture**.
+[Details and opt-out](docs/ZINK-OPENGL.md#obs-display-capture-compatibility).
 
 ## Build from source
 
-Requires Xcode 16, Rust (stable), Meson/Ninja, and NVIDIA's `open-gpu-kernel-modules` at tag `615.78.08`.
+Requires Xcode 16+, Rust (stable), Meson/Ninja, and NVIDIA's
+`open-gpu-kernel-modules` at **615.78.08**.
 
-```bash
+```sh
 build/build_xlate.sh
 RELEASE=1 build/build_plugin.sh
 build/build263.sh
@@ -356,21 +128,13 @@ build/accel_build.sh <src> <out>
 build/accel_build_all.sh kexts/NVRM <out>
 ```
 
-In order: the translator (`libnvmtl_translate.dylib`); the plugin (`NVMTLDriver.bundle`; `RELEASE=1` strips every
-diagnostic); NVK (apply `nvk/nvk-macos.patch` to Mesa `17ca6174` first); the kexts; and NVAccel for macOS 15 and 26
-(`NM_TAHOE=1`), written to `<out>/15` and `<out>/26`.
+These build the translator, Metal plugin, NVK, kexts and both OS accelerators.
+Apply `nvk/nvk-macos.patch` to Mesa **17ca6174** before building NVK.
+Rebuild **both accelerators** whenever `nvrm_vram_abi.h` or `nvrm_gpuva_abi.h`
+changes. [Zink build and packaging instructions](docs/ZINK-OPENGL.md#building-locally).
 
-Rebuild both accelerators whenever `nvrm_vram_abi.h` or `nvrm_gpuva_abi.h` changes: an accelerator built against an
-older ABI loads, but NVRMFB refuses all its VRAM requests and the desktop stays black.
+[Architecture](docs/HOW-IT-WORKS.md) · [Display rotation](docs/DISPLAY-ROTATION.md) ·
+[Contributing](CONTRIBUTING.md) · [Upstream support](https://buymeacoffee.com/nullmoth)
 
-## License
-
-Free of charge, source code included. Nobody may sell it or use it to make money.
-
-- `plugin/`, `kexts/`, `build/`, `package/`: PolyForm Noncommercial 1.0.0 (see `LICENSE`), © NullMoth Systems.
-  Personal, research, educational and non-profit use is allowed; any commercial use is not.
-- `translator/`: LGPL-3.0-or-later (see `translator/LICENSE`): it is based on metal2vulkan, whose licence carries over.
-- `nvk/`: changes to Mesa (MIT).
-- GSP firmware: NVIDIA's redistributable firmware licence.
-
-See `NOTICE` for third-party credits.
+Driver code: [PolyForm Noncommercial](LICENSE); translator: [LGPL-3.0](translator/LICENSE);
+Mesa/NVK/Zink: MIT; firmware carries NVIDIA's license. See [NOTICE](NOTICE).
