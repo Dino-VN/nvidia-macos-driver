@@ -1,6 +1,6 @@
 // Isolated fetch/descriptor benchmark with pixel verification; never installs a driver.
 // clang -fobjc-arc -O2 tools/bench_framebuffer_fetch.m -framework Foundation -framework Metal -framework IOKit -o bench_fetch
-// bench_fetch /absolute/path/NVMTLDriver [draws=1200] [frames=9] [mask-off]
+// bench_fetch /absolute/path/NVMTLDriver [draws=1200] [frames=9] [mask-off|fetch-off] [mode=0|1|2]
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <IOKit/IOKitLib.h>
@@ -31,7 +31,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     if(accel) IOObjectRelease(accel);
     if(!dev) return 2;
     // Release startup sanitizes diagnostics; set controls after creating this isolated device.
-    unsetenv("NVMTL_NO_FBFETCH");
+    int fetch_off=argc>4 && !strcmp(argv[4],"fetch-off");
+    if(fetch_off) setenv("NVMTL_NO_FBFETCH","1",1); else unsetenv("NVMTL_NO_FBFETCH");
     setenv("NVMTL_DESC_MASK",argc>4 && !strcmp(argv[4],"mask-off")?"0":"1",1);
     NSError *error=nil;
     NSString *src=@"#include <metal_stdlib>\nusing namespace metal;\n"
@@ -53,9 +54,10 @@ int main(int argc, char **argv) { @autoreleasepool {
         if(!sources[i]) return 2;
         [sources[i] replaceRegion:MTLRegionMake2D(0,0,1,1) mipmapLevel:0 withBytes:pixel bytesPerRow:4];
     }
-    printf("device: %s\nplugin: %s\ndescriptor_mask: %s\n",dev.name.UTF8String,argv[1],getenv("NVMTL_DESC_MASK")); fflush(stdout);
+    printf("device: %s\nplugin: %s\ndescriptor_mask: %s\nframebuffer_fetch: %s\n",dev.name.UTF8String,argv[1],getenv("NVMTL_DESC_MASK"),fetch_off?"off":"on"); fflush(stdout);
     const char *names[]={"stable-fetch","uniform-churn","texture-churn"};
     for(int mode=0;mode<3;mode++) {
+        if(argc>5 && mode!=atoi(argv[5])) continue;
         double times[100];
         for(int frame=-2;frame<frames;frame++) { @autoreleasepool {
             MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO];
@@ -85,7 +87,7 @@ int main(int argc, char **argv) { @autoreleasepool {
             [target getBytes:pixels bytesPerRow:64 fromRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0];
             for(int p=0;p<256;p++) {
                 int count=(draws-1-p)/256+1, last=p+(count-1)*256;
-                int expected[4]={count,mode==2 && (last&1)?153:51,mode?last%251:17,255};
+                int expected[4]={fetch_off?1:count,mode==2 && (last&1)?153:51,mode?last%251:17,255};
                 for(int k=0;k<4;k++) if(abs((int)pixels[p*4+k]-expected[k])>1) {
                     fprintf(stderr,"mode=%s frame=%d pixel=%d channel=%d got=%u expected=%d\n",names[mode],frame,p,k,pixels[p*4+k],expected[k]); return 1;
                 }
