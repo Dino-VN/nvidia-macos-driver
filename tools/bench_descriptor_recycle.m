@@ -1,8 +1,8 @@
 // Pixel-verified descriptor-set reuse across command buffers on an isolated plugin; never installs it.
-// Each frame is its own command buffer, so from the second frame on the snapshot sets come from the sets the previous
-// frames retired. A frame draws a resource-free pipeline first (the command buffer has no binding table yet), then a
-// textured draw whose texture alternates per frame, then a draw whose colour comes from setFragmentBytes. A set reused
-// with a stale descriptor shows up as the previous frame's texture or colour.
+// Each frame is its own command buffer, with up to three in flight, so snapshot sets come from the sets earlier frames
+// retired. A frame draws a resource-free pipeline first (the command buffer has no binding table yet), then textured
+// draws whose texture alternates per draw, then draws whose colour comes from setFragmentBytes; each of those writes
+// its own pixel cell. A set reused with a stale descriptor shows up as a wrong texture or colour in that draw's cell.
 // clang -fobjc-arc -O2 tools/bench_descriptor_recycle.m -framework Foundation -framework Metal -framework IOKit -o bench_descriptor_recycle
 // bench_descriptor_recycle /absolute/path/NVMTLDriver [frames=64] [draws=600]
 #import <Foundation/Foundation.h>
@@ -58,44 +58,68 @@ int main(int argc, char **argv) { @autoreleasepool {
     id<MTLTexture> texs[2] = { solid(dev, 0xff0000ffu), solid(dev, 0xff00ff00u) };   // red, green (RGBA8 little-endian)
     const uint32_t texpx[2] = { 0xff0000ffu, 0xff00ff00u };
     id<MTLCommandQueue> queue = [dev newCommandQueue];
+    // Three frames in flight, each with its own target, so sets retired by one frame are reused while later frames are
+    // still queued. Every textured and every bytes draw writes its own 1x1 cell (cell = draw % 256), so a stale set
+    // used by any draw shows up, not only one used by the last draw.
+    enum { RING = 3 };
+    id<MTLTexture> targets[RING]; id<MTLCommandBuffer> cbs[RING] = { nil }; int slotFrame[RING];
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:48 height:16 mipmapped:NO];
     td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; td.storageMode = MTLStorageModeShared;
-    id<MTLTexture> target = [dev newTextureWithDescriptor:td];
+    for (int k = 0; k < RING; k++) targets[k] = [dev newTextureWithDescriptor:td];
     printf("device: %s\nplugin: %s\n", dev.name.UTF8String, argv[1]);
-    double *times = calloc((size_t)frames, sizeof *times); int bad = 0;
+    const int firstTex = (draws + 2) / 3, firstBytes = (2 * draws + 2) / 3;   // first i with i*3/draws == 1, == 2
+    const int ntex = firstBytes - firstTex, nbytes = draws - firstBytes;
+    double *times = calloc((size_t)frames, sizeof *times); __block int bad = 0;
+    const uint32_t tex0 = texpx[0], tex1 = texpx[1];
+    void (^verify)(id<MTLTexture>, int) = ^(id<MTLTexture> target, int frame) {
+        uint32_t px[48 * 16];
+        [target getBytes:px bytesPerRow:48 * 4 fromRegion:MTLRegionMake2D(0, 0, 48, 16) mipmapLevel:0];
+        int wrong = 0, firstBad = -1;
+        for (int y = 0; y < 16; y++) for (int x = 0; x < 48; x++) {
+            uint32_t p = px[y * 48 + x], want;
+            const int c = y * 16 + (x & 15);
+            if (x < 16) want = 0xffff0000u;
+            else if (x < 32) {
+                int j = c < ntex ? c + ((ntex - 1 - c) / 256) * 256 : -1;   // the last textured draw in this cell
+                want = j < 0 ? 0 : (((frame + j) & 1) ? tex1 : tex0);
+            } else {
+                int b = c < nbytes ? c + ((nbytes - 1 - c) / 256) * 256 : -1;
+                if (b < 0) want = 0;
+                else { uint32_t r = (uint32_t)((frame * 37 + b * 11) % 200 + 40); want = 0xff800000u | ((255u - r) << 8) | r; }
+            }
+            uint32_t d = 0; for (int k = 0; k < 32; k += 8) { int e = (int)((p >> k) & 0xff) - (int)((want >> k) & 0xff); if (abs(e) > d) d = (uint32_t)abs(e); }
+            if (d > 1) { wrong++; if (firstBad < 0) firstBad = y * 48 + x; }
+        }
+        if (wrong) { bad++; if (bad <= 4) fprintf(stderr, "frame %d: %d wrong pixels (first at x=%d y=%d: %08x)\n", frame, wrong, firstBad % 48, firstBad / 48, px[firstBad]); }
+    };
     for (int frame = 0; frame < frames; frame++) @autoreleasepool {
+        const int slot = frame % RING;
+        if (cbs[slot]) { [cbs[slot] waitUntilCompleted]; verify(targets[slot], slotFrame[slot]); cbs[slot] = nil; }
         MTLRenderPassDescriptor *rd = [MTLRenderPassDescriptor renderPassDescriptor];
-        rd.colorAttachments[0].texture = target; rd.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rd.colorAttachments[0].texture = targets[slot]; rd.colorAttachments[0].loadAction = MTLLoadActionClear;
         rd.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0); rd.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLCommandBuffer> cb = [queue commandBuffer]; id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rd];
-        const int t = frame & 1; const float shade = (float)((frame * 37) % 200 + 40) / 255.0f;
         double start = cpu_ms();
         for (int i = 0; i < draws; i++) {
             const int kind = i * 3 / draws;   // all resource-free draws first, then textured, then bytes
             [enc setRenderPipelineState:ps[kind]];
-            [enc setViewport:(MTLViewport){ 16.0 * kind, 0, 16, 16, 0, 1 }];
-            if (kind == 1) [enc setFragmentTexture:texs[(t + i) & 1 ? (t ^ 1) : t] atIndex:0];
-            if (kind == 1 && i == (draws * 2 / 3) - 1) [enc setFragmentTexture:texs[t] atIndex:0];
-            if (kind == 2) { float c[4] = { shade, 1.0f - shade, 0.5f, 1.0f }; [enc setFragmentBytes:c length:sizeof c atIndex:0]; }
+            if (kind == 0) [enc setViewport:(MTLViewport){ 0, 0, 16, 16, 0, 1 }];
+            else {
+                const int n = i - (kind == 1 ? firstTex : firstBytes), c = n % 256;
+                [enc setViewport:(MTLViewport){ 16.0 * kind + (c & 15), (double)(c >> 4), 1, 1, 0, 1 }];
+                if (kind == 1) [enc setFragmentTexture:texs[(frame + n) & 1] atIndex:0];
+                else {
+                    const float r = (float)((frame * 37 + n * 11) % 200 + 40) / 255.0f;
+                    float col[4] = { r, 1.0f - r, 128.0f / 255.0f, 1.0f }; [enc setFragmentBytes:col length:sizeof col atIndex:0];
+                }
+            }
             [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         }
         times[frame] = cpu_ms() - start;
-        [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
-        uint32_t px[48 * 16];
-        [target getBytes:px bytesPerRow:48 * 4 fromRegion:MTLRegionMake2D(0, 0, 48, 16) mipmapLevel:0];
-        uint8_t sb = (uint8_t)(shade * 255.0f + 0.5f), sg = (uint8_t)((1.0f - shade) * 255.0f + 0.5f);
-        int wrong = 0;
-        for (int y = 0; y < 16; y++) for (int x = 0; x < 48; x++) {
-            uint32_t p = px[y * 48 + x];
-            if (x < 16) { if (p != 0xffff0000u) wrong++; }
-            else if (x < 32) { if (p != texpx[t]) wrong++; }
-            else {
-                int r = p & 0xff, g = (p >> 8) & 0xff;
-                if (abs(r - sb) > 1 || abs(g - sg) > 1 || (p >> 24) != 0xff) wrong++;
-            }
-        }
-        if (wrong) { bad++; if (bad <= 4) fprintf(stderr, "frame %d: %d wrong pixels (first %08x %08x %08x)\n", frame, wrong, px[0], px[16], px[32]); }
+        [enc endEncoding]; [cb commit];
+        cbs[slot] = cb; slotFrame[slot] = frame;
     }
+    for (int k = 0; k < RING; k++) { int slot = (frames + k) % RING; if (cbs[slot]) { [cbs[slot] waitUntilCompleted]; verify(targets[slot], slotFrame[slot]); } }
     qsort(times + 1, (size_t)frames - 1, sizeof *times, compare);
     printf("%s frames=%d draws=%d bad_frames=%d median_record_cpu_ms=%.6f\n", bad ? "FAIL" : "PASS", frames, draws, bad, times[1 + (frames - 1) / 2]);
     return bad ? 1 : 0;

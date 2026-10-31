@@ -3045,7 +3045,8 @@ static unsigned g_nset_recycle[2], g_capset_recycle[2];   // bounded by the pool
 static int nvmtl_set_recycle_on(void)
 {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("NVMTL_NO_SET_RECYCLE"); on = !(e && e[0] == '1'); }
+    if (on < 0) { const char *e = getenv("NVMTL_NO_SET_RECYCLE"); on = !(e && *e && *e != '0');
+        nvlog("vk: descriptor set reuse %s (NVMTL_NO_SET_RECYCLE=%s)", on ? "ON - retired snapshot sets are reused" : "OFF - retired sets go back to their pools", e ? e : "unset"); }
     return on;
 }
 /* g_desc_lock held. Keeps n sets of one kind for reuse, or frees them to their pools when the list is full. */
@@ -3054,7 +3055,9 @@ static void nvmtl_sets_put_locked(const nvk_setref *s, unsigned n)
     VkDescriptorSet run[256]; VkDescriptorPool rp = VK_NULL_HANDLE; unsigned nr = 0;
     for (unsigned i = 0; i < n; i++) {
         unsigned k = s[i].kind;
-        if (k >= 1 && k <= 2 && nvmtl_set_recycle_on()) {
+        // Without the storage dummy a declared-but-unbound storage texture is left unwritten (see the snapshot):
+        // a reused set would then keep the previous draw's live image there, so such a process does not reuse sets.
+        if (k >= 1 && k <= 2 && g_dummyStex.view && nvmtl_set_recycle_on()) {
             unsigned l = k - 1;
             if (g_nset_recycle[l] == g_capset_recycle[l]) {
                 unsigned cap = g_capset_recycle[l] ? g_capset_recycle[l] * 2 : 1024;
@@ -3076,6 +3079,27 @@ static void nvmtl_dcache_release_locked(nvk_cmdbuf *c)
     for (unsigned k = 0; k < n; k++) back[k] = (nvk_setref){ c->dcachepools[k], c->dcache[k], c->dcache_gl_uniform ? 2u : 1u };
     nvmtl_sets_put_locked(back, n);
     c->ndcache = 0;
+}
+/* g_desc_lock held. Takes up to n listed sets of one layout (0 = snapshot, 1 = GL uniform); returns how many. */
+static unsigned nvmtl_sets_take_locked(unsigned gl, unsigned n, VkDescriptorSet *got, VkDescriptorPool *gotpool)
+{
+    if (n > g_nset_recycle[gl]) n = g_nset_recycle[gl];
+    for (unsigned k = 0; k < n; k++) {
+        nvk_setref s = g_set_recycle[gl][--g_nset_recycle[gl]];
+        got[k] = (VkDescriptorSet)s.set; gotpool[k] = (VkDescriptorPool)s.pool;
+    }
+    return n;
+}
+/* g_desc_lock held. Returns at most 1024 of one layout's listed sets to their pools (the pools are full and those sets
+ * may be what fills them); returns how many. Bounded so the lock, which retirement also takes, is held briefly. */
+static unsigned nvmtl_sets_drain_locked(unsigned gl)
+{
+    unsigned chunk = g_nset_recycle[gl] < 1024 ? g_nset_recycle[gl] : 1024;
+    nvk_setref *tail = g_set_recycle[gl] + (g_nset_recycle[gl] - chunk);
+    for (unsigned k = 0; k < chunk; k++) tail[k].kind = 0;
+    g_nset_recycle[gl] -= chunk;
+    nvmtl_sets_put_locked(tail, chunk);
+    return chunk;
 }
 static VkDescriptorSet nvmtl_snapshot_set_m(nvk_cmdbuf *c, uint32_t which, uint32_t stex_hi, const uint64_t *mask, const uint64_t *tb);
 static VkDescriptorSet nvmtl_snapshot_set(nvk_cmdbuf *c, uint32_t which, uint32_t stex_hi)
@@ -3123,11 +3147,7 @@ static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint
         VkDescriptorPool gotpool[NVMTL_DESC_BATCH_MAX];
         for (unsigned k = 0; k < NVMTL_DESC_BATCH_MAX; k++) ls[k] = gl ? g_glUniformLayout : g_setLayout;
         if (g_nset_recycle[gl]) {
-            if (n > g_nset_recycle[gl]) n = g_nset_recycle[gl];
-            for (unsigned k = 0; k < n; k++) {
-                nvk_setref s = g_set_recycle[gl][--g_nset_recycle[gl]];
-                got[k] = (VkDescriptorSet)s.set; gotpool[k] = (VkDescriptorPool)s.pool;
-            }
+            n = nvmtl_sets_take_locked(gl, n, got, gotpool);
             r = VK_SUCCESS;
         } else for (;;) {
             r = VK_ERROR_OUT_OF_POOL_MEMORY;
@@ -3135,14 +3155,9 @@ static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint
                 VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, g_descPools[k], n, ls };
                 pool = g_descPools[k]; r = pvkAllocateDescriptorSets(g_dev, &ai, got);
             }
-            if (r != VK_SUCCESS && g_nset_recycle[!gl]) {
-                // The other layout's kept sets may be what fills the pools: return them before opening another pool.
-                unsigned other = !gl, kept = g_nset_recycle[other];
-                for (unsigned k = 0; k < kept; k++) g_set_recycle[other][k].kind = 0;
-                g_nset_recycle[other] = 0;
-                nvmtl_sets_put_locked(g_set_recycle[other], kept);
-                continue;
-            }
+            // The other layout's kept sets may be what fills the pools: return some before opening another pool.
+            // The list shrinks on every pass, so this ends.
+            if (r != VK_SUCCESS && nvmtl_sets_drain_locked(!gl)) continue;
             if (r != VK_SUCCESS && nvmtl_desc_pool_open() == 0) {
                 VkDescriptorSetAllocateInfo ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, g_descPools[g_ndescPools - 1], n, ls };
                 pool = g_descPools[g_ndescPools - 1]; r = pvkAllocateDescriptorSets(g_dev, &ai, got);

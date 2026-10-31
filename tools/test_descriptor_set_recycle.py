@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Retired snapshot sets are kept per layout for reuse; every other set still goes back to its own pool."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,11 +23,14 @@ assert 'nvmtl_sets_put_locked(c->sets, c->nsets)' in retire and 'nvmtl_dcache_re
 assert 'pvkFreeDescriptorSets' not in retire
 # The allocator takes listed sets of its own layout first, and drains the other layout's list before a new pool.
 snap = method(source, 'static VkDescriptorSet nvmtl_snapshot_set_md(nvk_cmdbuf *c, uint32_t which, uint32_t stex_hi, const uint64_t *mask, const uint64_t *tb,\n                                             VkDescriptorSet from, const uint64_t *copym, const VkDescriptorBufferInfo *uniform)\n{')
-assert snap.index('g_nset_recycle[gl]') < snap.index('pvkAllocateDescriptorSets')
-assert snap.index('g_nset_recycle[!gl]') < snap.index('nvmtl_desc_pool_open() == 0')
+assert 'n = nvmtl_sets_take_locked(gl, n, got, gotpool);' in snap
+assert 'if (r != VK_SUCCESS && nvmtl_sets_drain_locked(!gl)) continue;' in snap
+assert snap.index('nvmtl_sets_take_locked') < snap.index('pvkAllocateDescriptorSets')
+assert snap.index('nvmtl_sets_drain_locked') < snap.index('nvmtl_desc_pool_open() == 0')
 
 helpers = '\n'.join(method(source, name) for name in (
-    'static int nvmtl_set_recycle_on(', 'static void nvmtl_sets_put_locked(', 'static void nvmtl_dcache_release_locked('))
+    'static int nvmtl_set_recycle_on(', 'static void nvmtl_sets_put_locked(', 'static void nvmtl_dcache_release_locked(',
+    'static unsigned nvmtl_sets_take_locked(', 'static unsigned nvmtl_sets_drain_locked('))
 fixture = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -37,6 +41,8 @@ typedef struct VkDescriptorPool_T *VkDescriptorPool;
 typedef struct VkDescriptorSet_T *VkDescriptorSet;
 typedef struct VkDevice_T *VkDevice;
 #define VK_NULL_HANDLE NULL
+#define nvlog(...) ((void)0)
+static struct { void *view; } g_dummyStex = { (void *)1 };
 #define NVMTL_DESC_BATCH_MAX 32
 typedef struct { void *pool, *set; unsigned kind; } nvk_setref;
 typedef struct { void *dcache[32]; void *dcachepools[32]; unsigned ndcache, dcache_gl_uniform; } nvk_cmdbuf;
@@ -52,10 +58,22 @@ static void pvkFreeDescriptorSets(VkDevice d, VkDescriptorPool p, unsigned n, co
 static void *P(unsigned p) { return (void *)(uintptr_t)p; }
 static void *S(unsigned p, unsigned i) { return (void *)(((uintptr_t)p << 20) | i); }
 @@HELPERS@@
-int main(void) {
+static void put_mixed(void) {
     nvk_setref a[6] = { { P(1), S(1, 1), 1 }, { P(1), S(1, 2), 0 }, { P(1), S(1, 3), 0 }, { P(2), S(2, 4), 2 },
                         { P(2), S(2, 5), 0 }, { P(3), S(3, 6), 1 } };
     nvmtl_sets_put_locked(a, 6);
+}
+int main(int argc, char **argv) {
+    const char *mode = argc > 1 ? argv[1] : "on";
+    if (!strcmp(mode, "off") || !strcmp(mode, "nodummy")) {
+        // Switched off (any value but 0), or no storage dummy: every set goes back to its own pool.
+        if (!strcmp(mode, "nodummy")) g_dummyStex.view = NULL;
+        put_mixed();
+        assert(g_nset_recycle[0] == 0 && g_nset_recycle[1] == 0 && freed == 6 && frees == 3);   // one run per pool
+        printf("PASS: %s - every retired set freed to its own pool\n", mode);
+        return 0;
+    }
+    put_mixed();
     assert(g_nset_recycle[0] == 2 && g_nset_recycle[1] == 1);
     assert(g_set_recycle[0][0].set == S(1, 1) && g_set_recycle[0][1].set == S(3, 6) && g_set_recycle[1][0].set == S(2, 4));
     assert(g_set_recycle[0][1].pool == P(3) && freed == 3 && frees == 2);   // two pool runs of kind-0 sets
@@ -64,6 +82,14 @@ int main(void) {
     for (unsigned k = 0; k < 3; k++) { c.dcache[k] = S(4 + k, 10 + k); c.dcachepools[k] = P(4 + k); }
     nvmtl_dcache_release_locked(&c);
     assert(c.ndcache == 0 && g_nset_recycle[1] == 4 && g_set_recycle[1][3].pool == P(6) && g_set_recycle[1][3].kind == 2);
+
+    // Taking returns the newest sets first, each with its own pool, and clamps to what is listed.
+    VkDescriptorSet got[32]; VkDescriptorPool gotpool[32];
+    assert(nvmtl_sets_take_locked(1, 32, got, gotpool) == 4 && g_nset_recycle[1] == 0);
+    assert(got[0] == (VkDescriptorSet)S(6, 12) && gotpool[0] == (VkDescriptorPool)P(6) && got[3] == (VkDescriptorSet)S(2, 4) && gotpool[3] == (VkDescriptorPool)P(2));
+    assert(nvmtl_sets_take_locked(1, 32, got, gotpool) == 0);
+    assert(nvmtl_sets_take_locked(0, 1, got, gotpool) == 1 && got[0] == (VkDescriptorSet)S(3, 6) && g_nset_recycle[0] == 1);
+    nvk_setref back = { P(3), S(3, 6), 1 }; nvmtl_sets_put_locked(&back, 1);
 
     static nvk_setref many[5000];
     for (unsigned i = 0; i < 5000; i++) many[i] = (nvk_setref){ P(7), S(7, i), 1 };
@@ -75,7 +101,13 @@ int main(void) {
     for (unsigned i = 0; i < 600; i++) many[i] = (nvk_setref){ P(8), S(8, i), 0 };
     nvmtl_sets_put_locked(many, 600);
     assert(freed == 600 && frees - before == 3 && maxrun == 256 && last_pool == 8);
-    puts("PASS: snapshot sets kept per layout with their pools; other sets freed to their own pool in bounded runs; list grows past 4096");
+
+    // Draining frees at most 1024 per call, newest first, to their own pools, and stops when the list is empty.
+    freed = 0; unsigned passes = 0, drained;
+    while ((drained = nvmtl_sets_drain_locked(0))) { assert(drained <= 1024); passes++; }
+    assert(passes == 5 && freed == 5002 && g_nset_recycle[0] == 0 && nvmtl_sets_drain_locked(0) == 0);
+    assert(nvmtl_sets_drain_locked(1) == 0);
+    puts("PASS: snapshot sets kept per layout with their pools; take clamps and keeps pools; bounded drain; other sets freed in bounded runs; list grows past 4096");
     return 0;
 }
 '''
@@ -85,4 +117,7 @@ with tempfile.TemporaryDirectory(prefix='nvmtl-set-recycle-') as directory:
     subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
                     '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                     str(directory / 'test.c'), '-o', str(directory / 'test')], check=True)
-    subprocess.run([str(directory / 'test')], check=True, timeout=30)
+    clean = {k: v for k, v in os.environ.items() if k != 'NVMTL_NO_SET_RECYCLE'}
+    subprocess.run([str(directory / 'test')], check=True, timeout=30, env=clean)
+    subprocess.run([str(directory / 'test'), 'off'], check=True, timeout=30, env={**clean, 'NVMTL_NO_SET_RECYCLE': 'yes'})
+    subprocess.run([str(directory / 'test'), 'nodummy'], check=True, timeout=30, env={**clean, 'NVMTL_NO_SET_RECYCLE': '0'})
