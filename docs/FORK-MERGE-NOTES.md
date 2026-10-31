@@ -28,6 +28,16 @@ Retain the existing fetch barriers and bindings. This is not a complete v2.6.5
 merge; the upstream base above is unchanged. See
 [fetch-mask validation and deferred witness review](NVMTL-FRAMEBUFFER-FETCH-MASKS.md).
 
+Retain the per-recording, per-stage texture-index cache used by address-table
+snapshots and the single dummy-address query per snapshot. Invalidate sampled
+texture indices when a view, resource kind or null binding changes; copy them
+into each independently owned GPU snapshot. Buffer addresses and self-pointers
+must use the current page/offset, and no cached array may outlive its bind table.
+See [address snapshot validation](NVMTL-ADDRESS-SNAPSHOTS.md).
+Keep dirty/copy bitmaps sized for all `NVMTL_NBIND` entries, independently of the
+four-word base shader mask. Storage bindings 256–320 must neither overwrite
+adjacent state nor qualify for buffer-offset-only descriptor reuse.
+
 Keep the recording-local compute pipeline/descriptor binding cache, eight-entry
 successful threadgroup-variant cache, and framebuffer-fetch binding cache. Reset
 them on each command recording/event segment; preserve complete handle/layout/
