@@ -21,6 +21,13 @@ The current upstream base is **2.6.4 at `f95f4d2`**, from `upstream/main`, integ
 
 ## NVMTL command recording caches
 
+The local framebuffer-fetch test candidate also carries v2.6.5 commits
+`4a377d9` and `8784c0b`: exclude separately bound set 3 from stage descriptor
+masks and fall back to older valid masks when new masks are unavailable.
+Retain the existing fetch barriers and bindings. This is not a complete v2.6.5
+merge; the upstream base above is unchanged. See
+[fetch-mask validation and deferred witness review](NVMTL-FRAMEBUFFER-FETCH-MASKS.md).
+
 Keep the recording-local compute pipeline/descriptor binding cache, eight-entry
 successful threadgroup-variant cache, and framebuffer-fetch binding cache. Reset
 them on each command recording/event segment; preserve complete handle/layout/
