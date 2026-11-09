@@ -108,6 +108,20 @@ and recovered dispatch map; unsupported functions and empty Apple stubs cannot
 qualify an extension. Version, GLSL and extension queries agree. The standalone
 Mesa API retains its own capabilities. This prevents Skia rejecting an interface
 that advertises unavailable 4.2+ functions.
+
+The CGL dispatch generator also checks mandatory inherited APIs for four
+commandless descendants: `GL_OVR_multiview2`, `GL_ARB_spirv_extensions`,
+`GL_ARB_sparse_texture2` and `GL_ARB_sparse_texture_clamp`. Their own empty
+command lists are not sufficient. The policy preserves required minimum GL
+versions, accepts a callable core specialization alias, and requires immutable
+storage APIs for sparse allocation without imposing a blanket GL 4.2 minimum.
+Parent extension names are not mandatory. Named DSA procedures are required
+only when GL 4.5 or applicable DSA functionality is exposed. Independent
+shader/enum-only extensions and callable texture storage remain eligible.
+This corrects capability reporting; it is not evidence that an unspecified
+browser rendering failure has been fixed. Mesa's standalone capabilities,
+IOSurface synchronization, presentation and browser sandboxes are unchanged.
+
 RGB/RGBA8 windows, opaque/transparent alpha, ordinary CGL swaps, resize, sharing
 and thread migration have focused tests. Stereo, multisampled/float drawables,
 pbuffers, full-screen transitions, sandboxed clients, other GPUs and multiple
@@ -327,6 +341,29 @@ python3 build/package_zink.py --base /path/to/verified/pkgroot \
   --archive /path/to/new/nvidia-macos-driver-2.6.6-nvk.tar.gz \
   --build-records /path/to/new/build-records --native-gld
 ```
+
+For a **CGL-only update** to a complete package that already selects native
+Zink for both OS accelerators, `build/restage_cgl.py` avoids rebuilding or
+re-signing kernel bundles, Intel-panel/audio components, Mesa or NVK. Start
+with a separate copy of the verified runtime, build CGL and its matched GLD,
+and use a new, unused numeric package revision after committing the sources:
+
+```sh
+python3 build/restage_cgl.py --base /path/to/verified/pkgroot \
+  --runtime /path/to/cgl-updated-runtime --stage /path/to/new/pkgroot \
+  --build-records /path/to/new/build-records --version 2.8.1 \
+  --archive /path/to/new/nvidia-macos-driver-2.8.1-nvk.tar.gz
+```
+
+This mode checks complete base-manifest coverage and component source/file
+identities, requires the unchanged private Mesa/NVK pair, preserves every
+kernel bundle byte and internal link, and verifies that userland RPATH
+normalization leaves machine-code sections unchanged. Replacement writes do
+not follow leaf symlinks, and replacement directories must be real directories.
+Bundled CGL/GLD sources and build scripts are refreshed together. Build records
+are prepared on their destination filesystem, outside `pkgroot`. It rejects
+diagnostic GLDs, stale records, existing outputs and an archive placed inside
+`pkgroot`. It does not install the driver or qualify a new OS/hardware configuration.
 
 The archive has one top-level `pkgroot/`. It preserves existing runtimes and
 version metadata, adds Zink in its own subdirectory and selects `NVKZinkGLDriver`

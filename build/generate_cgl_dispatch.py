@@ -12,6 +12,47 @@ PROTOTYPE = (r'(?:GLAPI|extern)\s+([^;{}]+?)\s+(?:APIENTRY\s+)?(gl\w+)\s*'
              r'\(([^();{}]*?)\)\s*(?:OPENGL_DEPRECATED(?:\([^)]*\))?\s*)?;')
 SDK_HEADERS = ('gl3.h', 'gl3ext.h', 'gl.h', 'glext.h')
 
+# These commandless descendants inherit callable APIs and minimum GL versions
+# that their own gl.xml require blocks do not describe. Verified against the
+# corresponding Khronos extension specifications at revision
+# 6af574a14089ccfee87efe230ebcdd8742859813. Do not recursively flatten parents:
+# immutable sparse allocation is mandatory; named DSA procedures are conditional.
+# This is public CGL coverage, not a change to Mesa's standalone capabilities.
+SPARSE_APIS = (('glTexPageCommitmentARB',), ('glTexStorage1D',),
+               ('glTexStorage2D',), ('glTexStorage3D',))
+INHERITED_APIS = {
+    'GL_OVR_multiview2': (30, (('glFramebufferTextureMultiviewOVR',),)),
+    'GL_ARB_spirv_extensions': (33, (('glShaderBinary',),
+                                    ('glSpecializeShaderARB', 'glSpecializeShader'))),
+    'GL_ARB_sparse_texture2': (11, SPARSE_APIS),
+    'GL_ARB_sparse_texture_clamp': (11, SPARSE_APIS),
+}
+DSA_APIS = {
+    'GL_OVR_multiview2': (('glNamedFramebufferTextureMultiviewOVR',),),
+    'GL_ARB_sparse_texture2': (('glTexturePageCommitmentEXT',),),
+    'GL_ARB_sparse_texture_clamp': (('glTexturePageCommitmentEXT',),),
+}
+
+
+def qualify_capabilities(contract, commands, profile):
+    """Supplement own-command coverage with mandatory public CGL ancestry."""
+    commands = set(commands)
+    version, extensions = supported(contract, commands, profile)
+    dsa = version >= 45 or bool({'GL_ARB_direct_state_access',
+                                'GL_EXT_direct_state_access'}.intersection(extensions))
+    qualified = []
+    for name in extensions:
+        minimum, groups = INHERITED_APIS.get(name, (0, ()))
+        if dsa:
+            groups += DSA_APIS.get(name, ())
+        # A group's spellings are verified alternatives, not new entrypoints.
+        # Only recovered callable desktop slots may satisfy them; a declaration
+        # or private Mesa proc address is not public CGL coverage. Named sparse
+        # commitment is not an alias for the bound-target operation.
+        if version >= minimum and all(commands.intersection(group) for group in groups):
+            qualified.append(name)
+    return version, qualified
+
 
 def collect_prototypes(headers):
     prototypes = {}
@@ -125,7 +166,7 @@ def main():
               ' * Copyright 2013-2020 The Khronos Group Inc.',
               ' * Derived API metadata intersected with recovered public dispatch. */']
     for profile in ('core', 'compatibility'):
-        version, extensions = supported(contract, slots, profile)
+        version, extensions = qualify_capabilities(contract, slots, profile)
         capabilities[profile] = {'version': version, 'extensions': extensions}
         policy += [f'static const unsigned api_{profile}_version = {version};',
                    f'static const char *const api_{profile}_extensions[] = {{']
